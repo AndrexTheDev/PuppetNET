@@ -1,0 +1,112 @@
+# =============================================================================
+#  PuppetNET Edge Fetch Relay — Cloudflare Worker configuration
+# =============================================================================
+#
+#  Deploy:
+#     npm i -g wrangler            # or: npx wrangler@latest
+#     wrangler login
+#     wrangler kv namespace create RATE_LIMIT_KV
+#     wrangler kv namespace create RESULT_KV
+#     wrangler queues create puppetnet-fetch-queue
+#     -> paste the ids/preview ids below, then:
+#     wrangler secret put PROXY_AUTH_TOKEN
+#     wrangler deploy
+#
+#  `wrangler dev --local` works without any binding: the relay degrades to a
+#  stateless forwarder with per-isolate rate limiting.
+# =============================================================================
+
+name = "puppetnet-edge-relay"
+main = "worker.js"
+compatibility_date = "2025-01-01"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = false
+account_id = ""            # set via `wrangler login` or CI secret CF_ACCOUNT_ID
+
+[observability]
+enabled = true
+head_sampling_rate = 1
+
+# Daily janitorial cron: prune idle in-isolate buckets, reset global counter.
+[triggers]
+crons = ["30 4 * * *"]
+
+# -----------------------------------------------------------------------------
+# Plain (non-secret) configuration. Every value is optional; worker.js has sane
+# defaults. These are the politeness knobs the OSINT harvester cares about.
+# -----------------------------------------------------------------------------
+[vars]
+# Per-host token bucket defaults (refill rate + burst capacity).
+HOST_RATE_PER_SEC = "0.5"          # ~1 request every 2s per target host
+HOST_BURST = "4"
+# Floors the Worker will not go below, whatever a client requests.
+MIN_HOST_RATE_PER_SEC = "0.02"
+MAX_HOST_BURST = "20"
+# Worker-wide requests/minute safety valve (protects free-tier CPU + KV quotas).
+GLOBAL_RPM = "900"
+# How often an in-isolate bucket reconciles with KV (ms).
+KV_SYNC_INTERVAL_MS = "20000"
+
+# Networking
+DEFAULT_TIMEOUT_MS = "25000"
+MAX_TIMEOUT_MS = "90000"
+DEFAULT_MAX_ATTEMPTS = "3"
+MAX_MAX_ATTEMPTS = "5"
+
+# Payload caps
+MAX_RESPONSE_BYTES = "8388608"     # 8 MiB
+MAX_CONTROL_BODY_BYTES = "262144"  # 256 KiB control envelope
+
+# Caching / robots
+DEFAULT_CACHE_TTL_SECONDS = "0"    # 0 = never cache unless the caller asks
+MAX_CACHE_TTL_SECONDS = "86400"
+ROBOTS_TTL_SECONDS = "21600"
+TASK_RESULT_TTL_SECONDS = "3600"
+
+# Queue deferral
+MAX_QUEUE_DELAY_SECONDS = "300"
+
+# Security
+ENFORCE_HTTPS = "true"             # refuse plaintext http:// targets
+ALLOW_PRIVATE_NETWORKS = "false"   # SSRF guard: block localhost / RFC1918
+BLOCKED_HOST_SUFFIXES = ""         # e.g. "facebook.com,linkedin.com"
+ALLOWED_ORIGINS = "*"              # CORS for the PuppetNET web front-end
+
+# -----------------------------------------------------------------------------
+# Bindings — fill in the ids after `wrangler kv namespace create ...`
+# -----------------------------------------------------------------------------
+[[kv_namespaces]]
+binding = "RATE_LIMIT_KV"
+id = "REPLACE_WITH_RATE_LIMIT_KV_ID"
+preview_id = "REPLACE_WITH_RATE_LIMIT_KV_PREVIEW_ID"
+
+[[kv_namespaces]]
+binding = "RESULT_KV"
+id = "REPLACE_WITH_RESULT_KV_ID"
+preview_id = "REPLACE_WITH_RESULT_KV_PREVIEW_ID"
+
+[[queues.producers]]
+queue = "puppetnet-fetch-queue"
+binding = "FETCH_QUEUE"
+
+[[queues.consumers]]
+queue = "puppetnet-fetch-queue"
+max_batch_size = 10
+max_batch_timeout = 5
+max_retries = 3
+retry_delay = "fixed"
+
+# Free-tier friendly execution limits
+[limits]
+cpu_ms = 30000
+
+# -----------------------------------------------------------------------------
+# Production environment overrides (stricter politeness for hostile origins)
+# -----------------------------------------------------------------------------
+[env.production.vars]
+GLOBAL_RPM = "600"
+HOST_RATE_PER_SEC = "0.34"
+HOST_BURST = "3"
+
+[env.production.triggers]
+crons = ["30 4 * * *"]

@@ -1,0 +1,307 @@
+# =============================================================================
+#  PuppetNET — daily harvest & graph ingestion
+# =============================================================================
+#  Runs once a day at 04:00 UTC. Harvests structured + unstructured sources
+#  through the Cloudflare Worker edge relay, extracts entities/relations with
+#  spaCy, applies source confidence weights, and writes to Neo4j AuraDB.
+#
+#  Required repository secrets (Settings → Secrets and variables → Actions):
+#      NEO4J_URI, NEO4J_USERNAME, NEO4J_PASSWORD
+#      PROXY_WORKER_URL, PROXY_AUTH_TOKEN
+#  Optional:
+#      OPENCORPORATES_API_TOKEN, COMPANIES_HOUSE_API_KEY,
+#      WIKIDATA_USER_AGENT, ICIJ_QUERY_TERMS, RSS_FEEDS
+#
+#  Without Neo4j credentials the run still completes: `--doctor` reports the
+#  gap and the pipeline falls back to a dry run, so a fork of this repo never
+#  fails its first scheduled execution.
+# =============================================================================
+
+name: Daily Ingest
+
+on:
+  schedule:
+    # 04:00 UTC daily. Off-peak for both GitHub runners and the origin sites,
+    # and it keeps a >24 h gap from most feeds' publish windows.
+    - cron: "0 4 * * *"
+
+  workflow_dispatch:
+    inputs:
+      sources:
+        description: "Source ids or adapter names (comma-separated). Empty = all enabled."
+        required: false
+        default: ""
+        type: string
+      dry_run:
+        description: "Harvest + parse but write nothing to Neo4j"
+        required: false
+        default: false
+        type: boolean
+      limit:
+        description: "Max documents per source (empty = MAX_DOCUMENTS_PER_SOURCE)"
+        required: false
+        default: ""
+        type: string
+      log_level:
+        description: "Log level"
+        required: false
+        default: "INFO"
+        type: choice
+        options: [DEBUG, INFO, WARNING, ERROR]
+      skip_nlp:
+        description: "Skip spaCy (structured sources only, much faster)"
+        required: false
+        default: false
+        type: boolean
+      fail_on_error:
+        description: "Fail the workflow if any source recorded an error"
+        required: false
+        default: false
+        type: boolean
+
+# A daily ingest must never run concurrently with itself: two writers racing on
+# the same MERGE keys produces duplicate nodes and burns Actions minutes.
+concurrency:
+  group: daily-ingest-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUNBUFFERED: "1"
+  PYTHONDONTWRITEBYTECODE: "1"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PIP_NO_PYTHON_VERSION_WARNING: "1"
+  # spaCy warns loudly about CUDA on CPU runners; silence it.
+  TOKENIZERS_PARALLELISM: "false"
+  OMP_NUM_THREADS: "2"
+
+jobs:
+  ingest:
+    name: Harvest → NLP → Neo4j
+    runs-on: ubuntu-latest
+    # Harvest budget is MAX_RUNTIME_SECONDS (35 min) + install/model overhead.
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+
+      - name: Install runtime dependencies
+        run: |
+          python -m pip install --upgrade pip wheel
+          pip install -r requirements.txt
+
+      # ---------------------------------------------------------------------
+      # NLP model. Tried most-accurate → fastest so a partial CDN outage or a
+      # runner with less RAM still yields a working pipeline. ingest.py falls
+      # back to a blank spaCy pipeline + gazetteer if *nothing* loads, and the
+      # engine prices those edges at the co-occurrence rate (0.2 penalty).
+      # ---------------------------------------------------------------------
+      - name: Download spaCy model
+        id: spacy_model
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          models="${SPACY_MODELS:-en_core_web_trf en_core_web_lg en_core_web_md en_core_web_sm}"
+          installed=""
+          for model in $models; do
+            echo "::group::trying $model"
+            if python -m spacy download "$model" 2>&1; then
+              if python -c "import spacy,sys; spacy.load('$model'); print('$model loads cleanly')" 2>&1; then
+                installed="$model"
+                echo "::endgroup::"
+                break
+              fi
+            fi
+            echo "::warning::$model could not be installed or loaded"
+            echo "::endgroup::"
+          done
+
+          if [ -n "$installed" ]; then
+            echo "model=$installed" >> "$GITHUB_OUTPUT"
+            echo "Using spaCy model: $installed"
+          else
+            echo "model=" >> "$GITHUB_OUTPUT"
+            {
+              echo "::warning title=NLP degraded::No spaCy model could be installed."
+              echo "Entity/relation extraction falls back to the lexical + gazetteer"
+              echo "pipeline; edges are priced at the co-occurrence rate (0.2 penalty)."
+            } > /dev/null
+            echo "::warning title=NLP degraded::No spaCy model installed — using the lexical fallback pipeline."
+          fi
+        env:
+          SPACY_MODELS: "en_core_web_trf en_core_web_lg en_core_web_md en_core_web_sm"
+
+      # ---------------------------------------------------------------------
+      # Fail fast on misconfiguration, but never on a missing model or an
+      # absent Neo4j credential: --doctor distinguishes fatal from degradable.
+      # ---------------------------------------------------------------------
+      - name: Preflight checks (ingest.py --doctor)
+        run: |
+          python ingest.py --doctor || doctor_status=$?
+          case "${doctor_status:-0}" in
+            0) echo "preflight: OK" ;;
+            1) echo "::error title=Configuration invalid::Fix the secrets listed above and re-run."
+               exit 1 ;;
+            *) echo "::warning title=Preflight degraded::Continuing; the pipeline will run in reduced mode (exit ${doctor_status})." ;;
+          esac
+        env:
+          NEO4J_URI: ${{ secrets.NEO4J_URI }}
+          NEO4J_USERNAME: ${{ secrets.NEO4J_USERNAME }}
+          NEO4J_PASSWORD: ${{ secrets.NEO4J_PASSWORD }}
+          PROXY_WORKER_URL: ${{ secrets.PROXY_WORKER_URL }}
+          PROXY_AUTH_TOKEN: ${{ secrets.PROXY_AUTH_TOKEN }}
+
+      # Document hashes seen in recent runs, so an unchanged feed costs nothing.
+      # Neo4j is the authoritative dedupe source; this is a warm cache for
+      # dry runs and for the window before the graph write completes.
+      - name: Restore harvest state
+        uses: actions/cache@v4
+        with:
+          path: .state
+          key: puppetnet-state-${{ github.run_id }}
+          restore-keys: |
+            puppetnet-state-
+
+      - name: Resolve ingest arguments
+        id: args
+        env:
+          # Inputs reach the shell through `env`, never by interpolation into
+          # the script body — a dispatch input containing `$(…)` must not be
+          # able to execute in the runner.
+          IN_SOURCES: ${{ inputs.sources }}
+          IN_LIMIT: ${{ inputs.limit }}
+          IN_LOG_LEVEL: ${{ inputs.log_level }}
+          IN_DRY_RUN: ${{ inputs.dry_run }}
+          IN_SKIP_NLP: ${{ inputs.skip_nlp }}
+          IN_FAIL_ON_ERROR: ${{ inputs.fail_on_error }}
+        run: |
+          args=""
+          if [ -n "$IN_SOURCES" ]; then
+            case "$IN_SOURCES" in
+              *[\ \;\|\&\$\`\']* )
+                echo "::error title=Invalid --sources::Use comma-separated source ids or adapter names only."
+                exit 1 ;;
+            esac
+            args="$args --sources $IN_SOURCES"
+          fi
+          case "$IN_LIMIT" in
+            "" ) ;;
+            *[!0-9]* ) echo "::error title=Invalid --limit::$IN_LIMIT is not a positive integer."; exit 1 ;;
+            * ) args="$args --limit $IN_LIMIT" ;;
+          esac
+          case "$IN_LOG_LEVEL" in
+            "" ) ;;
+            DEBUG|INFO|WARNING|ERROR ) args="$args --log-level $IN_LOG_LEVEL" ;;
+            * ) echo "::error title=Invalid --log-level::$IN_LOG_LEVEL"; exit 1 ;;
+          esac
+
+          # workflow_dispatch booleans arrive as the strings "true"/"false";
+          # on a scheduled run every input is empty.
+          [ "$IN_DRY_RUN" = "true" ]       && args="$args --dry-run"
+          [ "$IN_SKIP_NLP" = "true" ]      && args="$args --skip-nlp"
+          [ "$IN_FAIL_ON_ERROR" = "true" ] && args="$args --fail-on-error"
+
+          echo "args=$args" >> "$GITHUB_OUTPUT"
+          echo "resolved: ingest.py $args"
+
+      - name: Run daily ingest
+        id: ingest
+        env:
+          INGEST_ARGS: ${{ steps.args.outputs.args }}
+          # --- Neo4j AuraDB -------------------------------------------------
+          NEO4J_URI: ${{ secrets.NEO4J_URI }}
+          NEO4J_USERNAME: ${{ secrets.NEO4J_USERNAME }}
+          NEO4J_PASSWORD: ${{ secrets.NEO4J_PASSWORD }}
+          NEO4J_DATABASE: ${{ secrets.NEO4J_DATABASE }}
+          # --- Cloudflare Worker edge relay ---------------------------------
+          PROXY_WORKER_URL: ${{ secrets.PROXY_WORKER_URL }}
+          PROXY_AUTH_TOKEN: ${{ secrets.PROXY_AUTH_TOKEN }}
+          PROXY_WORKER_ENABLED: "true"
+          PROXY_QUEUE_ON_LIMIT: "true"
+          DIRECT_FALLBACK_ENABLED: "true"
+          # --- Harvest limits -----------------------------------------------
+          MAX_DOCUMENTS_PER_SOURCE: "150"
+          MAX_DOCUMENTS_TOTAL: "1500"
+          MAX_RUNTIME_SECONDS: "2100"
+          TOKEN_BUCKET_RATE_PER_SEC: "0.4"
+          TOKEN_BUCKET_BURST: "3"
+          # --- Source credentials -------------------------------------------
+          OPENCORPORATES_API_TOKEN: ${{ secrets.OPENCORPORATES_API_TOKEN }}
+          COMPANIES_HOUSE_API_KEY: ${{ secrets.COMPANIES_HOUSE_API_KEY }}
+          WIKIDATA_USER_AGENT: ${{ secrets.WIKIDATA_USER_AGENT }}
+          ICIJ_QUERY_TERMS: ${{ secrets.ICIJ_QUERY_TERMS }}
+          ICIJ_DATASET_URLS: ${{ secrets.ICIJ_DATASET_URLS }}
+          REGISTER_FILES: ${{ secrets.REGISTER_FILES }}
+          RSS_FEEDS: ${{ secrets.RSS_FEEDS }}
+          # --- Run metadata --------------------------------------------------
+          LOG_JSON: "true"
+          SOURCES_FILE: "config/sources.yaml"
+          ONLY_NEW_DOCUMENTS: "true"
+          DEDUPE_WINDOW_DAYS: "30"
+        run: |
+          # The runner uses `bash -e`, so capture the status explicitly and let
+          # the reporting steps run before deciding whether the job failed.
+          set +e
+          # shellcheck disable=SC2086  # INGEST_ARGS is intentionally word-split
+          python ingest.py $INGEST_ARGS --report-dir reports 2>&1 | tee ingest.log
+          status=${PIPESTATUS[0]}
+          set -e
+          echo "exit_code=$status" >> "$GITHUB_OUTPUT"
+          echo "ingest.py exited with $status"
+          exit 0
+
+      # ---------------------------------------------------------------------
+      # Artefacts & reporting — these must run even when the ingest fails.
+      # ---------------------------------------------------------------------
+      - name: Upload run report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ingest-report-${{ github.run_id }}
+          path: |
+            reports/
+            ingest.log
+            .state/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Annotate failures
+        if: always()
+        env:
+          INGEST_EXIT: ${{ steps.ingest.outputs.exit_code }}
+        run: |
+          exit_code="$INGEST_EXIT"
+          case "$exit_code" in
+            0) echo "Run completed successfully." ;;
+            1) echo "::error title=Configuration error::Secrets or config/sources.yaml are invalid (exit 1)." ;;
+            2) echo "::error title=Runtime failure::The pipeline aborted; see ingest.log (exit 2)." ;;
+            3) echo "::warning title=Partial run::At least one source failed but the graph was written (exit 3)." ;;
+            "") echo "::warning title=Unknown status::The ingest step did not report an exit code." ;;
+            *) echo "::error title=Unexpected exit::ingest.py exited with $exit_code." ;;
+          esac
+
+      # Exit 3 (partial) is deliberately non-fatal for the schedule: a single
+      # flaky feed should not mark the whole run failed. Escalate by enabling
+      # the fail_on_error input on a manual dispatch.
+      - name: Fail on hard errors
+        if: always()
+        env:
+          INGEST_EXIT: ${{ steps.ingest.outputs.exit_code }}
+        run: |
+          exit_code="$INGEST_EXIT"
+          if [ "$exit_code" = "1" ] || [ "$exit_code" = "2" ]; then
+            exit 1
+          fi

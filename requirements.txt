@@ -1,0 +1,28 @@
+# =============================================================================
+#  PuppetNET ingest engine — runtime dependencies (Python 3.10+)
+# =============================================================================
+#  Install:   pip install -r requirements.txt
+#  NLP model: python -m spacy download en_core_web_lg      (default, ~570 MB)
+#             python -m spacy download en_core_web_trf     (needs requirements-nlp-trf.txt)
+# =============================================================================
+
+# --- HTTP / harvesting -------------------------------------------------------
+requests>=2.31,<3
+urllib3>=2.0,<3
+
+# --- Content extraction ------------------------------------------------------
+beautifulsoup4>=4.12,<5
+lxml>=5.1,<7               # fast HTML parser used by the boilerplate stripper
+pypdf>=4.0,<7              # PDF text extraction (ICIJ/OCCRP reports, notices)
+feedparser>=6.0,<7         # RSS/Atom
+python-dateutil>=2.9,<3    # tolerant timestamp parsing
+
+# --- NLP ---------------------------------------------------------------------
+spacy>=3.7.5,<4.0
+
+# --- Graph -------------------------------------------------------------------
+neo4j>=5.13,<7             # AuraDB Free speaks Bolt 5.x over neo4j+s://
+
+# --- Misc --------------------------------------------------------------------
+PyYAML>=6.0,<7             # config/sources.yaml overlay
+brotli>=1.1;platform_python_implementation=="CPython"   # br-encoded responses

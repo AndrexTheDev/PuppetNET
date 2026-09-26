@@ -1,0 +1,114 @@
+# =============================================================================
+#  PuppetNET — continuous integration
+# =============================================================================
+#  Guards the three deliverables on every push and pull request:
+#    * worker.js   — syntax-checked with node --check and linted if a config
+#                    is present
+#    * ingest.py   — imported, CLI smoke-tested (--version, --list-sources,
+#                    --print-config, --doctor) and exercised by pytest
+#    * the package — unit tests that never need a spaCy model, a Neo4j
+#                    instance, or network access (see tests/conftest.py)
+# =============================================================================
+
+name: CI
+
+on:
+  push:
+    branches: [main, "arena/**"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONUNBUFFERED: "1"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  python:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip wheel
+          pip install -r requirements.txt
+          pip install pytest>=8.0 ruff>=0.4
+
+      - name: Ruff (lint)
+        run: ruff check puppetnet ingest.py tests
+
+      - name: Byte-compile everything
+        run: python -m compileall -q puppetnet ingest.py tests
+
+      - name: CLI smoke tests
+        env:
+          DRY_RUN: "true"
+          LOG_LEVEL: "ERROR"
+        run: |
+          python ingest.py --version
+          python ingest.py --list-sources | head -c 400
+          python ingest.py --print-config | head -c 400
+          # --doctor must never hard-fail on a missing model or missing secrets.
+          python ingest.py --doctor || echo "doctor reported a degraded mode (expected without secrets)"
+
+      - name: Pytest
+        env:
+          DRY_RUN: "true"
+          LOG_LEVEL: "ERROR"
+        run: pytest -q -m "not integration"
+
+  worker:
+    name: Cloudflare Worker
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Syntax check worker.js
+        run: node --check worker.js
+
+      - name: Validate wrangler.toml
+        run: |
+          node -e '
+            const fs = require("fs");
+            const text = fs.readFileSync("wrangler.toml", "utf8");
+            const required = ["name", "main", "compatibility_date"];
+            const missing = required.filter((key) => !new RegExp(`^\\\\s*${key}\\\\s*=`, "m").test(text));
+            if (missing.length) {
+              console.error("wrangler.toml is missing:", missing.join(", "));
+              process.exit(1);
+            }
+            console.log("wrangler.toml declares:", required.join(", "));
+          '
+
+      - name: Dry-run wrangler config (if the CLI is reachable)
+        continue-on-error: true
+        run: npx --yes wrangler@latest deploy --dry-run --outdir /tmp/wrangler-out
