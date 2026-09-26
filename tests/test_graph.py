@@ -778,6 +778,174 @@ def test_fold_ignores_case_accents_and_punctuation():
     assert _fold("") == ""
 
 
+class ScriptedGraphClient(Neo4jClient):
+    """Live-mode client whose reads come from a table and whose writes are recorded."""
+
+    def __init__(self, settings, reads=None, **kwargs) -> None:
+        super().__init__(settings, dry_run=False, **kwargs)
+        self.reads = dict(reads or {})
+        self.read_queries: list[str] = []
+
+    def read(self, query, params=None):
+        self.read_queries.append(query)
+        for fragment, rows in self.reads.items():
+            if fragment in query:
+                return rows
+        return []
+
+    def write(self, query, params=None, *, rows: int = 0, kind: str = "write"):
+        payload = (params or {}).get("rows") or []
+        submitted = rows or len(payload)
+        self.recorder.record(query, params, rows=submitted, kind=kind)
+        self.rows_written += submitted
+        self.queries_executed += 1
+        return []
+
+
+def budget_writer(live_settings, *, node_count: int, alias_rows=None, cap: int = 200_000):
+    settings = dataclasses.replace(live_settings, aura_node_cap=cap, neo4j_batch_size=50)
+    client = ScriptedGraphClient(
+        settings,
+        reads={
+            "count(e) AS nodes": [{"nodes": node_count}],
+            "e.aliases AS aliases": list(alias_rows or []),
+        },
+        sleeper=RecordingSleeper(),
+    )
+    return GraphWriter(client, settings, stats=IngestStats()), client
+
+
+# --------------------------------------------------------------------------- #
+# AuraDB Free node budget
+# --------------------------------------------------------------------------- #
+
+
+def test_node_budget_refuses_only_new_nodes(live_settings):
+    """At the ceiling, existing nodes still update; newcomers are refused."""
+    graph, _ = budget_writer(
+        live_settings,
+        node_count=199_999,
+        alias_rows=[
+            {
+                "canonical_key": "ORGANIZATION:gazprom-8d3be1d8",
+                "entity_type": "Organization",
+                "name": "Gazprom",
+                "aliases": ["Gazprom"],
+                "mention_count": 8,
+            }
+        ],
+        cap=200_000,
+    )
+    known = entity("Gazprom")
+    newcomers = [entity("Rosneft"), entity("Nord Stream AG")]
+
+    written, resolved = graph.write_entities([known, *newcomers])
+
+    assert written == 2, "one existing node + one admitted newcomer"
+    assert graph.summary.entities_capped == 1
+    names = {node.name for node in resolved}
+    assert "Gazprom" in names
+    assert len(names) == 2
+
+
+def test_node_budget_keeps_the_strongest_newcomers(live_settings):
+    graph, _ = budget_writer(live_settings, node_count=99, cap=100)
+    weak = entity("Weak Signal", confidence=0.1)
+    strong = entity("Strong Signal", confidence=0.95)
+
+    _, resolved = graph.write_entities([weak, strong])
+
+    assert {node.name for node in resolved} == {"Strong Signal"}
+    assert graph.summary.entities_capped == 1
+    assert weak.canonical_key in graph._capped_keys
+
+
+def test_edges_to_a_refused_node_are_counted_not_silently_lost(live_settings):
+    graph, _ = budget_writer(live_settings, node_count=100, cap=100)
+    kept = entity("Gazprom", confidence=0.9)
+    refused = entity("Rosneft", confidence=0.1)
+
+    graph.write_entities([kept, refused])
+    written = graph.write_relations([relation(kept, refused, confidence=0.9)])
+
+    assert written == 0
+    assert graph.summary.relations_capped == 1
+    assert graph.summary.relations_dropped == 1
+
+
+def test_node_budget_is_not_probed_in_dry_run(dry_settings):
+    client, _, _ = make_client(dry_settings)
+    graph = GraphWriter(client, dry_settings, stats=IngestStats())
+    assert graph.entity_node_count() is None
+    written, resolved = graph.write_entities([entity(f"Company {i}") for i in range(5)])
+    assert written == 5
+    assert graph.summary.entities_capped == 0
+    assert not any("count(e)" in entry["query_preview"] for entry in recorded(client))
+
+
+def test_node_budget_can_be_disabled(live_settings):
+    graph, client = budget_writer(live_settings, node_count=10_000_000, cap=0)
+    written, _ = graph.write_entities([entity("Gazprom"), entity("Rosneft")])
+    assert written == 2
+    assert graph.summary.entities_capped == 0
+    assert not any("count(e)" in query for query in client.read_queries)
+
+
+def test_an_unreadable_node_count_does_not_block_the_harvest(live_settings):
+    settings = dataclasses.replace(live_settings, aura_node_cap=200_000)
+
+    class FailingCountClient(ScriptedGraphClient):
+        def read(self, query, params=None):
+            if "count(e) AS nodes" in query:
+                raise RuntimeError("database asleep")
+            return super().read(query, params)
+
+    client = FailingCountClient(settings, reads={"e.aliases AS aliases": []}, sleeper=RecordingSleeper())
+    graph = GraphWriter(client, settings, stats=IngestStats())
+
+    assert graph.entity_node_count() is None
+    written, _ = graph.write_entities([entity("Gazprom"), entity("Rosneft")])
+    assert written == 2, "a failed probe must degrade to 'no cap', not 'write nothing'"
+    assert graph.summary.entities_capped == 0
+
+
+def test_node_count_is_probed_once_per_run(live_settings):
+    graph, client = budget_writer(live_settings, node_count=0, cap=200_000)
+    graph.write_entities([entity("Gazprom")])
+    graph.write_entities([entity("Rosneft")])
+    probes = [query for query in client.read_queries if "count(e) AS nodes" in query]
+    assert len(probes) == 1, "the population is probed once, not per flush"
+    assert graph._node_count == 2, "the cached count tracks what this run admitted"
+
+
+def test_run_summary_reports_the_node_budget(live_settings):
+    graph, client = budget_writer(live_settings, node_count=100, cap=100)
+    graph.begin_run("run-cap")
+    graph.write_entities([entity("Gazprom"), entity("Rosneft")])
+    graph.finish_run(status="completed")
+
+    assert graph.summary.entities == 0, "nothing may be created at the ceiling"
+    assert graph.summary.entities_capped == 2
+    assert any(entry["kind"] == "run" for entry in client.recorder.statements)
+
+    # The counters reach the run node so a capped deployment is visible later.
+    captured: dict = {}
+
+    class Spy(ScriptedGraphClient):
+        def write(self, query, params=None, *, rows: int = 0, kind: str = "write"):
+            if "duration_seconds" in str(params):
+                captured.update((params or {}).get("properties", {}))
+            return super().write(query, params, rows=rows, kind=kind)
+
+    spy_settings = dataclasses.replace(live_settings, aura_node_cap=100)
+    spy = Spy(spy_settings, reads={"count(e) AS nodes": [{"nodes": 100}], "e.aliases AS aliases": []}, sleeper=RecordingSleeper())
+    spy_graph = GraphWriter(spy, spy_settings, stats=IngestStats())
+    spy_graph.begin_run("run-cap")
+    spy_graph.write_entities([entity("Gazprom")])
+    spy_graph.finish_run(status="completed")
+    assert captured["entities_capped_node_budget"] == 1
+
+
 # --------------------------------------------------------------------------- #
 # GraphWriter (dry-run: assert on the recorded statements)
 # --------------------------------------------------------------------------- #
@@ -892,6 +1060,21 @@ def test_write_entities_batches_on_the_configured_size(writer):
     entity_statements = [entry for entry in recorded(writer.client) if entry["rows"]]
     assert sum(entry["rows"] for entry in entity_statements) == 5
     assert len(entity_statements) == 3
+
+
+def test_run_counters_accumulate_across_flushes(writer):
+    """The pipeline flushes once per source; stats must cover the whole run."""
+    writer.write_entities([entity("Gazprom"), entity("Rosneft")])
+    assert writer.stats.entities_written == 2
+    writer.write_entities([entity("Igor Sechin", EntityType.PERSON)])
+    assert writer.stats.entities_written == 3, "the second flush must not reset the run counter"
+    assert writer.summary.entities == 1, "the per-flush summary stays per-flush"
+
+    subject, obj = entity("A"), entity("B")
+    writer.write_relations([relation(subject, obj, confidence=0.9)])
+    writer.write_relations([relation(obj, subject, RelationType.OWNED_BY, confidence=0.9)])
+    assert writer.stats.relations_written == 2
+    assert writer.summary.relations == 1
 
 
 def test_write_entities_is_a_no_op_for_an_empty_list(writer):

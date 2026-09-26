@@ -507,6 +507,8 @@ class IngestPipeline:
         self._cumulative_summary.mentions += summary.mentions
         self._cumulative_summary.relations += summary.relations
         self._cumulative_summary.relations_dropped += summary.relations_dropped
+        self._cumulative_summary.entities_capped += summary.entities_capped
+        self._cumulative_summary.relations_capped += summary.relations_capped
         self._cumulative_summary.seconds += summary.seconds
         for key, value in summary.relations_by_type.items():
             self._cumulative_summary.relations_by_type[key] = self._cumulative_summary.relations_by_type.get(key, 0) + value

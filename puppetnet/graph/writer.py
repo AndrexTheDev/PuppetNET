@@ -45,6 +45,10 @@ class WriteSummary:
     mentions: int = 0
     relations: int = 0
     relations_dropped: int = 0
+    #: Entity nodes refused by the AuraDB Free node budget (and the edges that
+    #: would have pointed at them).
+    entities_capped: int = 0
+    relations_capped: int = 0
     relations_by_type: dict[str, int] = field(default_factory=dict)
     entities_by_type: dict[str, int] = field(default_factory=dict)
     seconds: float = 0.0
@@ -72,6 +76,10 @@ class GraphWriter:
         self.resolver = resolver or EntityResolver(limit=int(getattr(settings, "entity_resolver_limit", 200_000)))
         self.summary = WriteSummary()
         self.run_id = settings.run_id or ""
+        #: Cached ``MATCH (e:Entity) RETURN count(e)`` — probed once per run.
+        self._node_count: int | None = None
+        #: Keys refused by the node budget; edges pointing at them are dropped.
+        self._capped_keys: set[str] = set()
 
     # ------------------------------------------------------------------ #
     # Schema / lifecycle
@@ -116,6 +124,8 @@ class GraphWriter:
             "relations_extracted": stats.relations_extracted,
             "relations_written": stats.relations_written,
             "relations_dropped_low_confidence": stats.relations_dropped_low_confidence,
+            "entities_capped_node_budget": self.summary.entities_capped,
+            "relations_capped_node_budget": self.summary.relations_capped,
             "dependency_triples": stats.dependency_triples,
             "cooccurrence_triples": stats.cooccurrence_triples,
             "craft_entities": stats.craft_entities,
@@ -185,6 +195,68 @@ class GraphWriter:
     # ------------------------------------------------------------------ #
     # Entities
     # ------------------------------------------------------------------ #
+    # ------------------------------------------------------------------ #
+    # AuraDB Free node budget
+    # ------------------------------------------------------------------ #
+    def entity_node_count(self) -> int | None:
+        """How many :Entity nodes the graph already holds (``None`` if unknown).
+
+        Probed once per run and only when a cap is configured: in dry-run mode
+        there is no database to ask, and an unreadable count must not block a
+        harvest, so both cases degrade to "no cap enforced".
+        """
+        if self._node_count is not None:
+            return self._node_count
+        if self.client.dry_run or int(getattr(self.settings, "aura_node_cap", 0) or 0) <= 0:
+            return None
+        try:
+            rows = self.client.read(schema.ENTITY_NODE_COUNT)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("could not count :Entity nodes (%s) — node budget not enforced", exc)
+            return None
+        try:
+            self._node_count = int(rows[0]["nodes"]) if rows else 0
+        except (KeyError, IndexError, TypeError, ValueError):
+            logger.warning("unreadable :Entity node count — node budget not enforced")
+            return None
+        logger.info("entity node population: %d", self._node_count)
+        return self._node_count
+
+    def _apply_node_cap(self, resolved: Sequence[Entity]) -> list[Entity]:
+        """Drop the weakest *new* nodes once the Aura node budget is spent.
+
+        Existing nodes are never refused — updating a node costs nothing against
+        the ceiling, and refusing it would fork the graph. When the budget is
+        exhausted the strongest newcomers (by confidence, then mention count)
+        are admitted and the rest are reported, so a long-running deployment
+        degrades gracefully instead of failing every write.
+        """
+        cap = int(getattr(self.settings, "aura_node_cap", 0) or 0)
+        if cap <= 0 or not resolved:
+            return list(resolved)
+        count = self.entity_node_count()
+        if count is None:
+            return list(resolved)
+
+        existing = [entity for entity in resolved if self.resolver.knows(entity.canonical_key)]
+        newcomers = [entity for entity in resolved if not self.resolver.knows(entity.canonical_key)]
+        headroom = max(0, cap - count)
+        if len(newcomers) <= headroom:
+            self._node_count = count + len(newcomers)
+            return list(resolved)
+
+        newcomers.sort(key=lambda entity: (round(float(entity.confidence), 6), entity.mention_count), reverse=True)
+        admitted = newcomers[:headroom]
+        refused = newcomers[headroom:]
+        self._capped_keys.update(entity.canonical_key for entity in refused)
+        self.summary.entities_capped += len(refused)
+        self._node_count = count + len(admitted)
+        logger.warning(
+            "AuraDB node budget reached (%d/%d): refusing %d new entity node(s), keeping the %d strongest",
+            count, cap, len(refused), len(admitted),
+        )
+        return existing + admitted
+
     def write_entities(self, entities: Sequence[Entity]) -> tuple[int, list[Entity]]:
         """Resolve, group by type and upsert entities. Returns (rows, resolved)."""
         if not entities:
@@ -193,6 +265,9 @@ class GraphWriter:
             self.resolver.load(self.client)
         key_map = self.resolver.resolve_batch(entities)
         resolved = merge_entities_by_key(entities, key_map)
+        resolved = self._apply_node_cap(resolved)
+        if not resolved:
+            return 0, []
 
         by_type: dict[EntityType, list[dict[str, Any]]] = {}
         for entity in resolved:
@@ -208,7 +283,9 @@ class GraphWriter:
             self.summary.entities_by_type[label] = self.summary.entities_by_type.get(label, 0) + written
 
         self.summary.entities = total
-        self.stats.entities_written = total
+        # Cumulative across flushes: the pipeline writes one batch per source,
+        # so overwriting here reported only the last source's rows.
+        self.stats.entities_written += total
         return total, resolved
 
     def write_mentions(self, entities: Sequence[Entity]) -> int:
@@ -228,6 +305,12 @@ class GraphWriter:
         accepted: list[Relation] = []
         for relation in relations:
             if relation.subject.canonical_key == relation.obj.canonical_key:
+                self.summary.relations_dropped += 1
+                continue
+            if relation.subject.canonical_key in self._capped_keys or relation.obj.canonical_key in self._capped_keys:
+                # Its endpoint was refused by the node budget, so the MATCH in
+                # the upsert would silently write nothing. Count it instead.
+                self.summary.relations_capped += 1
                 self.summary.relations_dropped += 1
                 continue
             if relation.confidence < threshold:
@@ -256,7 +339,7 @@ class GraphWriter:
             self.summary.relations_by_type[rel_type] = self.summary.relations_by_type.get(rel_type, 0) + written
 
         self.summary.relations = total
-        self.stats.relations_written = total
+        self.stats.relations_written += total
         logger.info(
             "wrote %d relations across %d predicate types (%d dropped)",
             total, len(grouped), self.summary.relations_dropped,

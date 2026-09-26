@@ -84,6 +84,12 @@ class Settings:
     neo4j_batch_size: int = 500
     neo4j_max_retries: int = 4
     neo4j_ensure_schema: bool = True
+    #: AuraDB Free caps a database at 200k nodes. Once the entity population
+    #: reaches this budget the writer stops *creating* nodes (existing ones keep
+    #: updating) instead of letting every write fail. ``0`` disables the guard.
+    aura_node_cap: int = 200_000
+    #: Rows pulled into the cross-run alias index at the start of a run.
+    entity_resolver_limit: int = 200_000
 
     # -- Edge relay (Cloudflare Worker) ------------------------------------
     worker_url: str = ""
@@ -237,6 +243,10 @@ class Settings:
             problems.append("MAX_RUNTIME_SECONDS must be >= 60")
         if self.neo4j_batch_size < 1 or self.neo4j_batch_size > 10_000:
             problems.append("NEO4J_BATCH_SIZE must be between 1 and 10000")
+        if self.aura_node_cap < 0:
+            problems.append("AURA_NODE_CAP must be >= 0 (0 disables the guard)")
+        if self.entity_resolver_limit < 1_000:
+            problems.append("ENTITY_RESOLVER_LIMIT must be >= 1000")
         if self.min_edge_confidence < 0 or self.min_edge_confidence > 1:
             problems.append("MIN_EDGE_CONFIDENCE must be within [0, 1]")
         if problems:
@@ -266,7 +276,10 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
 
         settings = Settings(
             neo4j_uri=_env_str("NEO4J_URI", "neo4j+s://localhost:7687"),
-            neo4j_username=_env_str("NEO4J_USERNAME", "neo4j"),
+            # NEO4J_USER is accepted as an alias: the Aura console and most
+            # driver docs use the two names interchangeably, and guessing wrong
+            # surfaces as an opaque authentication failure.
+            neo4j_username=_env_str("NEO4J_USERNAME", _env_str("NEO4J_USER", "neo4j")),
             neo4j_password=_env_str("NEO4J_PASSWORD", ""),
             neo4j_database=_env_str("NEO4J_DATABASE", "neo4j"),
             neo4j_max_connection_pool_size=_env_int("NEO4J_MAX_CONNECTION_POOL_SIZE", 8),
@@ -275,6 +288,8 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
             neo4j_batch_size=_env_int("NEO4J_BATCH_SIZE", 500),
             neo4j_max_retries=_env_int("NEO4J_MAX_RETRIES", 4),
             neo4j_ensure_schema=_env_bool("NEO4J_ENSURE_SCHEMA", True),
+            aura_node_cap=_env_int("AURA_NODE_CAP", 200_000),
+            entity_resolver_limit=_env_int("ENTITY_RESOLVER_LIMIT", 200_000),
             worker_url=_env_str("PROXY_WORKER_URL", "").rstrip("/"),
             worker_token=_env_str("PROXY_AUTH_TOKEN", ""),
             worker_enabled=_env_bool("PROXY_WORKER_ENABLED", True),

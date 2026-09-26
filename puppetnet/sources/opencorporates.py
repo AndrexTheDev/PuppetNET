@@ -97,7 +97,11 @@ class OpenCorporatesAdapter(SourceAdapter):
                 if self.ctx.budget_exhausted():
                     return
                 yield from self._harvest_companies(query, jurisdiction, per_page)
-            yield from self._harvest_officers(query, per_page)
+            # include_officers gates both the per-company officer lookup and the
+            # standalone officer search — otherwise turning it off still spends
+            # the source's rate budget on an endpoint nobody asked for.
+            if self.option("include_officers", True):
+                yield from self._harvest_officers(query, per_page)
 
     # ------------------------------------------------------------------ #
     @property

@@ -870,6 +870,46 @@ def test_opencorporates_maps_a_company_record_to_weighted_triples(env):
     assert "North European Gas Pipeline" in company.aliases
 
 
+def test_opencorporates_include_officers_gates_the_officer_search(env):
+    """Turning officers off must not spend rate budget on that endpoint."""
+    adapter, client = opencorporates_adapter(env, COMPANY_PAYLOAD, include_officers=False, include_groupings=False)
+    documents = list(adapter.run())
+    assert len(documents) == 1
+    assert not any(url.endswith("/officers/search") for url in client.urls()), client.urls()
+
+
+def test_opencorporates_fetches_officers_when_enabled(env):
+    adapter, client = opencorporates_adapter(env, COMPANY_PAYLOAD, include_officers=True, include_groupings=False)
+    list(adapter.run())
+    assert any(url.endswith("/officers/search") for url in client.urls())
+
+
+def test_make_document_backfills_document_provenance(env):
+    """Structured entities are built before the doc id exists; it must be stamped."""
+    adapter, _ = adapter_for(env, source_spec=spec(kind=SourceType.STRUCTURED))
+    subject = adapter.entity("Gazprom", EntityType.ORGANIZATION)
+    obj = adapter.entity("Rosneft", EntityType.ORGANIZATION)
+    edge = adapter.relation(subject, RelationType.OWNS, obj)
+
+    document = adapter.make_document(
+        "https://example.test/record/1",
+        title="Registry row",
+        text="Gazprom owns Rosneft.",
+        entities=[subject, obj],
+        relations=[edge],
+    )
+
+    assert document.doc_id
+    assert subject.doc_ids == {document.doc_id}
+    assert obj.doc_ids == {document.doc_id}
+    assert edge.doc_id == document.doc_id
+    # The MENTIONS writer skips rows without a doc id — this is what feeds it.
+    from puppetnet.graph import schema
+
+    rows = schema.properties_for_mention_rows([subject])
+    assert rows and rows[0]["doc_id"] == document.doc_id
+
+
 def test_opencorporates_requires_configured_queries(env):
     adapter, client = opencorporates_adapter(env, COMPANY_PAYLOAD, queries=[])
     assert list(adapter.run()) == []

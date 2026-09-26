@@ -250,6 +250,12 @@ SET h.documents = row.documents,
 RETURN count(h) AS handled
 """
 
+#: One-off probe used by the AuraDB Free node-budget guard.
+ENTITY_NODE_COUNT = """
+MATCH (e:Entity)
+RETURN count(e) AS nodes
+"""
+
 RECENT_CONTENT_HASHES = """
 MATCH (d:Document)
 WHERE d.fetched_at >= $since OR d.last_ingested_at >= $since

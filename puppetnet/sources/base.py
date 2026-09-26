@@ -304,6 +304,14 @@ class SourceAdapter(abc.ABC):
             relations=list(relations),
             extra={**(extra or {}), "source_kind": self.spec.kind.value},
         )
+        # Adapters build their entities and edges before the document id exists,
+        # so stamp it back onto them: nodes keep per-document provenance and the
+        # MENTIONS writer (which skips rows without a doc_id) gets its rows.
+        for stamped in doc.entities:
+            stamped.doc_ids.add(doc.doc_id)
+        for edge in doc.relations:
+            if not edge.doc_id:
+                edge.doc_id = doc.doc_id
         return doc
 
     def entity(

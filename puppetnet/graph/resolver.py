@@ -62,6 +62,11 @@ class EntityResolver:
         self.limit = max(1000, int(limit))
         self._by_folded: dict[str, _IndexEntry] = {}
         self._by_canonical: dict[str, _IndexEntry] = {}
+        #: Canonical keys the graph already held when :meth:`load` ran. Kept
+        #: separate from ``_by_canonical``, which also accumulates entities
+        #: registered *during* this run and therefore cannot answer "is this
+        #: node new?" for the writer's node-budget guard.
+        self._graph_keys: set[str] = set()
         self.stats = ResolverStats()
         self.loaded = False
 
@@ -72,6 +77,7 @@ class EntityResolver:
 
         self._by_folded.clear()
         self._by_canonical.clear()
+        self._graph_keys.clear()
         try:
             rows = client.read(ENTITY_ALIAS_INDEX, {"limit": self.limit})
         except Exception as exc:  # noqa: BLE001
@@ -94,6 +100,7 @@ class EntityResolver:
                 mention_count=int(row.get("mention_count") or 0),
             )
             self._by_canonical[key] = entry
+            self._graph_keys.add(key)
             surfaces = [entry.name] + list(row.get("aliases") or [])
             for surface in surfaces:
                 folded = _fold(surface)
@@ -136,6 +143,16 @@ class EntityResolver:
         self.register(entity)
         return entity.canonical_key
 
+    def knows(self, canonical_key: str) -> bool:
+        """True when the graph already held a node under this key at load time.
+
+        Used by the writer's node-budget guard: updating an existing node costs
+        nothing against the ceiling, creating one is what the AuraDB Free limit
+        restricts. The answer is as good as the alias index snapshot, which is
+        bounded by ``ENTITY_RESOLVER_LIMIT`` rows.
+        """
+        return bool(canonical_key) and canonical_key in self._graph_keys
+
     def register(self, entity: Entity, canonical_key_override: str | None = None) -> None:
         """Add (or refresh) an entity in the in-run index."""
         key = canonical_key_override or entity.canonical_key
@@ -168,6 +185,7 @@ class EntityResolver:
             "loaded": self.loaded,
             "index_size": len(self._by_folded),
             "nodes_indexed": len(self._by_canonical),
+            "graph_nodes_known": len(self._graph_keys),
             "stats": self.stats.to_dict(),
         }
 
