@@ -7,9 +7,10 @@ import logging
 import os
 import sys
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime, timezone
-from typing import Any, Iterator
+from typing import Any
 
 __all__ = ["configure_logging", "get_logger", "JsonFormatter", "log_event", "timed"]
 

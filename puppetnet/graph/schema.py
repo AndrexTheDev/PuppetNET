@@ -23,10 +23,11 @@ Design notes
 
 from __future__ import annotations
 
-from typing import Any, Iterable, Sequence
+from collections.abc import Iterable, Sequence
+from typing import Any
 
-from ..models import EntityType, RelationType, is_safe_relationship_type
 from ..logging_utils import get_logger
+from ..models import EntityType, RelationType, is_safe_relationship_type
 
 __all__ = [
     "CONSTRAINTS",

@@ -46,8 +46,7 @@ class StubAdapter(SourceAdapter):
         error = self.spec.options.get("error")
         if error is not None:
             raise error
-        for document in self.spec.options.get("documents", ()):  # pragma: no branch
-            yield document
+        yield from self.spec.options.get("documents", ())  # pragma: no branch
 
 
 @pytest.fixture(autouse=True)

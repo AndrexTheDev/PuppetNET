@@ -24,8 +24,8 @@ import random
 import threading
 import time
 from collections import defaultdict, deque
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from typing import Callable, Deque, Iterable
 
 from ..logging_utils import get_logger
 
@@ -192,7 +192,7 @@ class HostState:
     cooldown_until: float = 0.0
     last_request_at: float = 0.0
     request_count: int = 0
-    failure_history: Deque[float] = field(default_factory=lambda: deque(maxlen=20))
+    failure_history: deque[float] = field(default_factory=lambda: deque(maxlen=20))
 
     def penalise(self, retry_after: float = 0.0, backoff: float = 0.0, *, now: float | None = None) -> None:
         """Push the host into cooldown after a 429/5xx or a transport error.

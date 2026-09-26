@@ -19,8 +19,9 @@ from __future__ import annotations
 
 import random
 import time
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Callable, Iterable, Iterator, Sequence
+from typing import Any
 
 from ..logging_utils import get_logger
 
@@ -203,7 +204,7 @@ class Neo4jClient:
         except Exception as exc:  # pragma: no cover
             logger.debug("error closing Neo4j driver: %s", exc)
 
-    def __enter__(self) -> "Neo4jClient":
+    def __enter__(self) -> Neo4jClient:
         self.verify()
         return self
 

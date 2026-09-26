@@ -22,15 +22,16 @@ which is the behaviour you want from an unattended daily cron job.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import signal
 import time
 import uuid
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
-from datetime import timezone
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any
 
 from .config import Settings, load_settings, resolve_source_specs
 from .graph.neo4j_client import Neo4jClient, Neo4jUnavailable
@@ -209,10 +210,9 @@ class IngestPipeline:
         for sig in (getattr(signal, "SIGTERM", None), getattr(signal, "SIGINT", None)):
             if sig is None:
                 continue
-            try:
+            # signal() raises ValueError/OSError when this is not the main thread.
+            with contextlib.suppress(ValueError, OSError):  # pragma: no cover
                 signal.signal(sig, handler)
-            except (ValueError, OSError):  # pragma: no cover - non-main thread
-                pass
 
     def _init_graph(self) -> None:
         if self.options.skip_graph:

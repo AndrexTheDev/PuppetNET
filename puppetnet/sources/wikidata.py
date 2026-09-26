@@ -26,7 +26,8 @@ query every ~10 s with ``maxlag=5`` so it never competes with interactive use.
 from __future__ import annotations
 
 import re
-from typing import Any, Iterator, Sequence
+from collections.abc import Iterator, Sequence
+from typing import Any
 
 from ..models import Document, Entity, EntityType, RelationType, has_organizational_marker
 from .base import SourceAdapter

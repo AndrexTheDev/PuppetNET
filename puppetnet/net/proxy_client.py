@@ -25,14 +25,16 @@ had to fall back.
 from __future__ import annotations
 
 import base64
+import contextlib
 import gzip
 import io
 import json
 import time
 import zlib
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Iterator, Mapping
+from typing import Any
 from urllib.parse import urlencode, urlparse, urlunparse
 
 import requests
@@ -223,10 +225,8 @@ def _gunzip_lines(raw_stream: Any, chunk_size: int = 64 * 1024) -> Iterator[byte
         while b"\n" in buffer:
             line, buffer = buffer.split(b"\n", 1)
             yield line
-    try:
+    with contextlib.suppress(zlib.error):
         buffer += decompressor.flush()
-    except zlib.error:
-        pass
     if buffer:
         yield buffer
 
@@ -284,12 +284,10 @@ class FetchClient:
         return session
 
     def close(self) -> None:
-        try:
+        with contextlib.suppress(Exception):  # pragma: no cover - best effort
             self._session.close()
-        except Exception:  # pragma: no cover - best effort
-            pass
 
-    def __enter__(self) -> "FetchClient":
+    def __enter__(self) -> FetchClient:
         return self
 
     def __exit__(self, *exc_info: Any) -> None:

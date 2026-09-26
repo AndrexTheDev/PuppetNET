@@ -249,7 +249,7 @@ def test_matches_are_ordered_and_non_overlapping(detector):
     text = "MV Amadea carried aircraft 9H-VUC and flight BA286 from Malta."
     matches = only(detector, text)
     assert matches == sorted(matches, key=lambda m: m.start)
-    for earlier, later in zip(matches, matches[1:]):
+    for earlier, later in zip(matches, matches[1:], strict=False):
         assert earlier.end <= later.start, "craft matches must not overlap"
 
 

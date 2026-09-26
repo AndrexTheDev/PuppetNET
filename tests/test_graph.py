@@ -30,8 +30,8 @@ from puppetnet.graph import (
     chunked,
     ensure_schema_statements,
     merge_entities_by_key,
+    schema,
 )
-from puppetnet.graph import schema
 from puppetnet.graph.resolver import _fold
 from puppetnet.models import (
     Document,
@@ -106,7 +106,7 @@ class FakeResult:
 
 
 class FakeTransaction:
-    def __init__(self, driver: "FakeDriver") -> None:
+    def __init__(self, driver: FakeDriver) -> None:
         self._driver = driver
 
     def run(self, query: str, params: dict):
@@ -115,12 +115,12 @@ class FakeTransaction:
 
 
 class FakeSession:
-    def __init__(self, driver: "FakeDriver", database: str) -> None:
+    def __init__(self, driver: FakeDriver, database: str) -> None:
         self._driver = driver
         self.database = database
         self.closed = False
 
-    def __enter__(self) -> "FakeSession":
+    def __enter__(self) -> FakeSession:
         return self
 
     def __exit__(self, *exc_info) -> bool:

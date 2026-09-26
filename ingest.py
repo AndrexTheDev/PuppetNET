@@ -30,17 +30,18 @@ import os
 import sys
 import time
 import traceback
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 # Allow running from a source checkout without installation.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from puppetnet.config import ConfigError, Settings, load_settings          # noqa: E402
+from puppetnet.config import ConfigError, Settings, load_settings  # noqa: E402
 from puppetnet.logging_utils import banner, configure_logging, get_logger  # noqa: E402
-from puppetnet.models import IngestStats                                   # noqa: E402
-from puppetnet.pipeline import IngestPipeline, PipelineOptions             # noqa: E402
-from puppetnet.sources.registry import describe_registry                   # noqa: E402
+from puppetnet.models import IngestStats  # noqa: E402
+from puppetnet.pipeline import IngestPipeline, PipelineOptions  # noqa: E402
+from puppetnet.sources.registry import describe_registry  # noqa: E402
 
 EXIT_OK = 0
 EXIT_CONFIG = 1

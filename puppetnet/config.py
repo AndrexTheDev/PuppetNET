@@ -9,9 +9,10 @@ import in tests.
 from __future__ import annotations
 
 import os
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any
 
 from .logging_utils import get_logger
 from .models import SourceSpec, SourceType

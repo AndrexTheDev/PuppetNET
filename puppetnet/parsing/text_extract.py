@@ -453,7 +453,7 @@ def csv_to_text(data: bytes | str, *, url: str = "", max_rows: int = 500, max_ch
         if index > max_rows:
             break
         pairs = []
-        for column, value in zip(header or [f"col{i}" for i in range(len(row))], row):
+        for column, value in zip(header or [f"col{i}" for i in range(len(row))], row, strict=False):
             value = (value or "").strip()
             if value:
                 pairs.append(f"{column}={value}")

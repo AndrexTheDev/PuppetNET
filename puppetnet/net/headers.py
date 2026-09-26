@@ -12,8 +12,9 @@ from __future__ import annotations
 import hashlib
 import json
 import random
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any
 from urllib.parse import urlparse
 
 __all__ = ["Fingerprint", "HeaderFactory", "FINGERPRINTS", "BOT_USER_AGENTS"]

@@ -29,9 +29,10 @@ from __future__ import annotations
 import csv
 import json
 import re
-from typing import Any, Iterator, Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from typing import Any
 
-from ..models import Document, Entity, EntityType, RelationType
+from ..models import Document, Entity, EntityType, Relation, RelationType
 from .base import SourceAdapter
 
 __all__ = ["CompaniesHouseAdapter", "RegisterFilesAdapter", "PSC_CONTROL_MAP", "OFFICER_ROLE_MAP"]
@@ -115,7 +116,7 @@ class CompaniesHouseAdapter(SourceAdapter):
     def _headers(self) -> dict[str, str]:
         import base64
 
-        token = base64.b64encode(f"{self.settings.companies_house_api_key}:".encode("utf-8")).decode("ascii")
+        token = base64.b64encode(f"{self.settings.companies_house_api_key}:".encode()).decode("ascii")
         return {"Authorization": f"Basic {token}", "Accept": "application/json"}
 
     def _get(self, path: str, params: Mapping[str, Any] | None = None) -> dict[str, Any] | None:

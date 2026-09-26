@@ -34,10 +34,11 @@ from __future__ import annotations
 import hashlib
 import re
 import unicodedata
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any
 
 __all__ = [
     "STRUCTURED_SOURCE_WEIGHT",
@@ -104,7 +105,7 @@ class EntityType(str, Enum):
     UNKNOWN = "Unknown"
 
     @classmethod
-    def coerce(cls, value: "EntityType | str") -> "EntityType":
+    def coerce(cls, value: EntityType | str) -> EntityType:
         if isinstance(value, cls):
             return value
         text = getattr(value, "value", value)
@@ -114,7 +115,7 @@ class EntityType(str, Enum):
             return cls.UNKNOWN
 
     @classmethod
-    def from_spacy(cls, label: str) -> "EntityType":
+    def from_spacy(cls, label: str) -> EntityType:
         """Map a spaCy entity label onto the PuppetNET label vocabulary.
 
         ``GPE``/``LOC``/``FAC`` collapse into ``Location``; the ``CRAFT`` label
@@ -220,7 +221,7 @@ class RelationType(str, Enum):
     ASSOCIATED_WITH = "ASSOCIATED_WITH"
 
     @classmethod
-    def coerce(cls, value: "RelationType | str") -> "RelationType":
+    def coerce(cls, value: RelationType | str) -> RelationType:
         """Tolerant lookup.
 
         ``RelationType`` subclasses ``str``, so ``str(member)`` yields
@@ -270,10 +271,10 @@ _ORG_SUFFIXES = {
     "sas", "sca", "nv", "bv", "oy", "ab", "as", "asa", "a s", "hf", "ehf",
     "pty", "pvt", "private", "public", "holdings", "holding", "group",
     "enterprises", "international", "foundation", "trust", "trustee",
-    "foundation", "stiftung", "anstalt", "est", "sro", "sp z o o", "spol",
+    "stiftung", "anstalt", "est", "sro", "sp z o o", "spol",
     "kk", "kkk", "ooo", "oao", "pjsc", "jsc", "ojsc", "jscs", "cjsc", "pao",
-    "doo", "d o o", "ao", "to", "bvba", "nv sa", "a s", "as", "oyj", "tbk",
-    "bhd", "sdn", "pte", "kk", "l l c", "ltda", "sa de cv", "cv", "aps", "ks",
+    "doo", "d o o", "ao", "to", "bvba", "nv sa", "oyj", "tbk",
+    "bhd", "sdn", "pte", "l l c", "ltda", "sa de cv", "cv", "aps", "ks",
 }
 
 _PARTICLE_TOKENS = {"de", "del", "de la", "van", "von", "der", "den", "di", "da", "du", "al", "bin", "ibn", "el", "la", "le", "los", "las"}
@@ -359,7 +360,7 @@ def canonical_key(name: str, entity_type: EntityType | str) -> str:
     """
     etype = EntityType.coerce(entity_type)
     folded = normalize_name(name, etype)
-    digest = hashlib.sha1(f"{etype.value}|{folded}".encode("utf-8")).hexdigest()[:8]
+    digest = hashlib.sha1(f"{etype.value}|{folded}".encode()).hexdigest()[:8]
     slug = _ACCENT_RE.sub("-", folded).strip("-")[:48].strip("-") or "unknown"
     return f"{etype.value.upper()}:{slug}-{digest}"
 
@@ -373,7 +374,7 @@ def content_hash(text: str) -> str:
 def document_id(source_id: str, url: str, external_id: str | None = None) -> str:
     """Deterministic document key (stable across runs → idempotent writes)."""
     basis = external_id or url or ""
-    digest = hashlib.sha256(f"{source_id}|{basis}".encode("utf-8")).hexdigest()[:20]
+    digest = hashlib.sha256(f"{source_id}|{basis}".encode()).hexdigest()[:20]
     return f"{source_id}:{digest}"
 
 
@@ -441,7 +442,7 @@ class SourceSpec:
     def confidence(self) -> float:
         return self.kind.confidence
 
-    def with_options(self, **overrides: Any) -> "SourceSpec":
+    def with_options(self, **overrides: Any) -> SourceSpec:
         data = {
             "id": self.id,
             "name": self.name,
@@ -486,8 +487,8 @@ class Document:
     content_hash: str = ""
     source_weight: float = UNSTRUCTURED_SOURCE_WEIGHT
     #: Structured sources may attach already-resolved triples instead of text.
-    entities: list["Entity"] = field(default_factory=list)
-    relations: list["Relation"] = field(default_factory=list)
+    entities: list[Entity] = field(default_factory=list)
+    relations: list[Relation] = field(default_factory=list)
     extra: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -561,7 +562,7 @@ class Entity:
     def mention_count(self) -> int:
         return len(self.mentions)
 
-    def merge(self, other: "Entity") -> None:
+    def merge(self, other: Entity) -> None:
         """Fold a duplicate entity into this one (used by the resolver)."""
         self.aliases.update(other.aliases)
         self.mentions.extend(other.mentions)

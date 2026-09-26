@@ -26,9 +26,11 @@ identifier class) which land on the Neo4j node.
 
 from __future__ import annotations
 
+import contextlib
 import re
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Iterator, Sequence
+from typing import Any
 
 from ..logging_utils import get_logger
 
@@ -336,7 +338,7 @@ def imo_checksum_valid(digits: str) -> bool:
     cleaned = "".join(ch for ch in str(digits) if ch.isdigit())
     if len(cleaned) != 7:
         return False
-    total = sum(int(digit) * weight for digit, weight in zip(cleaned[:6], (7, 6, 5, 4, 3, 2)))
+    total = sum(int(digit) * weight for digit, weight in zip(cleaned[:6], (7, 6, 5, 4, 3, 2), strict=True))
     return total % 10 == int(cleaned[6])
 
 
@@ -430,7 +432,7 @@ class CraftMatch:
         return self.properties.get("registry_country")
 
 
-def _is_contained(start: int, end: int, matches: "list[CraftMatch] | tuple[CraftMatch, ...]") -> bool:
+def _is_contained(start: int, end: int, matches: list[CraftMatch] | tuple[CraftMatch, ...]) -> bool:
     """True when ``[start, end)`` is fully inside an already-accepted match.
 
     Partially overlapping candidates are *kept* here and resolved later by
@@ -798,10 +800,9 @@ class CraftDetector:
             if overlaps:
                 continue
             span = Span(doc, start_token, end_token, label="CRAFT")
-            try:  # extension is registered by NLPEngine when spaCy is present
+            # The extension is registered by NLPEngine when spaCy is present.
+            with contextlib.suppress(AttributeError, ValueError):
                 span._.craft_props = dict(match.properties)
-            except (AttributeError, ValueError):
-                pass
             new_ents.append(span)
 
         if new_ents:

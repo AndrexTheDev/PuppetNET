@@ -30,9 +30,10 @@ via the shared delay queue.
 from __future__ import annotations
 
 import re
-from typing import Any, Iterator, Sequence
+from collections.abc import Iterator, Sequence
+from typing import Any
 
-from ..models import Document, Entity, EntityType, RelationType
+from ..models import Document, Entity, EntityType, Relation, RelationType
 from .base import SourceAdapter
 
 __all__ = ["OpenCorporatesAdapter", "POSITION_MAP"]

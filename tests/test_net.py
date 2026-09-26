@@ -315,8 +315,7 @@ class FakeResponse:
             yield self._body[index:index + chunk_size]
 
     def iter_lines(self, chunk_size: int = 65536, decode_unicode: bool = False):
-        for line in self._body.splitlines():
-            yield line
+        yield from self._body.splitlines()
 
     def json(self):
         if self._json is None:
@@ -514,7 +513,7 @@ def test_allow_worker_false_forces_direct():
 # --------------------------------------------------------------------------- #
 def test_direct_success_decodes_text():
     client, _, _ = make_client(
-        responses=[FakeResponse(status=200, body="Kerimov owns Midea".encode(), headers={"content-type": "text/html; charset=utf-8"}, url="https://example.test/a")]
+        responses=[FakeResponse(status=200, body=b"Kerimov owns Midea", headers={"content-type": "text/html; charset=utf-8"}, url="https://example.test/a")]
     )
     result = client.request("https://example.test/a")
     assert result.ok and result.status == 200
@@ -522,7 +521,6 @@ def test_direct_success_decodes_text():
 
 
 def test_direct_retries_then_succeeds():
-    import requests
 
     flaky = FakeSession(
         [

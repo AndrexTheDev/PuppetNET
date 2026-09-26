@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Iterable, Type
+from collections.abc import Iterable
+from typing import Any
 
 from .base import AdapterContext, AdapterError, SourceAdapter, build_entity, build_relation
 from .icij import IcijLeaksAdapter
@@ -33,7 +34,7 @@ __all__ = [
     "RssAdapter",
 ]
 
-ADAPTERS: dict[str, Type[SourceAdapter]] = {
+ADAPTERS: dict[str, type[SourceAdapter]] = {
     adapter.adapter_name: adapter
     for adapter in (
         IcijLeaksAdapter,

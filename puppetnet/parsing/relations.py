@@ -17,10 +17,10 @@ because they are lexical/syntactic properties of the trigger, not of the graph.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
-from typing import Iterable, Sequence
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 
-from ..models import EntityType, ExtractionMethod, RelationType
+from ..models import EntityType, RelationType
 
 __all__ = [
     "RelationRule",

@@ -12,8 +12,9 @@ content hash of the extracted text.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable, Iterator
 from datetime import timezone
-from typing import Any, Iterable, Iterator
+from typing import Any
 
 from ..logging_utils import get_logger
 from ..models import Document
@@ -53,8 +54,13 @@ class RssAdapter(SourceAdapter):
         for feed_url in feeds:
             if self.ctx.budget_exhausted():
                 return
-            for document in self._harvest_feed(feed_url, per_feed_cap=per_feed_cap, fetch_full=fetch_full, content_cap=content_cap, window_days=window_days):
-                yield document
+            yield from self._harvest_feed(
+                feed_url,
+                per_feed_cap=per_feed_cap,
+                fetch_full=fetch_full,
+                content_cap=content_cap,
+                window_days=window_days,
+            )
 
     # ------------------------------------------------------------------ #
     def _feed_urls(self) -> Iterable[str]:

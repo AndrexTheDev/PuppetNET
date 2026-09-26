@@ -8,7 +8,6 @@ downloaded model. Each tree mirrors how ``en_core_web_lg`` labels the sentence.
 from __future__ import annotations
 
 import logging
-import os
 
 import pytest
 

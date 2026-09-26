@@ -10,20 +10,21 @@ duplicating.
 from __future__ import annotations
 
 import time
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Sequence
+from typing import Any
 
 from ..logging_utils import get_logger
 from ..models import (
+    MIN_EDGE_CONFIDENCE,
     Document,
     Entity,
     EntityType,
     IngestStats,
-    MIN_EDGE_CONFIDENCE,
     Relation,
     SourceSpec,
-    iso,
     is_safe_relationship_type,
+    iso,
     utcnow,
 )
 from . import schema

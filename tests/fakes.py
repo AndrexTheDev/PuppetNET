@@ -23,8 +23,9 @@ Trees are built from a compact literal form::
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Iterator, Sequence
+from collections.abc import Iterator, Sequence
+from dataclasses import dataclass
+from typing import Any
 
 
 class _Extensions:
@@ -59,7 +60,7 @@ class FakeToken:
         tag: str | None = None,
         idx: int = 0,
         index: int = 0,
-        doc: "FakeDoc | None" = None,
+        doc: FakeDoc | None = None,
     ) -> None:
         self.text = text
         self.orth_ = text
@@ -77,20 +78,20 @@ class FakeToken:
 
     # -- graph ------------------------------------------------------------
     @property
-    def head(self) -> "FakeToken":
+    def head(self) -> FakeToken:
         assert self.doc is not None
         return self.doc.tokens[self.head_index]
 
     @property
-    def children(self) -> list["FakeToken"]:
+    def children(self) -> list[FakeToken]:
         assert self.doc is not None
         return [token for token in self.doc.tokens if token.head_index == self.i]
 
     @property
-    def subtree(self) -> Iterator["FakeToken"]:
+    def subtree(self) -> Iterator[FakeToken]:
         seen: set[int] = set()
         stack = [self]
-        out: list["FakeToken"] = []
+        out: list[FakeToken] = []
         while stack:
             token = stack.pop()
             if token.i in seen:
@@ -128,7 +129,7 @@ def _tag_for(pos: str) -> str:
 class FakeSpan:
     """Entity span over a :class:`FakeDoc`."""
 
-    def __init__(self, doc: "FakeDoc", start: int, end: int, label: str, *, craft_props: dict[str, Any] | None = None) -> None:
+    def __init__(self, doc: FakeDoc, start: int, end: int, label: str, *, craft_props: dict[str, Any] | None = None) -> None:
         self.doc = doc
         self.start = start
         self.end = end
@@ -159,7 +160,7 @@ class FakeSpan:
 class FakeSentence:
     """A sentence slice of a :class:`FakeDoc`."""
 
-    def __init__(self, doc: "FakeDoc", start: int, end: int) -> None:
+    def __init__(self, doc: FakeDoc, start: int, end: int) -> None:
         self.doc = doc
         self.start = start
         self.end = end

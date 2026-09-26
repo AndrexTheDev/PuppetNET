@@ -19,9 +19,10 @@ from __future__ import annotations
 
 import abc
 import time
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Iterable, Iterator, Sequence
+from typing import Any
 from urllib.parse import urljoin, urlparse
 
 from ..logging_utils import get_logger
@@ -40,7 +41,6 @@ from ..models import (
     compose_confidence,
     content_hash,
     document_id,
-    iso,
     utcnow,
 )
 

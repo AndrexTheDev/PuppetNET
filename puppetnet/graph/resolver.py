@@ -12,10 +12,11 @@ of each run, so memory stays flat no matter how large the graph grows.
 
 from __future__ import annotations
 
-import unicodedata
 import re
-from dataclasses import dataclass, field
-from typing import Any, Iterable
+import unicodedata
+from collections.abc import Iterable
+from dataclasses import dataclass
+from typing import Any
 
 from ..logging_utils import get_logger
 from ..models import Entity, EntityType, canonical_key, normalize_name
@@ -71,7 +72,7 @@ class EntityResolver:
         self.loaded = False
 
     # ------------------------------------------------------------------ #
-    def load(self, client: Any) -> "EntityResolver":
+    def load(self, client: Any) -> EntityResolver:
         """Populate the index from Neo4j (no-op in dry-run mode)."""
         from .schema import ENTITY_ALIAS_INDEX
 

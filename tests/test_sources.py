@@ -14,14 +14,14 @@ from __future__ import annotations
 import dataclasses
 import json
 import time
+from collections.abc import Iterator
 from datetime import timedelta
-from typing import Any, Iterator
+from typing import Any
 
 import pytest
 
 from puppetnet.models import (
     Document,
-    Entity,
     EntityType,
     ExtractionMethod,
     IngestStats,
@@ -33,6 +33,7 @@ from puppetnet.models import (
 from puppetnet.net.proxy_client import FetchResult
 from puppetnet.sources import ADAPTERS, AdapterContext, AdapterError, SourceAdapter, create_adapter
 from puppetnet.sources.base import build_entity, build_relation
+from puppetnet.sources.opencorporates import OpenCorporatesAdapter
 from puppetnet.sources.registry import (
     ALL_SOURCE_IDS,
     SOURCE_REGISTRY,
@@ -43,7 +44,6 @@ from puppetnet.sources.registry import (
 )
 from puppetnet.sources.rss import RssAdapter, _strip_html
 from puppetnet.sources.wikidata import WIKIDATA_QUERIES, WikidataAdapter, _looks_like_person, _qid
-from puppetnet.sources.opencorporates import OpenCorporatesAdapter
 
 # --------------------------------------------------------------------------- #
 # Fakes

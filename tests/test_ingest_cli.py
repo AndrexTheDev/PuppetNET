@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 from puppetnet.config import ConfigError, load_settings
-from puppetnet.models import EntityType, Entity, IngestStats, SourceSpec, SourceType
+from puppetnet.models import IngestStats, SourceSpec, SourceType
 from puppetnet.pipeline import IngestPipeline, PipelineOptions
 from puppetnet.sources import ADAPTERS, SourceAdapter
 

@@ -34,8 +34,9 @@ from __future__ import annotations
 import itertools
 import re
 import time
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field, replace
-from typing import Any, Iterator, Sequence
+from typing import Any
 
 from ..logging_utils import get_logger
 from ..models import (
@@ -311,7 +312,7 @@ def split_sentences(text: str, max_sentences: int = 1500) -> list[tuple[int, int
                 continue
             boundaries.append(match.end())
         boundaries.append(len(para))
-        for start, end in zip(boundaries, boundaries[1:]):
+        for start, end in zip(boundaries, boundaries[1:], strict=False):  # paired offsets, one shorter by design
             chunk = para[start:end].strip()
             if not chunk:
                 continue
@@ -475,7 +476,7 @@ class NLPEngine:
     # ------------------------------------------------------------------ #
     # Loading
     # ------------------------------------------------------------------ #
-    def load(self) -> "NLPEngine":
+    def load(self) -> NLPEngine:
         """Resolve the best available spaCy pipeline. Idempotent."""
         if self._loaded:
             return self
@@ -1206,7 +1207,7 @@ class NLPEngine:
     @staticmethod
     def _verb_hedged(verb: Any) -> bool:
         for child in verb.children:
-            if child.dep_ in {"aux", "advmod"} and child.orth_.lower() in {"allegedly", "reportedly", "may", "might", "could", "purportedly", "supposedly", "apparently", "reportedly", "claimed"}:
+            if child.dep_ in {"aux", "advmod"} and child.orth_.lower() in {"allegedly", "reportedly", "may", "might", "could", "purportedly", "supposedly", "apparently", "claimed"}:
                 return True
         head = getattr(verb, "head", None)
         if head is not None and head.i != verb.i and head.orth_.lower() in {"may", "might", "could", "would", "should"}:
@@ -1311,12 +1312,11 @@ class NLPEngine:
         text = view.text
         segments = [(start, end, piece) for start, end, piece in split_sentences(text)] or [(0, len(text), text)]
         for segment_start, _segment_end, segment_text in segments:
-            for triple in self._pattern_triples_in(segment_text, segment_start, view):
-                yield triple
+            yield from self._pattern_triples_in(segment_text, segment_start, view)
 
     def _pattern_triples_in(self, text: str, offset: int, view: SentenceView) -> Iterator[RawTriple]:
         """Pattern triples for one clause; ``offset`` re-bases char offsets."""
-        for regex, kind, passive in self._PATTERNS:
+        for regex, _kind, passive in self._PATTERNS:
             for match in regex.finditer(text):
                 groups = match.groupdict()
                 subject_text = (groups.get("s") or "").strip()

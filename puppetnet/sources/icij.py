@@ -34,14 +34,15 @@ ICIJ link types → PuppetNET predicates::
 
 from __future__ import annotations
 
+import contextlib
 import csv
-import gzip
 import io
 import os
 import re
 import tempfile
 import zipfile
-from typing import Any, Iterable, Iterator, Sequence
+from collections.abc import Iterable, Iterator, Sequence
+from typing import Any
 
 from ..models import Document, Entity, EntityType, Relation, RelationType
 from .base import SourceAdapter
@@ -380,10 +381,8 @@ class IcijLeaksAdapter(SourceAdapter):
             self.stats.bump_source(self.spec.id, "errors")
         finally:
             if tmp_path:
-                try:
+                with contextlib.suppress(OSError):
                     os.unlink(tmp_path)
-                except OSError:
-                    pass
 
     def _iter_tsv_rows(self, lines: Iterator[str]) -> Iterator[dict[str, str]]:
         """Parse a TSV/CSV stream into dicts using canonicalised column names."""
@@ -521,7 +520,7 @@ class IcijLeaksAdapter(SourceAdapter):
 
         path = self._state_path()
         try:
-            with open(path, "r", encoding="utf-8") as handle:
+            with open(path, encoding="utf-8") as handle:
                 data = json.load(handle)
             return data if isinstance(data, dict) else {}
         except (OSError, ValueError):
