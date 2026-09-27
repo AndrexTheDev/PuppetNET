@@ -15,6 +15,22 @@ creeping into the source list, a toast that renders markup on the caller's word.
 reads files and runs nothing. It exits non-zero when an unresolved `high` or `medium`
 finding remains (`--strict` adds `low`).
 
+## Campaign status
+
+The audit runs continuously in CI; this table records the module-by-module review
+that goes with it — what has been read line by line, and what that reading found.
+"Green" means the suite is green *after* the fixes, with each one mutation-tested
+(reintroduce the defect, watch the specific check go red).
+
+| # | Module | Status | Found and fixed |
+| - | ------ | ------ | --------------- |
+| 1 | Audit foundation (`scripts/audit.mjs`, CI wiring) | done | See the dimensions below; every check is mutation-tested before it is trusted |
+| 2 | Web console (`web/app.js`, `web/modals.js`, `web/styles.css`) | done | Dialog stacks that left the first card undismissable; `zoomBy` centring on nothing; four disagreeing definitions of "visible" (the HUD reported the pre-filter count) |
+| 3 | Edge relay (`worker.js`, `wrangler.toml`) | done | `graphPath` emitted Cypher that needs Neo4j 5.24+ (every weighted handshake failed on an older 5.x); CORS joined a list into `Access-Control-Allow-Origin` (browser rejects it, so a two-origin deployment served neither); `robotPathMatches` made every pattern match every path (the longest line of a robots.txt decided every URL — including permitting what the file forbade); three SSRF bypasses (`localhost.`, `fd00::/8`, wildcard-DNS names such as `127.0.0.1.nip.io`) plus an `fc`-prefix false positive; fractional `retry_after`; a KV bucket refilled above its own burst; a cache HIT reporting the query time of whoever filled it |
+| 4 | OSINT engine (`ingest.py`, `puppetnet/**`) | in progress | — |
+| 5 | Scheduled operation (workflows, `telegram_bot.py`, tiered cadence) | pending | — |
+| 6 | Final report and hardening pass | pending | — |
+
 ## Dimensions
 
 | Dimension | What it checks |
