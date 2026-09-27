@@ -113,13 +113,41 @@ jobs:
           node -e '
             const fs = require("fs");
             const text = fs.readFileSync("wrangler.toml", "utf8");
+
+            // Top-level keys only: anything under a [section] is scoped to that
+            // section, so a stray `name` in [vars] must not satisfy this check.
+            // Deliberately written without a backslash inside a string literal —
+            // YAML, shell single quotes and a JS template literal are three
+            // escaping layers, and the previous version of this step got them
+            // wrong, so it reported keys that were plainly present.
+            const topLevel = new Map();
+            let inSection = false;
+            for (const raw of text.split(/\r?\n/)) {
+              const line = raw.split("#")[0].trim();
+              if (!line) continue;
+              if (line.startsWith("[")) { inSection = true; continue; }
+              if (inSection || !line.includes("=")) continue;
+              const cut = line.indexOf("=");
+              topLevel.set(line.slice(0, cut).trim(),
+                           line.slice(cut + 1).trim().replace(/^"|"$/g, ""));
+            }
+
             const required = ["name", "main", "compatibility_date"];
-            const missing = required.filter((key) => !new RegExp(`^\\\\s*${key}\\\\s*=`, "m").test(text));
+            const missing = required.filter((key) => !topLevel.has(key));
             if (missing.length) {
-              console.error("wrangler.toml is missing:", missing.join(", "));
+              console.error("wrangler.toml is missing top-level keys:", missing.join(", "));
               process.exit(1);
             }
-            console.log("wrangler.toml declares:", required.join(", "));
+            if (!fs.existsSync(topLevel.get("main"))) {
+              console.error("wrangler.toml main does not exist:", topLevel.get("main"));
+              process.exit(1);
+            }
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(topLevel.get("compatibility_date"))) {
+              console.error("compatibility_date is not an ISO date:", topLevel.get("compatibility_date"));
+              process.exit(1);
+            }
+            console.log("wrangler.toml declares:",
+                        required.map((key) => key + "=" + topLevel.get(key)).join(", "));
           '
 
       - name: Dry-run wrangler config (if the CLI is reachable)
