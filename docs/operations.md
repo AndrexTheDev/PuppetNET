@@ -587,7 +587,7 @@ sources stay at 0.4 unless the publisher is a primary register.
 | Harvest wall clock | `MAX_RUNTIME_SECONDS` = 2100 s in CI | checked between documents; the run closes cleanly and reports `partial` |
 | Documents | `MAX_DOCUMENTS_PER_SOURCE` = 150, `MAX_DOCUMENTS_TOTAL` = 1500 | per-source and global caps |
 | Worker CPU | 30 ms/request class | body cap, no HTML parsing in the Worker |
-| Worker KV | reads/writes per request kept to the bucket + robots entries | `KV_SYNC_INTERVAL_MS` reconciliation instead of a KV hit per request |
+| Worker KV | 1 000 writes/day (Workers KV Free) | a cold host costs nothing; a hot host costs at most one read + one write per `KV_SYNC_INTERVAL_MS` window, and a denial publishes immediately. `[cost] worker/kvWritePerRequest` fails the build if a write returns to the request path |
 | Global relay RPM | 900 (600 in `production`) | hard 429 once exceeded |
 | Response size | 8 MiB per body | truncated with `"truncated": true` |
 | Report retention | 14 days | `retention-days` on the artefact upload |
@@ -607,3 +607,39 @@ sources stay at 0.4 unless the publisher is a primary register.
 | Digest frequency | once per chat per UTC day | `--force` overrides |
 | Telegram outbound rate | `TELEGRAM_RATE_PER_SEC` = 1.0, burst 5 | per-host token bucket, plus `retry_after` honoured on 429 (capped at 120 s) |
 | Message size | 4 096 characters | chunked on line boundaries; a chunk never ends inside an HTML tag |
+
+---
+
+## 9. What this costs
+
+The design constraint is **zero**: nothing here needs a payment method, and every quota below
+is a permanently free tier. The numbers are the *worst case* the configuration allows, not an
+average — a run that finds nothing new costs the same as one that does.
+
+| Service | Free tier | Worst case per day | Headroom |
+| --- | --- | --- | --- |
+| GitHub Actions (public repo) | unlimited minutes, 20 concurrent jobs | 24 hourly (≤ 45 min each) + 1 daily (≤ 90) + 1 weekly (≤ 120) + maintenance (≤ 60) + screenshots | the schedule is serial by design (one ingest at a time, shared lock), so concurrency is never a factor |
+| Cloudflare Workers | 100 000 requests/day, 10 ms CPU/request | 24 runs × (400 documents + retries + robots) ≈ **10 000–15 000** | ~85 % |
+| Workers KV reads | 100 000/day | ≈ 1 per hot host per window + robots lookups ≈ **15 000** | ~85 % |
+| Workers KV writes | **1 000/day** | ≤ 1 per hot host per 20 s window. A run touches each article host once, so only the feeds (a dozen) are hot: **well under 100** | the binding constraint of the whole system — see [edge relay § Free-tier KV budget](edge-relay.md) |
+| Workers KV storage | 1 GB | bucket + robots entries, expiring on their own TTLs | ~100 % |
+| Cloudflare Queues | 10 000 operations/day | one per *deferred* request, i.e. only when the relay is over budget | large: queues are the escape hatch, not the path |
+| Cloudflare Pages | 500 builds/month, unlimited requests | 1 build per push to `web/` or `worker.js` in a month of development, then 0 | one order of magnitude |
+| Neo4j AuraDB Free | 1 instance, 200 000 nodes / 400 000 relationships | capped in code (`AURA_NODE_CAP`, `AURA_EDGE_CAP`) and reported as utilisation | the pipeline refuses newcomers rather than failing writes |
+| Telegram Bot API | no quota for a bot of this size | ≤ 10 bridge alerts + 1 digest + at most a handful of failure warnings per day | rate-limited to 1 msg/s locally, `retry_after` honoured |
+| Domain / TLS | none used | the console is served from `*.pages.dev`, the relay from `*.workers.dev` | a custom domain is the only thing that could ever cost money, and nothing requires one |
+
+Two numbers are worth watching rather than assuming:
+
+* **KV writes** are the only quota a burst can exhaust (1 000/day), and the relay's write count
+  is proportional to a run's *duration*, not to its document count: a host is only published
+  once it has been requested inside the current sync window. `worker/kvWritePerRequest` and the
+  smoke suite pin that.
+* **AuraDB nodes** are the only quota the data can exhaust (200 000). `AURA_NODE_CAP` is probed
+  once per run, newcomers are admitted strongest-first, and a refusal is counted in the run
+  report as `entities_capped` — a full graph degrades, it does not fail.
+
+There is no analytics, no CDN, no third-party API key required, and no host on the paid
+blocklist is reachable by default: `[cost] paidSourceDefault` fails the build if a paid source
+ever becomes enabled without the operator setting a key. The audit's `cost/external-host`
+inventory lists every host the code touches, with the budget it lives in.

@@ -174,3 +174,40 @@ def test_no_workflow_injects_dispatch_inputs_into_a_shell_body():
                 if isinstance(body, str) and "${{ inputs." in body:
                     offenders.append(f"{path.name}:{job_name}:{step.get('name', '?')}")
     assert not offenders, f"dispatch input interpolated into a script: {offenders}"
+
+
+def test_a_hard_failure_reaches_the_operator():
+    """A 24-hour schedule that breaks silently is worse than one that stops.
+
+    Each ingest workflow must call the alert engine on exit 1 (configuration) and
+    2 (runtime) — the two exits that mean nothing was written — and must skip exit
+    3, which is per-source and expected. The step also has to stay best-effort: it
+    exits 0 whatever the Bot API does.
+    """
+    for filename in TIERED_WORKFLOWS:
+        steps = workflow(filename)["jobs"]["ingest"]["steps"]
+        warn = [step for step in steps if step.get("name") == "Warn on a hard failure"]
+        assert warn, f"{filename} cannot report a hard failure"
+        step = warn[0]
+
+        condition = str(step.get("if", ""))
+        assert "steps.ingest.outputs.exit_code" in condition, f"{filename} warns regardless of the exit code"
+        assert "!= '3'" in condition, f"{filename} would warn about the expected per-source exit"
+        assert "always()" in condition, "the warning must run even though the ingest step failed"
+
+        script = step["run"]
+        # A real call, not a mention: `# python telegram_bot.py --failure` in a
+        # comment satisfied the first version of this check.
+        calls = [
+            line for line in script.splitlines() if line.strip().startswith("python telegram_bot.py --failure")
+        ]
+        assert calls, f"{filename} does not actually call the failure pass"
+        assert "--workflow" in script and "--exit-code" in script
+        env = step.get("env") or {}
+        assert env.get("TELEGRAM_BOT_TOKEN", "").startswith("${{ secrets."), "the token comes from secrets"
+        assert "if [ -z \"$TELEGRAM_BOT_TOKEN\" ]" in script, (
+            "a deployment without Telegram is valid — the step must skip, not fail"
+        )
+        assert script.rstrip().endswith("exit 0"), (
+            "the warning is best effort: a Telegram outage must not restyle a failed harvest"
+        )
