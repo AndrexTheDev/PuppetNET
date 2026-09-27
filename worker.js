@@ -149,6 +149,10 @@ const BLOCKED_REQUEST_HEADERS = Object.freeze(
     "content-length",
     "connection",
     "transfer-encoding",
+    // Never used in practice (RFC 2965 is dead), but the direct transport drops
+    // it and the relay must not be the easier door of the two — `[security]
+    // invariant/headerFilterParity` fails the build on exactly this asymmetry.
+    "cookie2",
     "cf-connecting-ip",
     "cf-ipcountry",
     "cf-ray",

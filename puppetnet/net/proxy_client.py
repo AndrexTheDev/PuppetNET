@@ -42,7 +42,7 @@ from requests.adapters import HTTPAdapter
 
 from ..logging_utils import get_logger
 from ..models import IngestStats, SourceSpec
-from .headers import HeaderFactory
+from .headers import HeaderFactory, parse_extra_headers
 from .robots import MAX_ROBOTS_BYTES, RobotsPolicy
 from .token_bucket import DelayQueue
 
@@ -285,7 +285,12 @@ class FetchClient:
             clock=clock,
         )
         self.headers_factory = headers_factory or HeaderFactory(
-            bot_user_agent=settings.http_user_agent, run_salt=settings.run_id or "puppetnet"
+            bot_user_agent=settings.http_user_agent,
+            run_salt=settings.run_id or "puppetnet",
+            # Without this the configured extras exist only for callers that build
+            # the factory themselves (`pipeline.make_pipeline` does) — a client
+            # constructed straight from settings would silently ignore the config.
+            extra_headers=parse_extra_headers(getattr(settings, "extra_headers_json", "")),
         )
         self.breaker = CircuitBreaker(
             threshold=settings.worker_circuit_breaker_threshold,
@@ -384,7 +389,14 @@ class FetchClient:
 
         parsed = urlparse(url)
         host = parsed.hostname or ""
-        cache_key = f"{method}|{url}|{json.dumps(headers or {}, sort_keys=True)}"
+        # Both transports resolve the configured extras for this host themselves
+        # (`HeaderFactory.build` / `worker_payload_headers`), so `task["headers"]`
+        # stays the per-call set. The cache key has to see the *effective* set,
+        # though: two calls that differ only by a configured header are different
+        # requests, and a single entry would answer the second with the first's
+        # response.
+        effective_headers = {**self.headers_factory.scoped_headers(url), **dict(headers or {})}
+        cache_key = f"{method}|{url}|{json.dumps(effective_headers, sort_keys=True)}"
         if cache_key in self._local_cache:
             cached = self._local_cache[cache_key]
             logger.debug("in-process cache hit for %s", url)

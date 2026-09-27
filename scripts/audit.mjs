@@ -871,6 +871,45 @@ function auditRobotsParity() {
 }
 
 /* ========================================================================== */
+/*  4c. Header filter parity (direct transport ⊆ relay)                        */
+/* ========================================================================== */
+
+function auditHeaderParity() {
+  // Both transports filter caller-supplied headers before they reach an origin:
+  // Python in `HeaderFactory.build`, the relay in `applyCallerHeaders`. The relay
+  // additionally refuses the names Cloudflare sets (`x-forwarded-for`,
+  // `cf-connecting-ip`, …) — that list is only meaningful at the edge. What must
+  // hold is that the relay's set is a *superset* of the direct transport's: a name
+  // the runner refuses to send but the relay happily forwards is a bypass with
+  // extra steps, and the asymmetry is invisible in either file alone.
+  const workerFile = read("worker.js");
+  const headersPy = read("puppetnet/net/headers.py");
+  if (!workerFile || !headersPy) {
+    finding("invariant/headerFilterParity", "security", "high", "worker.js ↔ puppetnet/net/headers.py", "blocked headers",
+      "could not read one of the two filters",
+      "Keep `BLOCKED_REQUEST_HEADERS` and `_UNSAFE_HEADERS` parseable — this check compares them.");
+    return;
+  }
+  const jsBlock = /const BLOCKED_REQUEST_HEADERS = Object\.freeze\(\s*new Set\(\[([\s\S]*?)\]\)\s*\)/.exec(workerFile);
+  const pyBlock = /_UNSAFE_HEADERS = frozenset\(\s*\{([\s\S]*?)\}\s*\)/.exec(headersPy);
+  if (!jsBlock || !pyBlock) {
+    finding("invariant/headerFilterParity", "security", "high", "worker.js ↔ puppetnet/net/headers.py", "blocked headers",
+      `could not locate a filter list (worker: ${jsBlock ? "ok" : "missing"}, python: ${pyBlock ? "ok" : "missing"})`,
+      "Keep the two lists in their current shape, or update this check with them.");
+    return;
+  }
+  const names = (block) => [...block[1].matchAll(/"([a-z0-9-]+)"/g)].map((m) => m[1]);
+  const jsNames = new Set(names(jsBlock));
+  const pyNames = names(pyBlock);
+  const notCovered = pyNames.filter((name) => !jsNames.has(name));
+  if (notCovered.length) {
+    finding("invariant/headerFilterParity", "security", "high", "puppetnet/net/headers.py → worker.js", "blocked headers",
+      `the direct transport refuses ${notCovered.join(", ")}, the relay does not`,
+      "Add the name to BLOCKED_REQUEST_HEADERS too: the relay is the transport that serves most traffic.");
+  }
+}
+
+/* ========================================================================== */
 /*  5. Worker security                                                         */
 /* ========================================================================== */
 
@@ -1350,6 +1389,7 @@ auditUiState();
 auditCypher();
 auditInvariants();
 auditRobotsParity();
+auditHeaderParity();
 auditWorker();
 auditPython();
 auditCostAndSupplyChain();

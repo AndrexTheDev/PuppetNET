@@ -1266,6 +1266,49 @@ await check("the robots evaluator honours the rules, not the longest line of the
   assert.equal(robotsFetches.length, 0, "with respect_robots off there is no robots request");
 });
 
+// --- G14b. Caller headers: what may travel, and what must not ----------------
+//
+// The harvester resolves `EXTRA_HEADERS_JSON` per host before it sends a task, so
+// `task.headers` carries credentials and per-host tokens. The relay is the last
+// gate before the origin: hop-by-hop names, and above all the names Cloudflare
+// itself sets, must not be settable from a task body — a `Host:` or
+// `X-Forwarded-For:` that the caller could choose would rewrite the request the
+// origin sees. The Python side makes the same promise for the direct transport
+// (`header/U/NSAFE_HEADERS`), and the two lists are deliberately not identical:
+// this one is the edge's, and the edge is where those headers appear.
+await check("caller headers travel, hop-by-hop and edge-set names do not", async () => {
+  const response = await relay("/fetch", {
+    url: "https://caller.example/page",
+    headers: {
+      "X-Api-Key": "caller-key",
+      "X-Token": "scoped-token",
+      "Accept-Language": "de-DE",
+      // Attempts to rewrite the request the origin sees:
+      Host: "spoofed.example",
+      Connection: "close",
+      "X-Forwarded-For": "10.1.2.3",
+      Forwarded: "for=10.1.2.3",
+      "CF-Connecting-IP": "10.1.2.3",
+      "Content-Length": "999",
+    },
+  });
+  assert.equal(response.status, 200, response.text.slice(0, 200));
+
+  const call = lastUpstream();
+  assert.equal(headerOf(call, "x-api-key"), "caller-key", "a caller header reaches the origin");
+  assert.equal(headerOf(call, "x-token"), "scoped-token");
+  assert.equal(headerOf(call, "accept-language"), "de-DE");
+  for (const blocked of ["host", "connection", "x-forwarded-for", "forwarded", "cf-connecting-ip", "content-length"]) {
+    const seen = call.headers ? [...call.headers.keys()].map((key) => key.toLowerCase()) : [];
+    // `host` appears once: the one fetch decides. It must be the target's own.
+    if (blocked === "host") {
+      assert.equal(headerOf(call, "host") === "spoofed.example", false, "a caller cannot choose the Host header");
+      continue;
+    }
+    assert.equal(seen.includes(blocked), false, `${blocked} must not be forwarded from a task`);
+  }
+});
+
 // --- G15b. The same RFC fixtures the Python suite runs ----------------------
 //
 // The relay and the runner each evaluate robots.txt, in different runtimes with

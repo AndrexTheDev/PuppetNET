@@ -128,6 +128,35 @@ class HeaderFactory:
         self._pinned: dict[str, Fingerprint] = {}
 
     # ------------------------------------------------------------------ #
+    def scoped_headers(self, url: str) -> dict[str, str]:
+        """The configured extra headers that apply to ``url``'s host.
+
+        ``EXTRA_HEADERS_JSON`` accepts two shapes:
+
+        * a flat object (``{"X-Api-Key": "…"}``) — sent with every request, on
+          both transports;
+        * a host→object mapping (``{"api.example.org": {"Authorization": "…"}}``),
+          which ``parse_extra_headers`` flattens to ``api.example.org:Authorization``.
+          A scope matches its own host and any subdomain of it, so a credential
+          configured for one registry never travels to another host.
+
+        That second shape used to be parsed and then applied *verbatim*: the
+        header went out as literally ``api.example.org:Authorization``, and it
+        went to **every** host the run touched — a broken header on the requests
+        that should have been scoped, a credential leak on all the others.
+        """
+        host = (urlparse(url).hostname or "").lower()
+        resolved: dict[str, str] = {}
+        for key, value in self.extra_headers.items():
+            prefix, sep, name = key.partition(":")
+            if not sep:
+                resolved[key] = value
+                continue
+            scope = prefix.strip().lower().lstrip(".")
+            if scope and (host == scope or host.endswith("." + scope)):
+                resolved[name.strip()] = value
+        return resolved
+
     def fingerprint_for(self, host: str, attempt: int = 0) -> Fingerprint:
         """Return the pinned fingerprint for ``host``, rotating on ``attempt``."""
         host = (host or "").lower()
@@ -192,7 +221,8 @@ class HeaderFactory:
         if referer:
             headers["Referer"] = referer
 
-        for mapping in (self.extra_headers, extra or {}):
+        # Host-scoped extras first, so a per-call header still wins.
+        for mapping in (self.scoped_headers(url), extra or {}):
             for key, value in mapping.items():
                 if value is None:
                     headers.pop(key, None)
@@ -203,13 +233,20 @@ class HeaderFactory:
 
     # ------------------------------------------------------------------ #
     def worker_payload_headers(self, url: str, *, mode: str = "browser", attempt: int = 0, **kwargs: Any) -> dict[str, str]:
-        """Headers to forward to the relay (the relay adds its own fingerprint)."""
+        """Headers to forward to the relay (the relay adds its own fingerprint).
+
+        The relay applies them through ``applyCallerHeaders``, which drops the
+        hop-by-hop names — including the ones Cloudflare sets — so this side only
+        has to put the *resolved* extras on the wire. Resolved means
+        host-scoped: see :meth:`scoped_headers`.
+        """
+        extra = {**self.scoped_headers(url), **(kwargs.get("extra") or {})}
         if mode == "bot":
-            return {"User-Agent": self.bot_user_agent, **{k: v for k, v in kwargs.get("extra", {}).items()}}
+            return {"User-Agent": self.bot_user_agent, **extra}
         host = urlparse(url).hostname or ""
         fingerprint = self.fingerprint_for(host, attempt=attempt)
         payload: dict[str, str] = {"User-Agent": fingerprint.user_agent}
-        payload.update({k: v for k, v in (kwargs.get("extra") or {}).items()})
+        payload.update(extra)
         return payload
 
     def describe(self) -> dict[str, Any]:
@@ -218,12 +255,20 @@ class HeaderFactory:
             "run_salt": hashlib.sha256((self.run_salt or "").encode("utf-8")).hexdigest()[:12] if self.run_salt else "",
             "bot_user_agent": self.bot_user_agent,
             "pinned_hosts": len(self._pinned),
+            # Keys only — a scoped key names the host, never the value.
             "extra_header_keys": sorted(self.extra_headers),
+            "extra_header_scopes": sorted(
+                key.partition(":")[0].lower() for key in self.extra_headers if ":" in key
+            ),
         }
 
 
 def parse_extra_headers(raw: str) -> dict[str, str]:
-    """Parse ``EXTRA_HEADERS_JSON`` (object or host→object mapping)."""
+    """Parse ``EXTRA_HEADERS_JSON`` (object or host→object mapping).
+
+    A host→object entry becomes ``host:Header``; :meth:`HeaderFactory.scoped_headers`
+    is the other half of that contract and decides which hosts may see it.
+    """
     if not raw:
         return {}
     try:

@@ -246,7 +246,88 @@ def test_referer_and_extra_headers_are_applied():
     assert headers["X-Api-Key"] == "k"
 
 
+def test_a_host_scoped_extra_header_only_travels_to_that_host():
+    """`EXTRA_HEADERS_JSON` accepts a host→object mapping. The flattened key is
+    `host:Header`, and the header may only be applied when the request host
+    matches — otherwise a registry credential is offered to every other site the
+    run touches (and under a name no server understands)."""
+    factory = HeaderFactory(
+        run_salt="salt",
+        extra_headers=parse_extra_headers(
+            json.dumps({"api.example.test": {"Authorization": "Bearer scoped"}, "X-Global": "g"})
+        ),
+    )
+
+    mine = factory.build("https://api.example.test/v1/thing")
+    assert mine["Authorization"] == "Bearer scoped"
+    assert mine["X-Global"] == "g", "a flat entry is global"
+    assert "api.example.test:Authorization" not in mine, "the flattened key is not a header name"
+
+    sub = factory.build("https://data.api.example.test/v1/thing")
+    assert sub["Authorization"] == "Bearer scoped", "a scope covers its subdomains"
+
+    other = factory.build("https://unrelated.test/thing")
+    assert "Authorization" not in other, "the credential does not travel to another host"
+    assert other["X-Global"] == "g"
+
+    # A lookalike name is not the host.
+    lookalike = factory.build("https://notapi.example.test.evil.test/thing")
+    assert "Authorization" not in lookalike
+
+
+def test_a_global_extra_header_reaches_the_relay_transport_too():
+    """The relay path builds its own headers; the configured extras have to be
+    resolved *before* the transport is chosen, or an API key works only when the
+    edge is down."""
+    env = {"EXTRA_HEADERS_JSON": json.dumps({"X-Api-Key": "k", "api.example.test": {"X-Token": "t"}})}
+    relay_client, session, _ = make_client(
+        worker=True,
+        responses=[relay_ok("https://api.example.test/v1", "<ok/>")],
+        **env,
+    )
+    relay_client.request("https://api.example.test/v1")
+    payload = json.loads(session.calls[0]["data"])
+    assert payload["headers"]["X-Api-Key"] == "k"
+    assert payload["headers"]["X-Token"] == "t"
+
+    other_client, other_session, _ = make_client(
+        worker=True,
+        responses=[relay_ok("https://elsewhere.test/v1", "<ok/>")],
+        **env,
+    )
+    other_client.request("https://elsewhere.test/v1")
+    other_payload = json.loads(other_session.calls[0]["data"])
+    assert other_payload["headers"]["X-Api-Key"] == "k"
+    assert "X-Token" not in other_payload["headers"], "the scoped token stays with its host"
+
+
+def test_the_configured_extras_are_part_of_the_cache_key():
+    """Two calls to the same URL with different configured headers are different
+    requests; with one cache entry the second would get the first's response."""
+    client, session, _ = make_client(
+        responses=[
+            FakeResponse(status=200, body=b"one", headers={"content-type": "text/plain"}, url="u"),
+            FakeResponse(status=200, body=b"two", headers={"content-type": "text/plain"}, url="u"),
+        ],
+        EXTRA_HEADERS_JSON=json.dumps({"X-Api-Key": "k"}),
+    )
+    first = client.request("https://example.test/x", cache_ttl_seconds=60)
+    second = client.request("https://example.test/x", headers={"X-Api-Key": "other"}, cache_ttl_seconds=60)
+    assert first.text == "one" and second.text == "two"
+    assert second.transport is not Transport.CACHE
+    assert len(session.calls) == 2
+
+
+def test_the_scope_is_reported_in_describe_without_the_value():
+    factory = HeaderFactory(extra_headers=parse_extra_headers('{"api.example.test": {"Authorization": "Bearer top"}}'))
+    described = json.dumps(factory.describe())
+    assert "Bearer top" not in described
+    assert "api.example.test" in described
+
+
 def test_worker_payload_headers_exclude_hop_by_hop_and_auth():
+    """The relay drops the hop-by-hop names (`applyCallerHeaders`, pinned by the
+    smoke suite); what this side must not do is invent a credential or a Host."""
     factory = HeaderFactory(run_salt="salt")
     payload = factory.worker_payload_headers("https://example.test/x")
     lowered = {key.lower() for key in payload}
@@ -254,6 +335,19 @@ def test_worker_payload_headers_exclude_hop_by_hop_and_auth():
     assert "cookie" not in lowered
     assert "host" not in lowered
     assert "connection" not in lowered
+
+    # With extras: the API key travels, the scoped one only where it belongs, and
+    # the flattened key never appears verbatim.
+    scoped = HeaderFactory(
+        run_salt="salt",
+        extra_headers=parse_extra_headers('{"api.example.test": {"X-Token": "t"}}'),
+    )
+    payload = scoped.worker_payload_headers("https://api.example.test/x", extra={"X-Api-Key": "k"})
+    assert payload["X-Api-Key"] == "k" and payload["X-Token"] == "t"
+    assert payload["User-Agent"]
+    elsewhere = scoped.worker_payload_headers("https://elsewhere.test/x")
+    assert "X-Token" not in elsewhere
+    assert not any(":" in key for key in elsewhere)
 
 
 def test_parse_extra_headers_accepts_json_and_rejects_garbage():
