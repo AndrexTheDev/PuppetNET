@@ -762,12 +762,56 @@ function auditInvariants() {
       "could not locate the Aura cap mirrors", "Check the HUD caps object.");
   }
 
-  // The canonical key format is computed in Python and matched in JS.
-  const pyKey = /(PERSON|ORG|SHELL)[A-Z_]*:/.exec(read("puppetnet/resolver.py") || "");
-  const jsKey = /(PERSON|ORG|SHELL)[A-Z_]*:/.exec(app);
-  if (pyKey && jsKey && pyKey[1] !== jsKey[1]) {
-    finding("invariant/canonicalKey", "bugs", "high", "web/app.js ↔ puppetnet/resolver.py", "canonical key",
-      `label prefixes differ (${pyKey[1]} vs ${jsKey[1]})`, "Align the key grammar.");
+  // The canonical key ("TYPE:slug-8hex") is written by Python and *reproduced* in
+  // JS: the console builds keys for its demo dataset and renders every key it reads
+  // back out of the graph. The invariant is the label vocabulary — the console
+  // knows the entity types from `EntityType` plus the domain labels from
+  // `puppetnet/domain.py`. A type the console does not know renders as an
+  // unlabelled, unfilterable node; a type it invents points at nodes that never
+  // exist.
+  //
+  // This check used to read `puppetnet/resolver.py` and compare `PERSON|ORG|SHELL`
+  // prefixes. That path does not exist (the resolver is
+  // `puppetnet/graph/resolver.py`, and the key is built in `puppetnet/models.py`),
+  // `read()` returns null for a missing file, and the comparison was therefore
+  // skipped — a check that could not fail, which is decoration.
+  const models = read("puppetnet/models.py") || "";
+  const enumStart = models.indexOf("class EntityType(str, Enum):");
+  const enumEnd = enumStart < 0 ? -1 : models.indexOf("\nclass ", enumStart + 1);
+  const enumBlock = enumStart < 0 ? "" : models.slice(enumStart, enumEnd < 0 ? undefined : enumEnd);
+  const pyTypes = [...enumBlock.matchAll(/^\s{4}[A-Z_]+ = "([A-Za-z]+)"/gm)].map((m) => m[1]);
+  const domain = read("puppetnet/domain.py") || "";
+  // Anchored at the start of a line: an unanchored `[^=]*=` walked past this
+  // assignment and matched the *first* frozenset in the file — the jurisdiction
+  // list — so the comparison ran against country codes and every domain label
+  // looked JS-only.
+  const domainBlock = /^DOMAIN_LABELS[^=]*=\s*frozenset\(([\s\S]*?)\n\)/m.exec(domain);
+  const domainLabels = domainBlock
+    ? [...domainBlock[1].matchAll(/"([A-Za-z]+)"/g)].map((m) => m[1])
+    : [];
+  const entityTypes = pyTypes.filter((type) => type !== "Unknown");
+
+  // The console's vocabulary, and the rows it builds demo keys from.
+  const typesBlock = /const ENTITY_TYPES = Object\.freeze\(\{([\s\S]*?)\n\s{2}\}\)/.exec(app);
+  const jsTypes = typesBlock
+    ? [...typesBlock[1].matchAll(/^\s{4}([A-Za-z]+)\s*:/gm)].map((m) => m[1])
+    : [];
+
+  if (entityTypes.length === 0 || domainLabels.length === 0 || jsTypes.length === 0) {
+    finding("invariant/canonicalKey", "bugs", "high", "web/app.js ↔ puppetnet", "label vocabulary",
+      `could not read a vocabulary (python types: ${entityTypes.length}, domain labels: ${domainLabels.length}, console types: ${jsTypes.length})`,
+      "Keep `class EntityType`, `DOMAIN_LABELS` and `ENTITY_TYPES` parseable — this check compares them.");
+  } else {
+    const missing = entityTypes.filter((type) => !jsTypes.includes(type));
+    // `Unknown` is the console\'s fallback label, not an entity type: Python has it
+    // too, and it is excluded from the type list above only because no node is
+    // *created* as Unknown.
+    const invented = jsTypes.filter((type) => type !== "Unknown" && !entityTypes.includes(type) && !domainLabels.includes(type));
+    if (missing.length || invented.length) {
+      finding("invariant/canonicalKey", "bugs", "high", "web/app.js ↔ puppetnet/models.py", "label vocabulary",
+        `label vocabularies differ (python-only: ${missing.join(", ") || "—"}; js-only: ${invented.join(", ") || "—"})`,
+        "Align the two: a label the console does not know renders unlabelled and cannot be filtered.");
+    }
   }
 }
 

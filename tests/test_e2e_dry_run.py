@@ -340,6 +340,32 @@ def test_structured_edges_keep_full_weight_and_news_edges_are_penalised(env, mon
         assert row["confidence"] <= 0.4 * 0.8 + 1e-9, row
 
 
+def test_every_edge_row_names_the_document_it_came_from(env, monkeypatch, captured_batches):
+    """The evidence ledger is only a ledger if every edge names its document.
+
+    `relation_evidence_is_new` cannot check an empty `doc_id` — there is nothing to
+    compare against the edge's `doc_ids` — so an adapter that forgets to stamp its
+    relations would let that source's confidence climb on every re-read, which is
+    exactly the inflation the ledger exists to stop. Stamping happens in
+    `SourceAdapter.document()`, so this check is what keeps every adapter using it
+    (or stamping by hand).
+    """
+    run_e2e(env, monkeypatch)
+    rows = [
+        row
+        for batch in captured_batches
+        if str(batch.get("label", "")).startswith("relations:")
+        for row in batch.get("rows", [])
+    ]
+    assert rows, "the fixture harvests structured and news edges — the check needs rows"
+    missing = sorted({
+        f"{row.get('rel_type')}:{row.get('subject_key')}->{row.get('object_key')}"
+        for row in rows
+        if not str(row.get("doc_id") or "").strip()
+    })
+    assert not missing, f"edges written without a document id: {missing[:5]}"
+
+
 def test_dry_run_records_the_statements_it_would_execute(env, monkeypatch, captured_batches):
     pipeline, _ = run_e2e(env, monkeypatch)
     summary = pipeline.neo4j.recorder.summary()
