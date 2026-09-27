@@ -62,6 +62,7 @@ const VENDOR_ORDER = Object.freeze([
   "cose-base.min.js",
   "cytoscape.min.js",
   "cytoscape-fcose.min.js",
+  "qrcode.min.js",
 ]);
 
 const RELAY_ORIGIN = "https://relay.example.invalid";
@@ -449,8 +450,9 @@ await check("index.html references only vendored, on-disk assets", async () => {
   const sources = [...html.matchAll(/<script[^>]+src="([^"]+)"/g)].map((match) => match[1]);
   const links = [...html.matchAll(/<link[^>]+href="([^"]+)"/g)].map((match) => match[1]);
 
-  assert.ok(sources.length >= 5, `expected the vendored stack plus app.js, got ${sources.length}`);
-  assert.deepEqual(sources.slice(-1), ["app.js"], "app.js must load last");
+  assert.ok(sources.length >= 6, `expected the vendored stack plus app.js and modals.js, got ${sources.length}`);
+  assert.deepEqual(sources.slice(-2), ["app.js", "modals.js"],
+    "app.js loads last of the console, and modals.js builds on it");
 
   // The UMD chain has a load order: fcose needs cose-base, which needs
   // layout-base. Reordering these three is a silent "layout does nothing" bug.
@@ -472,11 +474,22 @@ await check("index.html references only vendored, on-disk assets", async () => {
     assert.ok(!html.includes(banned), `index.html must not reach for ${banned}`);
   }
 
-  // No inline script bodies: web/_headers forbids them, and the console must be
-  // deployable under that CSP without a nonce dance.
-  const inlineScripts = [...html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/g)]
-    .filter((match) => match[1].trim().length > 0);
-  assert.equal(inlineScripts.length, 0, "inline <script> bodies would violate the deployed CSP");
+  // No *executable* inline script: web/_headers forbids them, and the console must
+  // be deployable under that CSP without a nonce dance. A `type="application/
+  // ld+json"` block is a data block — the HTML parser never executes it and CSP's
+  // script-src does not apply — so structured data is allowed, but it must parse
+  // as JSON, which is what proves it is data rather than smuggled code.
+  const JS_TYPES = ["", "text/javascript", "application/javascript", "module"];
+  const inlineScripts = [...html.matchAll(/<script(?![^>]*\bsrc=)([^>]*)>([\s\S]*?)<\/script>/g)]
+    .map((match) => ({ attrs: match[1], body: match[2] }))
+    .filter((item) => item.body.trim().length > 0);
+  inlineScripts.forEach((item) => {
+    const type = (/type="([^"]+)"/i.exec(item.attrs) || [, ""])[1].toLowerCase().trim();
+    assert.ok(!JS_TYPES.includes(type),
+      `an executable inline <script> would violate the deployed CSP (type="${type}")`);
+    assert.equal(type, "application/ld+json", "the only inline block allowed is structured data");
+    assert.doesNotThrow(() => JSON.parse(item.body), "and it must be valid JSON, i.e. data not code");
+  });
 
   assert.ok(/<html[^>]+lang="en"/.test(html), "the document must declare a language");
   assert.ok(/name="viewport"/.test(html), "a responsive console needs a viewport");
@@ -1625,6 +1638,435 @@ await check("credentials never travel in a URL, and persistence is honest", asyn
   assert.equal(scratch.win.localStorage.getItem(SETTINGS_KEY), null,
     "turning persist off clears what was stored — a shared machine keeps no API key");
 });
+
+  // ---- production package: donations, legal pages, SEO ---------------------
+
+  await check("the donation dialog copies addresses and renders QR codes locally", async () => {
+    const c = await bootConsole();
+    const { win, doc, api, clipboard, q, text, jsdomErrors } = c;
+    // Cloudflare Pages serves HTTPS, where navigator.clipboard exists. jsdom
+    // reports no secure context for a fake origin and implements neither
+    // clipboard.writeText nor document.execCommand, so the flag is set by hand —
+    // without it every copy would take the legacy path and this check would test
+    // a browser that does not exist.
+    win.isSecureContext = true;
+    win.eval(readWeb("modals.js"));
+    const modals = win.PuppetNETModals;
+    assert.ok(modals, "modals.js must publish window.PuppetNETModals");
+    const click = (sel) => q(sel).dispatchEvent(new win.MouseEvent("click", { bubbles: true }));
+    const press = (target, key) => target.dispatchEvent(new win.KeyboardEvent("keydown", { key, bubbles: true }));
+
+    // A mistyped address is a permanently lost donation, so the three strings are
+    // asserted verbatim against the ones published in the README.
+    // Array.from re-homes the list in this realm: jsdom's Array.prototype is not
+    // Node's, and assert/strict compares prototypes.
+    assert.deepEqual(Array.from(modals.coins.map((coin) => coin.id)), ["sol", "btc", "eth"]);
+    assert.equal(modals.coins[0].address, "79KsqtJJdhKFJ9woxnYgtf3nq7HxQveafWBCtC3mxWi8");
+    assert.equal(modals.coins[1].address, "bc1qeqzrlfg3edrydk4s0hecakc82gp26n5p7hkc7f");
+    assert.equal(modals.coins[2].address, "0xBC3fab34f69bc9f6661608C3FB36dDdC313C42F7");
+    assert.equal(modals.author.name, "AndrexTheDev");
+    assert.equal(modals.author.email, "hippie.highho@gmail.com");
+    assert.equal(modals.author.repo, "https://github.com/AndrexTheDev/PuppetNET");
+    assert.match(modals.version, /^\d+\.\d+\.\d+$/);
+    assert.equal(modals.fingerprint(modals.coins[2].address), "0xBC3f…3C42F7",
+      "the fingerprint shows the first and last six characters, so a swapped address is visible");
+
+    // It joins the console's modal state machine instead of inventing a second
+    // one: two owners of "which dialog is open" would fight over Escape.
+    assert.equal(q("#modal-donate").hidden, true, "the donation dialog starts closed");
+    assert.ok(!api.state.modalOpen, "no dialog is open yet (the key is only set on open)");
+    click("#btn-donate");
+    assert.equal(q("#modal-donate").hidden, false, "the header heart opens it");
+    assert.equal(api.state.modalOpen, "#modal-donate", "and the console owns the open state");
+
+    // SOL is the default tab: address, human-readable network, fingerprint, QR.
+    assert.equal(text("#donate-address"), modals.coins[0].address);
+    assert.equal(text("#donate-coin-name"), "Solana · Solana mainnet-beta");
+    assert.equal(text("#donate-fingerprint"), "79Ksqt…3mxWi8");
+    assert.ok(text("#donate-note").includes("Base58"), `note: ${text("#donate-note")}`);
+    const svg = q("#donate-qr svg");
+    assert.ok(svg, "a QR code is rendered");
+    assert.equal(svg.getAttribute("class"), "qr-svg");
+    assert.equal(svg.getAttribute("role"), "img");
+    assert.ok(svg.getAttribute("aria-label").includes("Solana"), "and described for screen readers");
+    // qrcode-generator emits one background rect plus a single merged path whose
+    // `d` holds every module, so density is measured in path data, not elements.
+    assert.ok(svg.querySelector("rect") && svg.querySelector("path"),
+      "as vector modules drawn locally — a third-party QR image service would learn both the address and who was looking at it");
+    const encoded = svg.querySelector("path").getAttribute("d").length;
+    assert.ok(encoded > 5000, `the path data encodes a real symbol, got ${encoded} characters`);
+    assert.match(svg.getAttribute("viewBox") || "", /^0 0 \d{2,3} \d{2,3}$/, "with a scalable viewBox");
+    assert.equal(q('.donate-tab[data-coin="sol"]').getAttribute("tabindex"), "0",
+      "roving focus starts on the active tab");
+    assert.equal(q('.donate-tab[data-coin="btc"]').getAttribute("tabindex"), "-1");
+
+    // Copy: the address on screen, confirmed in a toast, label flips.
+    click("#donate-copy");
+    await sleep(40);
+    assert.deepEqual(clipboard.writes, [modals.coins[0].address],
+      "one click copies the address that is visible");
+    assert.ok(text("#cy-toast-host").includes("SOL address copied"), `toast: ${text("#cy-toast-host")}`);
+    assert.ok(text("#cy-toast-host").includes("79Ksqt…3mxWi8"),
+      "and repeats the fingerprint to verify against in the wallet");
+    assert.equal(q("#donate-copy").textContent.trim(), "Copied ✓");
+    assert.equal(q("#donate-copy").classList.contains("is-copied"), true);
+
+    // Switching currency must move the copy button with it: copying the previous
+    // address after switching tabs is the classic donation bug.
+    click('.donate-tab[data-coin="btc"]');
+    assert.equal(text("#donate-address"), modals.coins[1].address);
+    assert.equal(text("#donate-fingerprint"), "bc1qeq…7hkc7f");
+    assert.ok(text("#donate-note").includes("bech32"), `note: ${text("#donate-note")}`);
+    assert.equal(q("#donate-copy").getAttribute("data-coin"), "btc");
+    assert.equal(q("#donate-copy").textContent.trim(), "Copy address",
+      "the copied state resets per currency");
+    assert.equal(q('.donate-tab[data-coin="btc"]').getAttribute("aria-selected"), "true");
+    assert.equal(q('.donate-tab[data-coin="sol"]').getAttribute("aria-selected"), "false");
+    assert.ok(q("#donate-qr svg").getAttribute("aria-label").includes("Bitcoin"),
+      "the QR follows the selected tab");
+    click("#donate-copy");
+    await sleep(40);
+    assert.deepEqual(clipboard.writes.slice(-1), [modals.coins[1].address]);
+
+    // Arrow keys behave like a real tablist, and wrap both ways.
+    press(q('.donate-tab[data-coin="btc"]'), "ArrowLeft");
+    assert.equal(q(".donate-tab.is-active").getAttribute("data-coin"), "sol");
+    assert.equal(doc.activeElement.getAttribute("data-coin"), "sol", "focus follows selection");
+    press(q(".donate-tab.is-active"), "ArrowLeft");
+    assert.equal(q(".donate-tab.is-active").getAttribute("data-coin"), "eth", "wrapping to the last tab");
+    assert.equal(text("#donate-fingerprint"), "0xBC3f…3C42F7");
+    press(q(".donate-tab.is-active"), "ArrowRight");
+    assert.equal(q(".donate-tab.is-active").getAttribute("data-coin"), "sol", "and back to the first");
+
+    // Escape closes through the console's cascade; `d` reopens from anywhere.
+    press(doc, "Escape");
+    assert.equal(q("#modal-donate").hidden, true, "Escape closes the donation dialog");
+    assert.equal(api.state.modalOpen, null);
+    press(doc, "d");
+    assert.equal(q("#modal-donate").hidden, false, "`d` reopens it");
+    press(doc, "d");
+    assert.equal(q("#modal-donate").hidden, false, "and is not a toggle that closes it again");
+    api.actions.closeModal();
+
+    // `d` must not fire while the analyst is typing a query.
+    const search = q("#search");
+    search.focus();
+    press(search, "d");
+    assert.equal(q("#modal-donate").hidden, true, "typing `d` in the search box opens nothing");
+    search.blur();
+
+    // A blocked clipboard degrades to an instruction, never a silent no-op.
+    clipboard.writes.length = 0;
+    Object.defineProperty(win.navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: async () => { throw new win.DOMException("denied"); } },
+    });
+    click("#donate-copy");
+    await sleep(60);
+    assert.equal(clipboard.writes.length, 0);
+    assert.ok(text("#cy-toast-host").includes("Clipboard blocked"), `toast: ${text("#cy-toast-host")}`);
+    assert.ok(text("#cy-toast-host").includes("Select the address and copy it manually"),
+      "and tells the analyst what to do instead");
+    assert.equal(q("#donate-copy").textContent.trim(), "Copy address");
+
+    // Without the vendored generator the dialog still works: the address stays
+    // visible and copyable, and the empty box explains itself.
+    delete win.qrcode;
+    modals.renderCoin(modals.coins[2]);
+    const missing = q("#donate-qr .qr-missing");
+    assert.ok(missing, "a missing QR library shows an instruction instead of a blank box");
+    assert.ok(missing.textContent.includes("still copyable"), `message: ${missing.textContent}`);
+    assert.equal(text("#donate-address"), modals.coins[2].address);
+
+    assert.deepEqual(jsdomErrors, [], "nothing threw while donating");
+  });
+
+  await check("footer links open substantive legal, help and contact copy", async () => {
+    const c = await bootConsole();
+    const { win, doc, api, clipboard, q, text, jsdomErrors } = c;
+    win.isSecureContext = true;
+    win.eval(readWeb("modals.js"));
+    const click = (sel) => q(sel).dispatchEvent(new win.MouseEvent("click", { bubbles: true }));
+    const press = (target, key) => target.dispatchEvent(new win.KeyboardEvent("keydown", { key, bubbles: true }));
+    // Legal prose is wrapped across source lines; collapse it before matching.
+    const bodyOf = (id) => text(`#${id} .modal-body`).replace(/\s+/g, " ");
+
+    const footer = q(".site-footer");
+    assert.ok(footer, "the site footer exists");
+    assert.equal(footer.getAttribute("role"), "contentinfo");
+    assert.ok(footer.textContent.includes("AndrexTheDev"), "and attributes the project to its author");
+    assert.equal(text("#foot-year"), String(new Date().getFullYear()),
+      "the copyright year is current, not hard-coded");
+    assert.equal(text("#foot-email"), "hippie.highho@gmail.com");
+    assert.ok(q('.site-footer a[href="https://github.com/AndrexTheDev"]'));
+
+    // Every opener must point at a dialog that exists in the shipped document: a
+    // stale selector is a dead link nobody notices until a user clicks it.
+    const openers = doc.querySelectorAll(".site-footer [data-open-modal]");
+    assert.ok(openers.length >= 6,
+      `expected disclaimer, terms, guide, keyboard, contact and support, got ${openers.length}`);
+    openers.forEach((button) => {
+      const selector = button.getAttribute("data-open-modal");
+      const target = doc.querySelector(selector);
+      assert.ok(target, `a footer link points at a missing dialog: ${selector}`);
+      assert.equal(target.getAttribute("role"), "dialog");
+      assert.equal(target.getAttribute("aria-modal"), "true");
+      assert.ok(target.querySelector('.modal-backdrop[data-close="1"]'), "dismissible by backdrop");
+      assert.ok(target.querySelector('.modal-head [data-close="1"]'), "and by its close button");
+      assert.ok(target.querySelector(".modal-foot"), "with a summary in the footer");
+    });
+    assert.equal(doc.querySelectorAll('[data-open-modal="#modal-donate"]').length, 2,
+      "donations are reachable from the header and from the footer");
+
+    // Disclaimer: the data is public, and a tie is not an accusation.
+    click('[data-open-modal="#modal-disclaimer"]');
+    assert.equal(q("#modal-disclaimer").hidden, false);
+    const disclaimer = bodyOf("modal-disclaimer");
+    assert.ok(disclaimer.length > 1500, `the disclaimer must be substantive, got ${disclaimer.length} chars`);
+    assert.ok(/public-domain/i.test(disclaimer), "it says the data is auto-pulled from public sources");
+    assert.ok(/not an accusation/i.test(disclaimer), "presence in the graph is not an accusation");
+    assert.ok(/not a legal finding/i.test(disclaimer), "nor a legal finding or proof of illicit activity");
+    assert.ok(/analytical labels/i.test(disclaimer), "and the vocabulary is labelled as analytical");
+    assert.ok(/homonym/i.test(disclaimer), "it admits automated extraction produces false positives");
+    assert.ok(/verify anything consequential/i.test(disclaimer), "with an instruction to verify");
+    assert.ok(/GDPR/.test(disclaimer) && /CCPA/.test(disclaimer), "naming the operator's data-protection duties");
+    assert.ok(/as is/i.test(disclaimer), "and the no-warranty position");
+    press(doc, "Escape");
+    assert.equal(q("#modal-disclaimer").hidden, true, "Escape closes it");
+
+    // Terms: licence, API limits, automation policy, prohibited use.
+    click('[data-open-modal="#modal-terms"]');
+    const terms = bodyOf("modal-terms");
+    assert.ok(terms.length > 1500, `the terms must be substantive, got ${terms.length} chars`);
+    assert.ok(/MIT licence/.test(terms), "they state the licence");
+    assert.ok(/read-only/.test(terms) && /429/.test(terms), "and the API limits");
+    assert.ok(/1 200 nodes/.test(terms) && /depth ≤ 4/.test(terms), "including the real payload ceilings");
+    assert.ok(/4 requests\/second/.test(terms) && /burst 8/.test(terms), "and the rate-limit budget");
+    assert.ok(/stalking/i.test(terms) && /doxxing/i.test(terms), "with an explicit prohibited-use list");
+    assert.ok(/GDPR Art\. 22/.test(terms), "and a bar on solely automated decisions");
+    assert.ok(/once per day/.test(terms), "the automation policy");
+    assert.ok(/Tokens are personal/.test(terms), "tokens are non-transferable");
+    assert.ok(/no refund/i.test(terms), "donations are irreversible");
+
+    // Clicking a second link while one dialog is open must not stack two cards:
+    // the console's openModal does not close the previous one, so modals.js does.
+    click('[data-open-modal="#modal-disclaimer"]');
+    assert.equal(q("#modal-terms").hidden, true, "opening the disclaimer closes the terms");
+    assert.equal(q("#modal-disclaimer").hidden, false);
+    assert.equal(api.state.modalOpen, "#modal-disclaimer");
+    click('[data-open-modal="#modal-terms"]');
+    assert.equal(q("#modal-disclaimer").hidden, true, "and vice versa");
+    assert.equal(q("#modal-terms").hidden, false);
+    api.actions.closeModal();
+
+    // Guide: the metrics, explained, with runnable Cypher for the one that is
+    // not stored per node.
+    click('[data-open-modal="#modal-guide"]');
+    const guide = bodyOf("modal-guide");
+    assert.ok(guide.length > 2500, `the guide must be substantive, got ${guide.length} chars`);
+    assert.ok(/Betweenness centrality/.test(guide), "it explains betweenness centrality");
+    assert.ok(/Brandes/.test(guide), "and which algorithm computes it");
+    assert.ok(/Clustering coefficient/.test(guide), "clustering coefficient");
+    assert.ok(/Degree/.test(guide), "degree");
+    assert.ok(/Anomaly score/.test(guide), "the anomaly score");
+    assert.ok(/0\.40 × betweenness/.test(guide), "with its actual weights");
+    assert.ok(/handshake/i.test(guide), "and handshake methodology");
+    assert.ok(/Weight vs confidence/.test(guide), "including the weight/confidence distinction");
+    assert.ok(/noisy-OR/.test(guide));
+    assert.ok(/Responsible investigation checklist/.test(guide), "and it ends with responsible use");
+    const cypher = q("#modal-guide pre code").textContent;
+    assert.ok(/clustering_coefficient/.test(cypher), "with runnable Cypher for the missing metric");
+    assert.ok(/MATCH \(n:Entity \{canonical_key: \$key\}\)/.test(cypher), "parameterised, not string-built");
+    assert.ok(/2\.0 \* size\(/.test(cypher), "and it is the closed-triangles formula");
+    assert.ok(/⌘K/.test(guide) || text("#modal-guide .modal-foot").includes("⌘K"), "shortcuts are summarised");
+    api.actions.closeModal();
+
+    // Contact: a working mailto, the repository, and a copy button.
+    click('[data-open-modal="#modal-contact"]');
+    const contact = bodyOf("modal-contact");
+    assert.ok(contact.includes("hippie.highho@gmail.com"), "contact lists the maintainer email");
+    assert.ok(q('#modal-contact a[href="mailto:hippie.highho@gmail.com"]'), "as a working mailto");
+    assert.ok(q('#modal-contact a[href="https://github.com/AndrexTheDev/PuppetNET"]'), "and the repository");
+    assert.ok(/SECURITY/.test(contact), "with a security-report route");
+    click("#contact-copy");
+    await sleep(40);
+    assert.deepEqual(clipboard.writes, ["hippie.highho@gmail.com"], "the copy button copies the email");
+    assert.equal(q("#contact-copy").textContent.trim(), "Copied ✓");
+    assert.ok(text("#cy-toast-host").includes("Email copied"), `toast: ${text("#cy-toast-host")}`);
+
+    // The existing keyboard dialog is still reachable from the footer.
+    api.actions.closeModal();
+    click('.site-footer [data-open-modal="#modal-help"]');
+    assert.equal(q("#modal-help").hidden, false, "the footer reaches the console's own help dialog");
+    api.actions.closeModal();
+
+    assert.deepEqual(jsdomErrors, [], "nothing threw while reading the legal pages");
+  });
+
+  await check("the document ships crawler metadata without weakening the CSP", async () => {
+    const html = readWeb("index.html");
+    const head = html.slice(0, html.indexOf("</head>"));
+    const meta = (name) => {
+      const patterns = [
+        new RegExp(`<meta[^>]+name="${name}"[^>]+content="([^"]*)"`, "i"),
+        new RegExp(`<meta[^>]+content="([^"]*)"[^>]+name="${name}"`, "i"),
+        new RegExp(`<meta[^>]+property="${name}"[^>]+content="([^"]*)"`, "i"),
+        new RegExp(`<meta[^>]+content="([^"]*)"[^>]+property="${name}"`, "i"),
+      ];
+      for (const pattern of patterns) {
+        const found = pattern.exec(head);
+        if (found) return found[1];
+      }
+      return null;
+    };
+
+    // Title and description: written for a searcher, sized for a SERP.
+    const title = /<title>([^<]+)<\/title>/.exec(head)[1];
+    assert.ok(title.startsWith("PuppetNET"), `title: ${title}`);
+    assert.ok(/OSINT/.test(title), "the title carries the primary keyword");
+    assert.ok(/Graph Visualizer/i.test(title) && /Network Analysis/i.test(title),
+      "and the two phrases people actually search for");
+    assert.ok(title.replace("&amp;", "&").length <= 70,
+      `a title over 70 characters is truncated in search results, got ${title.replace("&amp;", "&").length}`);
+    const description = meta("description");
+    assert.ok(description.length >= 120 && description.length <= 180,
+      `the description should sit in the 120-180 character SERP window, got ${description.length}`);
+    assert.ok(/OSINT/i.test(description) && /graph/i.test(description));
+    const keywords = meta("keywords").toLowerCase();
+    ["osint", "network analysis", "graph visualizer", "link analysis", "entity resolution",
+      "neo4j", "betweenness centrality", "offshore leaks"].forEach((term) => {
+      assert.ok(keywords.includes(term), `keywords must include "${term}"`);
+    });
+
+    // Crawlability, attribution, and the mobile shell colour.
+    assert.equal(meta("robots"), "index, follow, max-image-preview:large, max-snippet:-1",
+      "a public deployment is indexable; a private one reverts this single line");
+    assert.equal(meta("author"), "AndrexTheDev");
+    assert.ok(/<link[^>]+rel="canonical"[^>]+href="\.\//.test(head), "a canonical is declared");
+    assert.equal(meta("theme-color"), "#05070d", "the theme colour matches --void in styles.css");
+    assert.equal(meta("referrer"), "strict-origin-when-cross-origin");
+
+    // Social cards.
+    assert.equal(meta("og:type"), "website");
+    assert.equal(meta("og:site_name"), "PuppetNET");
+    assert.equal(meta("og:locale"), "en");
+    assert.equal(meta("og:image"), "assets/og-cover.jpg");
+    assert.equal(meta("og:image:type"), "image/jpeg");
+    assert.equal(meta("og:image:width"), "1200");
+    assert.equal(meta("og:image:height"), "630");
+    assert.ok((meta("og:image:alt") || "").length > 20, "the card image is described for screen readers");
+    assert.equal(meta("twitter:card"), "summary_large_image", "the task asks for large-image cards");
+    assert.equal(meta("twitter:image"), "assets/og-cover.jpg");
+    assert.ok((meta("twitter:title") || "").length > 10);
+    assert.ok((meta("twitter:description") || "").length > 60);
+    assert.ok((meta("twitter:description") || "").length <= 200, "Twitter truncates past 200");
+
+    // The card image itself: a real JPEG of the documented size, on disk.
+    const image = readFileSync(path.join(WEB, "assets", "og-cover.jpg"));
+    assert.equal(image[0], 0xff);
+    assert.equal(image[1], 0xd8, "og-cover.jpg is a JPEG");
+    assert.ok(image.length > 40_000 && image.length < 400_000,
+      `a social card should be a few hundred KB at most, got ${image.length}`);
+
+    // Structured data: both types the task asks for, in one graph.
+    const ld = JSON.parse(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/.exec(html)[1]);
+    assert.equal(ld["@context"], "https://schema.org");
+    const nodes = ld["@graph"];
+    assert.equal(nodes.length, 2, "a SoftwareApplication and a WebSite");
+    assert.deepEqual(nodes[0]["@type"], ["SoftwareApplication", "WebApplication"]);
+    assert.equal(nodes[0].name, "PuppetNET");
+    assert.equal(nodes[0].softwareVersion,
+      /WORKER_VERSION = "([^"]+)"/.exec(readFileSync(path.join(ROOT, "worker.js"), "utf8"))[1],
+      "the advertised version matches the Worker that serves it");
+    assert.equal(nodes[0].license, "https://opensource.org/licenses/MIT");
+    assert.equal(nodes[0].isAccessibleForFree, true);
+    assert.equal(nodes[0].offers.price, "0");
+    assert.equal(nodes[0].author.name, "AndrexTheDev");
+    assert.equal(nodes[0].author.email, "mailto:hippie.highho@gmail.com");
+    assert.equal(nodes[0].codeRepository, "https://github.com/AndrexTheDev/PuppetNET");
+    assert.equal(nodes[0].applicationCategory, "SecurityApplication");
+    assert.ok(Array.isArray(nodes[0].featureList) && nodes[0].featureList.length >= 5,
+      "features are enumerated for rich results");
+    assert.equal(nodes[1]["@type"], "WebSite");
+    assert.equal(nodes[1].inLanguage, "en");
+    assert.equal(nodes[1].potentialAction["@type"], "SearchAction");
+    assert.ok(nodes[1].potentialAction["query-input"].includes("search_term_string"));
+    assert.ok(nodes[1].potentialAction.target.urlTemplate.includes("./#/q={search_term_string}"),
+      "the search action targets a hash route the console really resolves (parseHash + loadSearch)");
+
+    // SEO must not cost the security posture.
+    const csp = /Content-Security-Policy: (.*)/.exec(readWeb("_headers"))[1];
+    // Scoped to script-src: style-src carries 'unsafe-inline' on purpose, because
+    // per-entity colours are data-driven inline styles. Inline *style* cannot
+    // execute script, and a JSON-LD data block is never executed either — but an
+    // executable inline script would be a policy breach, so that stays banned.
+    const scriptSrc = /(?:^|;\s*)script-src ([^;]*)/.exec(csp)[1].trim();
+    assert.equal(scriptSrc, "'self'", "scripts still come from the deployment only");
+    assert.ok(!scriptSrc.includes("unsafe-inline"), "and executable inline script stays forbidden");
+    assert.ok(!/<(?:script|link|img)[^>]+(?:src|href)="https?:/i.test(head),
+      "nothing in the head is fetched from a third-party origin");
+    assert.ok(!/rel="preconnect"|rel="dns-prefetch"/.test(head), "no speculative external connections");
+    // The only absolute URLs allowed are vocabulary identifiers and the
+    // repository: a schema.org @context and an XML namespace are never fetched.
+    const allowed = /^https?:\/\/(schema\.org|www\.w3\.org\/2000\/svg|opensource\.org\/licenses\/MIT|github\.com\/AndrexTheDev)/;
+    [...head.matchAll(/https?:\/\/[^\s"'<>)]+/g)].forEach((match) => {
+      assert.ok(allowed.test(match[0]), `unexpected absolute URL in the head: ${match[0]}`);
+    });
+    // Assets are cacheable, so a crawler revisit and a returning analyst are cheap.
+    const headers = readWeb("_headers");
+    ["/assets/*", "/modals.js"].forEach((route) => {
+      assert.ok(new RegExp(`${route.replace(/[.*]/g, "\\$&")}\\n\\s+Cache-Control: public`).test(headers),
+        `${route} is served with a cache rule`);
+    });
+  });
+
+  await check("modals.js hydrates relative metadata against the real origin", async () => {
+    const dom = new JSDOM(readWeb("index.html"), {
+      url: "https://console.example.invalid/",
+      runScripts: "outside-only",
+      pretendToBeVisual: false,
+      virtualConsole: new VirtualConsole(),
+    });
+    openWindows.push(dom);
+    const win = dom.window;
+    const doc = win.document;
+    win.eval(readWeb("modals.js"));
+    // Booted without app.js: the document is still parsing, so init() waits for
+    // DOMContentLoaded exactly as it would in a browser.
+    await until(() => Boolean(win.PuppetNETModals)
+      && doc.querySelector('link[rel="canonical"]').getAttribute("href") !== "./",
+      "modals.js to hydrate the metadata");
+
+    // Crawlers that run JavaScript get absolute URLs, which is what canonical and
+    // og:url require; the relative values remain the no-JavaScript fallback.
+    const attr = (sel, name) => doc.querySelector(sel).getAttribute(name);
+    assert.equal(attr('link[rel="canonical"]', "href"), "https://console.example.invalid/");
+    assert.equal(attr('meta[property="og:url"]', "content"), "https://console.example.invalid/");
+    assert.equal(attr('meta[property="og:image"]', "content"), "https://console.example.invalid/assets/og-cover.jpg");
+    assert.equal(attr('meta[name="twitter:image"]', "content"), "https://console.example.invalid/assets/og-cover.jpg");
+    const ld = JSON.parse(doc.querySelector('script[type="application/ld+json"]').textContent);
+    assert.equal(ld["@graph"][0].url, "https://console.example.invalid/");
+    assert.equal(ld["@graph"][0].image, "https://console.example.invalid/assets/og-cover.jpg");
+    assert.equal(ld["@graph"][0]["@id"], "https://console.example.invalid/#application");
+    assert.equal(ld["@graph"][1].potentialAction.target.urlTemplate,
+      "https://console.example.invalid/#/q={search_term_string}");
+    assert.equal(ld["@graph"][0].author.url, "https://github.com/AndrexTheDev",
+      "authoritative external identifiers are left alone");
+    assert.equal(ld["@graph"][0].license, "https://opensource.org/licenses/MIT");
+    // The rewritten block must stay valid JSON — a crawler parses it, it is not
+    // executed, and a broken document is worse than no document.
+    assert.doesNotThrow(() => JSON.parse(doc.querySelector('script[type="application/ld+json"]').textContent));
+
+    // Idempotent: a second pass cannot double-prefix a URL.
+    win.PuppetNETModals.hydrateSeo();
+    assert.equal(attr('link[rel="canonical"]', "href"), "https://console.example.invalid/");
+    assert.equal(JSON.parse(doc.querySelector('script[type="application/ld+json"]').textContent)["@graph"][0].url,
+      "https://console.example.invalid/");
+
+    // Chrome that must never go stale: the year and the contact address.
+    assert.equal(doc.querySelector("#foot-year").textContent, String(new Date().getFullYear()));
+    assert.equal(doc.querySelector("#foot-email").textContent, "hippie.highho@gmail.com");
+  });
 
 clearTimeout(WATCHDOG);
 

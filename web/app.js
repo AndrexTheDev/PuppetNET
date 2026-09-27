@@ -5567,6 +5567,12 @@
       renderInspector: renderInspector,
       toast: toast,
       saveHash: saveHash,
+      // Modal plumbing and the clipboard helper are shared with modals.js so the
+      // donation, legal and contact dialogs join the same Escape cascade and the
+      // same secure-context clipboard path instead of reinventing either.
+      openModal: openModal,
+      closeModal: closeModal,
+      copyText: copyText,
       applyHash: applyHash,
     },
   };

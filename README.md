@@ -393,6 +393,7 @@ so it deploys to Cloudflare Pages as a static directory and works from a USB sti
 | Handshake (pathfinding) | Entity A → Entity B renders the shortest connection chain with each tie's predicate, weight, confidence, method and citation, the weakest tie, up to three alternatives, and the Cypher that reproduces it. Hops ≤ 12, cost by hops / inverse weight / inverse confidence, direction undirected / outgoing / incoming |
 | Evidence table | Nodes, edges or sources as filterable, sortable, paged rows; sync the filtered rows back to the canvas; export CSV (RFC 4180, with formula-injection defence) |
 | Deep links | `#/v=table&q=kastelion&focus=PERSON:…&depth=2&metric=degree` — a shared link opens exactly what the sender saw. Credentials are never written to a URL, and never read from one |
+| Legal, help & support | A site footer carrying **Disclaimer**, **Terms of Service**, **Help & OSINT guide** (what betweenness, degree, clustering coefficient, anomaly score and a handshake actually mean), the keyboard reference and **contact** — plus a donation dialog with SOL/BTC/ETH addresses, one-click copy and locally rendered QR codes. All in [`web/modals.js`](web/modals.js): no extra route, no build step, no third-party request |
 
 It runs in three modes: **demo** (the bundled synthetic network, offline), **worker**
 (`/graph/*` on `worker.js` — production, because the Worker holds the database
@@ -583,13 +584,16 @@ puppetnet/
   domain.py                   domain labels (ShellCompany/Foundation/Aircraft), jurisdictions
   pipeline.py                 the daily run
 web/
-  index.html                  console shell: search, canvas, rail, inspector, dialogs
+  index.html                  console shell: search, canvas, rail, inspector, dialogs,
+                              site footer, legal/help/donate dialogs, SEO + JSON-LD
   app.js                      providers, rendering, filters, pathfinding, table, export
-  styles.css                  dark theme, glow, animations, responsive rules
+  modals.js                   donations (copy + QR), legal pages, contact, SEO hydration
+  styles.css                  dark theme, glow, animations, footer, dialogs, responsive
+  assets/og-cover.jpg         1200×630 social card image (Open Graph / Twitter)
   _headers                    CSP, framing and cache policy (Cloudflare Pages)
   tailwind.config.cjs         content globs for the compiled, committed CSS
-  vendor/                     cytoscape + fcose + layout-base + cose-base + tailwind.css,
-                              four MIT licence texts and an inventory README
+  vendor/                     cytoscape + fcose + layout-base + cose-base + qrcode-generator
+                              + tailwind.css, five MIT licence texts and an inventory README
 scripts/vendor-libs.mjs       reproduces web/vendor/ from node_modules, strictly
 package.json                  dev tooling only: jsdom, tailwindcss, terser
 .github/workflows/
@@ -597,7 +601,7 @@ package.json                  dev tooling only: jsdom, tailwindcss, terser
   graph_maintenance.yml       after the ingest: dedupe/prune/centrality + alerts
   ci.yml                      python, worker and web jobs on push/PR
   pages_deploy.yml            verify, then upload web/ to Cloudflare Pages on main
-tests/                        928 offline tests, worker_smoke.mjs (32), web_smoke.mjs (24)
+tests/                        928 offline tests, worker_smoke.mjs (32), web_smoke.mjs (28)
                               and helpers/fake_neo4j.mjs, the stub both suites share
 docs/                         architecture, configuration, schema, NLP, relay, console,
                               operations
@@ -612,8 +616,31 @@ docs/                         architecture, configuration, schema, NLP, relay, c
 * [docs/graph-schema.md](docs/graph-schema.md) — nodes, relationships, Cypher templates
 * [docs/nlp-pipeline.md](docs/nlp-pipeline.md) — extraction stages, rules, degradation
 * [docs/edge-relay.md](docs/edge-relay.md) — `worker.js` HTTP contract, graph read API, deployment
-* [docs/web-console.md](docs/web-console.md) — the analyst console: UI, deep links, hardening, Pages
+* [docs/web-console.md](docs/web-console.md) — the analyst console: UI, deep links, donations, legal pages, SEO, hardening, Pages
 * [docs/operations.md](docs/operations.md) — running, monitoring and troubleshooting
+
+## Support the project
+
+PuppetNET is free and MIT-licensed, and it will stay that way — no feature is paywalled
+and donations change nothing about what you get. It is maintained by one developer on his
+own time and hardware, so if it saved you an afternoon, that is what these are for.
+
+The console has the same three addresses behind its ♥ button (<kbd>d</kbd>), each with a
+locally rendered QR code and one-click copy:
+
+| Coin | Address |
+| --- | --- |
+| SOL | `79KsqtJJdhKFJ9woxnYgtf3nq7HxQveafWBCtC3mxWi8` |
+| BTC | `bc1qeqzrlfg3edrydk4s0hecakc82gp26n5p7hkc7f` |
+| ETH | `0xBC3fab34f69bc9f6661608C3FB36dDdC313C42F7` |
+
+They live in exactly one place in the code — `COINS` in [`web/modals.js`](web/modals.js) —
+and the smoke suite asserts them verbatim, so a typo cannot ship silently. Always check
+the fingerprint the dialog shows after pasting into a wallet.
+
+**Created by [AndrexTheDev](https://github.com/AndrexTheDev)** ·
+[hippie.highho@gmail.com](mailto:hippie.highho@gmail.com) — bug reports, data corrections,
+takedown requests and security disclosures all go there.
 
 ## Licence
 

@@ -4,10 +4,110 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
-<meta name="description" content="PuppetNET — OSINT graph intelligence console. Entity resolution, cluster bridges, shortest-path handshakes and centrality-driven anomaly triage.">
+<meta name="description" content="Open-source OSINT graph intelligence console: entity resolution, betweenness-centrality node sizing, N-hop expansion, shortest-path handshakes and cited evidence. Self-hostable.">
+<meta name="keywords" content="OSINT, open source intelligence, OSINT tools, network analysis, graph visualizer, link analysis, knowledge graph, entity resolution, Neo4j, Cypher, betweenness centrality, clustering coefficient, shortest path, handshake number, offshore leaks, corporate registry, shell company, beneficial ownership, threat intelligence, graph database, Cloudflare Pages, Cloudflare Workers">
+<meta name="author" content="AndrexTheDev">
 <meta name="referrer" content="strict-origin-when-cross-origin">
-<meta name="robots" content="noindex, nofollow">
-<title>PuppetNET · Graph Intelligence Console</title>
+<!-- Public deployment assumed. A private investigative instance should revert
+     this line to `noindex, nofollow` — an OSINT console is not inherently a
+     public website, and docs/web-console.md#hardening explains the trade-off. -->
+<meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1">
+<meta name="theme-color" content="#05070d">
+<link rel="canonical" href="./">
+
+<!-- Open Graph -->
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="PuppetNET">
+<meta property="og:locale" content="en">
+<meta property="og:title" content="PuppetNET · OSINT Graph Intelligence Console">
+<meta property="og:description" content="Search any entity, expand its neighbourhood up to four hops, and prove the handshake between two of them — on a centrality-weighted, citation-backed property graph. Open source, MIT licence, no third-party requests.">
+<meta property="og:url" content="./">
+<meta property="og:image" content="assets/og-cover.jpg">
+<meta property="og:image:type" content="image/jpeg">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="A dark knowledge graph of glowing cyan, emerald and purple nodes, two clusters joined by a bridge tie, behind the PuppetNET wordmark.">
+
+<!-- Twitter / X cards -->
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="PuppetNET · OSINT Graph Intelligence Console">
+<meta name="twitter:description" content="Open-source OSINT network analysis: entity resolution, cluster bridges, shortest-path handshakes and centrality-driven anomaly triage. Self-hostable on Cloudflare Pages, MIT licence.">
+<meta name="twitter:image" content="assets/og-cover.jpg">
+<meta name="twitter:image:alt" content="PuppetNET — a dark graph of glowing nodes and the bridge ties between clusters.">
+
+<title>PuppetNET · OSINT Graph Visualizer &amp; Network Analysis Console</title>
+
+<!-- Structured data. A type="application/ld+json" block is a data block, never
+     executed, so it does not breach the `script-src 'self'` policy in
+     web/_headers. Its URLs ship relative because the deployment origin is not
+     known at build time; modals.js rewrites them against location.origin on
+     boot, keeping the same values for crawlers that do not run JavaScript. -->
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": ["SoftwareApplication", "WebApplication"],
+      "@id": "./#application",
+      "name": "PuppetNET",
+      "alternateName": "PuppetNET Graph Intelligence Console",
+      "description": "Open-source OSINT graph intelligence console. Harvests public-domain corporate registries, offshore leaks and news into a weighted Neo4j property graph, then lets an analyst search entities, expand neighbourhoods by degree, resolve shortest-path handshake chains and export citation-backed evidence.",
+      "url": "./",
+      "image": "assets/og-cover.jpg",
+      "screenshot": "assets/og-cover.jpg",
+      "applicationCategory": "SecurityApplication",
+      "operatingSystem": "Any modern browser",
+      "browserRequirements": "Requires JavaScript. No plugins, no external services.",
+      "softwareVersion": "1.6.0",
+      "license": "https://opensource.org/licenses/MIT",
+      "isAccessibleForFree": true,
+      "offers": {
+        "@type": "Offer",
+        "price": "0",
+        "priceCurrency": "USD",
+        "availability": "https://schema.org/InStock",
+        "description": "Free and open source under the MIT licence."
+      },
+      "author": {
+        "@type": "Person",
+        "name": "AndrexTheDev",
+        "email": "mailto:hippie.highho@gmail.com",
+        "url": "https://github.com/AndrexTheDev"
+      },
+      "maintainer": {
+        "@type": "Person",
+        "name": "AndrexTheDev",
+        "email": "mailto:hippie.highho@gmail.com"
+      },
+      "codeRepository": "https://github.com/AndrexTheDev/PuppetNET",
+      "programmingLanguage": ["JavaScript", "Python"],
+      "keywords": "OSINT, network analysis, graph visualizer, link analysis, entity resolution, Neo4j, betweenness centrality, shortest path, offshore leaks",
+      "featureList": [
+        "Global entity search across names, aliases, company numbers, IMO/MMSI, transponders and canonical keys",
+        "Force-directed 2D graph with node size driven by betweenness centrality",
+        "N-degree neighbourhood expansion, 1 to 4 hops, with isolate and reset",
+        "Shortest-path handshake chains with per-tie weight, confidence, method and citations",
+        "Filterable evidence table of nodes, edges and source documents with CSV export",
+        "Read-only graph API on Cloudflare Workers with rate limiting and payload ceilings",
+        "Deep links, copy-Cypher, keyboard-driven interface and offline demo dataset"
+      ]
+    },
+    {
+      "@type": "WebSite",
+      "@id": "./#website",
+      "name": "PuppetNET",
+      "url": "./",
+      "inLanguage": "en",
+      "publisher": { "@id": "./#application" },
+      "potentialAction": {
+        "@type": "SearchAction",
+        "target": { "@type": "EntryPoint", "urlTemplate": "./#/q={search_term_string}" },
+        "query-input": "required name=search_term_string"
+      }
+    }
+  ]
+}
+</script>
 
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2305070d'/%3E%3Ccircle cx='16' cy='9' r='3.2' fill='%2322d3ee'/%3E%3Ccircle cx='8' cy='23' r='2.8' fill='%2310b981'/%3E%3Ccircle cx='24' cy='23' r='2.8' fill='%23a855f7'/%3E%3Cpath d='M16 12.2 9 20.6M16 12.2l7 8.4M10.8 23h10.4' stroke='%2322d3ee' stroke-width='1.3' fill='none' opacity='.75'/%3E%3C/svg%3E">
 
@@ -99,6 +199,13 @@
       </button>
       <button id="btn-inspector" class="icon-btn xl:hidden" type="button" title="Inspector" aria-label="Toggle inspector">
         <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.6" fill="none"/><path d="M12 11v6M12 7.6v.9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+      </button>
+      <button id="btn-donate" class="icon-btn donate-btn" type="button" data-open-modal="#modal-donate"
+              title="Support PuppetNET (d)" aria-label="Support PuppetNET with a crypto donation" aria-haspopup="dialog">
+        <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true">
+          <path d="M12 20.3 4.9 13.1a4.55 4.55 0 0 1 6.44-6.44l.66.66.66-.66a4.55 4.55 0 0 1 6.44 6.44Z"
+                fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+        </svg>
       </button>
       <button id="btn-settings" class="icon-btn" type="button" title="Data source &amp; settings (S)" aria-label="Open settings">
         <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><circle cx="12" cy="12" r="3.1" stroke="currentColor" stroke-width="1.6" fill="none"/><path d="M12 3.4v2.2M12 18.4v2.2M4.6 12H2.4M21.6 12h-2.2M6.7 6.7 5.2 5.2M18.8 18.8l-1.5-1.5M17.3 6.7l1.5-1.5M5.2 18.8l1.5-1.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
@@ -446,6 +553,29 @@
     <div id="inspector-scrim" class="scrim" hidden></div>
 
   </div><!-- /app-body -->
+
+  <!-- ==============================  site footer  ==========================
+       Legal pages, help and attribution live here rather than on separate
+       routes: the console is a single deployable directory, and these dialogs
+       are part of the same artefact, versioned and cached with it. -->
+  <footer class="site-footer" role="contentinfo">
+    <span class="sf-item sf-copy">© <span id="foot-year">2026</span> PuppetNET — created by
+      <a class="sf-link" href="https://github.com/AndrexTheDev" rel="noopener">AndrexTheDev</a>
+      <span class="sf-dim sf-hide-sm">· <span id="foot-email">hippie.highho@gmail.com</span></span>
+    </span>
+    <span class="sf-item sf-dim sf-hide-md">MIT licence · open source · no tracking, no cookies</span>
+    <span class="sf-grow"></span>
+    <nav class="sf-nav" aria-label="Legal, help and contact">
+      <button class="sf-link" type="button" data-open-modal="#modal-disclaimer">Disclaimer</button>
+      <button class="sf-link" type="button" data-open-modal="#modal-terms">Terms of Service</button>
+      <button class="sf-link" type="button" data-open-modal="#modal-guide">Help &amp; OSINT guide</button>
+      <button class="sf-link sf-hide-md" type="button" data-open-modal="#modal-help">Keyboard</button>
+      <button class="sf-link" type="button" data-open-modal="#modal-contact">Contact</button>
+    </nav>
+    <button class="sf-donate" type="button" data-open-modal="#modal-donate" title="Support PuppetNET (d)">
+      <span aria-hidden="true">♥</span> Support
+    </button>
+  </footer>
 </div><!-- /app -->
 
 <!-- ==============================  settings modal  ========================= -->
@@ -586,6 +716,317 @@
   </div>
 </div>
 
+<!-- ==============================  donate modal  =========================== -->
+<div id="modal-donate" class="modal" role="dialog" aria-modal="true" aria-labelledby="donate-title" hidden>
+  <div class="modal-backdrop" data-close="1"></div>
+  <div class="modal-card">
+    <header class="modal-head">
+      <h2 id="donate-title"><span class="mh-glyph" aria-hidden="true">♥</span> Support PuppetNET</h2>
+      <button class="icon-btn" type="button" data-close="1" aria-label="Close">✕</button>
+    </header>
+    <div class="modal-body donate-body">
+      <p class="donate-lead">PuppetNET is free, open source, and maintained on one developer's own time
+      and hardware. Donations are <b>entirely voluntary</b>: no feature is paywalled, nothing is
+      tiered, and the licence does not change if you give or do not give. If the console saved you an
+      afternoon, this is how you say so.</p>
+
+      <div id="donate-tabs" class="donate-tabs" role="tablist" aria-label="Donation currency">
+        <button class="donate-tab is-active" type="button" role="tab" data-coin="sol" aria-selected="true" aria-controls="donate-qr">SOL</button>
+        <button class="donate-tab" type="button" role="tab" data-coin="btc" aria-selected="false" aria-controls="donate-qr">BTC</button>
+        <button class="donate-tab" type="button" role="tab" data-coin="eth" aria-selected="false" aria-controls="donate-qr">ETH</button>
+      </div>
+
+      <div class="donate-panel">
+        <div class="donate-qr" id="donate-qr" aria-live="polite"></div>
+        <div class="donate-detail">
+          <p class="donate-network" id="donate-coin-name">Solana · mainnet-beta</p>
+          <code class="donate-address" id="donate-address">—</code>
+          <p class="donate-fp">fingerprint <b id="donate-fingerprint">—</b></p>
+          <button id="donate-copy" class="btn btn-primary btn-sm" type="button" data-coin="sol">Copy address</button>
+          <p class="donate-note" id="donate-note"></p>
+        </div>
+      </div>
+
+      <p class="donate-safety">Verify the fingerprint in your wallet after pasting — clipboard malware
+      swaps addresses, and this dialog is the defence, not the risk. These three addresses are listed
+      in exactly one place in the codebase (<code>web/modals.js</code>) and mirrored in the README; if
+      you see different ones anywhere else, they are not ours. Transactions are irreversible and
+      anonymous: there is no refund mechanism and no way to tie a donation to an account, by design.</p>
+    </div>
+    <footer class="modal-foot">
+      <span class="modal-foot-note">No payment processor, no cookies, no tracking. A wallet address is the whole mechanism.</span>
+    </footer>
+  </div>
+</div>
+
+<!-- ==============================  disclaimer  ============================= -->
+<div id="modal-disclaimer" class="modal" role="dialog" aria-modal="true" aria-labelledby="disclaimer-title" hidden>
+  <div class="modal-backdrop" data-close="1"></div>
+  <div class="modal-card modal-card-wide">
+    <header class="modal-head">
+      <h2 id="disclaimer-title">Legal disclaimer</h2>
+      <button class="icon-btn" type="button" data-close="1" aria-label="Close">✕</button>
+    </header>
+    <div class="modal-body legal-body">
+      <h3>What this tool is</h3>
+      <p>PuppetNET is an open-source research and analysis console. The data it displays is gathered
+      <b>automatically from public-domain and publicly accessible sources</b> — corporate and company
+      registries, offshore-leaks datasets, open knowledge bases, aviation registers and published
+      news — or is loaded from a database that the operator controls. No part of it is obtained by
+      bypassing an access control, and the pipeline records, for every tie, which source and which
+      document it came from.</p>
+
+      <h3>Presence in the graph is not an accusation</h3>
+      <p>An entity or relationship appearing here is a <b>machine-derived observation of public
+      records</b>. It is not a legal finding, an allegation, or proof of illicit activity, and it must
+      not be presented as one. Words the interface uses — <i>shell</i>, <i>offshore</i>, <i>nominee</i>,
+      <i>anomaly</i>, <i>bridge</i> — are <b>analytical labels</b> derived from structure and public
+      filings. Legitimate businesses, families and professionals use offshore structures, trusts and
+      intermediaries every day for entirely lawful reasons: tax residence, liability, succession,
+      privacy, safety. A high anomaly score is a reason to look, never a conclusion.</p>
+
+      <h3>Accuracy, automation and homonyms</h3>
+      <p>Extraction is automated, including natural-language processing of unstructured text, so
+      <b>false positives occur</b>. Two different people can share a name; a registry row can be
+      stale; a news sentence can be ironic. The pipeline mitigates this — identifier-strict entity
+      resolution first, a homonym guard that refuses to merge on spelling alone without shared
+      context, and per-edge provenance — but mitigation is not elimination. <b>Verify anything
+      consequential against the primary source</b>, using the citations the inspector provides. If the
+      citation does not support the claim, the claim is not supported.</p>
+
+      <h3>Not advice</h3>
+      <p>Nothing here is legal, financial, investment, tax or investigative advice, and using it
+      creates no professional relationship. Scores are heuristics tuned for triage, not measurements
+      of guilt, risk or value.</p>
+
+      <h3>Your responsibility</h3>
+      <p>Operators and analysts are solely responsible for using this tool lawfully in their
+      jurisdiction, including data-protection obligations (such as GDPR, UK GDPR or CCPA) when the
+      graph contains personal data: lawful basis, purpose limitation, retention and data-subject
+      rights are the operator's duties, not the software's. Operators are likewise responsible for
+      complying with the terms and licences of every third-party source whose data they ingest, and
+      for the attribution those licences require.</p>
+
+      <h3>Corrections and takedown</h3>
+      <p>If you believe the graph contains inaccurate data about you or infringes your rights, contact
+      the maintainer at <a href="mailto:hippie.highho@gmail.com">hippie.highho@gmail.com</a> with the
+      source document in question; legitimate correction and removal requests are acted on promptly.
+      Where you operate your own deployment, the database — and therefore the remedy — is entirely
+      under your control.</p>
+
+      <h3>No warranty</h3>
+      <p>The software is provided "as is", without warranty of any kind, as set out in the MIT licence
+      and the Terms of Service. To the maximum extent permitted by law, the authors are not liable for
+      decisions, publications, losses or damages arising from reliance on its output.</p>
+    </div>
+    <footer class="modal-foot">
+      <span class="modal-foot-note">Short version: public sources, automated methods, analytical labels — verify before you act.</span>
+    </footer>
+  </div>
+</div>
+
+<!-- ==============================  terms of service  ======================= -->
+<div id="modal-terms" class="modal" role="dialog" aria-modal="true" aria-labelledby="terms-title" hidden>
+  <div class="modal-backdrop" data-close="1"></div>
+  <div class="modal-card modal-card-wide">
+    <header class="modal-head">
+      <h2 id="terms-title">Terms of Service</h2>
+      <button class="icon-btn" type="button" data-close="1" aria-label="Close">✕</button>
+    </header>
+    <div class="modal-body legal-body">
+      <h3>1. Licence and acceptance</h3>
+      <p>The software is released under the <b>MIT licence</b>: you may use, copy, modify, merge,
+      publish, distribute, sublicense and sell copies, provided the copyright notice and permission
+      notice travel with it. By running or accessing a deployment you accept these terms. If you
+      deploy PuppetNET yourself you are the operator of that deployment and these terms govern your
+      users in addition to your own.</p>
+
+      <h3>2. Acceptable use</h3>
+      <p>Permitted: journalism, academic research, compliance and due-diligence work, sanctions and
+      adverse-media screening with human review, security analysis, and personal research.
+      Prohibited: unlawful surveillance, stalking, doxxing or harassment of any individual;
+      discrimination in housing, employment, credit or services; re-identification of protected or
+      anonymised persons; offering the graph as a consumer "people search" product; using its output
+      as the sole basis for a decision with legal or similarly significant effect for a person
+      (cf. GDPR Art. 22) without meaningful human review; and any use that violates the law of the
+      jurisdiction in which you act.</p>
+
+      <h3>3. API usage and limits</h3>
+      <p>The graph API is <b>read-only</b>; every method but <code>GET</code> is refused. It is
+      protected by a per-isolate token bucket (default 4 requests/second, burst 8), a global
+      requests-per-minute budget, hard ceilings (1 200 nodes per response, traversal depth ≤ 4,
+      path hops ≤ 12, a serialised payload ceiling) and an optional response cache. Automated clients
+      must honour <code>429</code> responses and their <code>retry_after</code>, must not fan out
+      parallel crawls against a deployment, and must use an issued token. <b>Tokens are personal:</b>
+      sharing, reselling or embedding a token in a public page breaches these terms and gets the
+      token revoked.</p>
+
+      <h3>4. Automation policy</h3>
+      <p>The project's own ingestion runs <b>once per day</b>, with per-host rate limits, delay
+      queues, <code>robots.txt</code> respect and polite identity headers; operators are expected to
+      keep those defaults or tighten them, never loosen them. Bulk re-harvesting of sources through
+      the console or its API is not permitted. Export is intentionally limited to the view you are
+      looking at (CSV of the current table or handshake), not the whole database.</p>
+
+      <h3>5. Your data and your privacy</h3>
+      <p>The console keeps settings and filters in your browser's <code>localStorage</code> only. It
+      sends no telemetry, no analytics and no crash reports to the maintainer — there is no server on
+      the maintainer's side at all. Whatever you load into your deployment is your data, governed by
+      your own policies and licences.</p>
+
+      <h3>6. Donations</h3>
+      <p>Crypto donations are voluntary and confer no licence, ownership, warranty, priority support
+      or influence over the roadmap. Transactions on these networks are irreversible; there is no
+      refund mechanism.</p>
+
+      <h3>7. No warranty, limitation of liability, indemnity</h3>
+      <p>THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED. TO THE
+      MAXIMUM EXTENT PERMITTED BY LAW, THE AUTHORS AND CONTRIBUTORS ARE NOT LIABLE FOR ANY CLAIM,
+      DAMAGES OR OTHER LIABILITY ARISING FROM USE OR INABILITY TO USE THE SOFTWARE, INCLUDING
+      DECISIONS MADE ON THE BASIS OF ITS OUTPUT. YOU AGREE TO INDEMNIFY THE AUTHORS AGAINST CLAIMS
+      ARISING FROM YOUR USE OF THE SOFTWARE IN BREACH OF THESE TERMS.</p>
+
+      <h3>8. Changes and contact</h3>
+      <p>These terms may change with a release; the version shipped with a deployment governs that
+      deployment. Questions, abuse reports and legal notices: <a href="mailto:hippie.highho@gmail.com">hippie.highho@gmail.com</a>.</p>
+    </div>
+    <footer class="modal-foot">
+      <span class="modal-foot-note">MIT software · read-only API · polite automation · your data, your responsibility.</span>
+    </footer>
+  </div>
+</div>
+
+<!-- ==============================  help & OSINT guide  ======================= -->
+<div id="modal-guide" class="modal" role="dialog" aria-modal="true" aria-labelledby="guide-title" hidden>
+  <div class="modal-backdrop" data-close="1"></div>
+  <div class="modal-card modal-card-wide">
+    <header class="modal-head">
+      <h2 id="guide-title">Help &amp; OSINT methodology guide</h2>
+      <button class="icon-btn" type="button" data-close="1" aria-label="Close">✕</button>
+    </header>
+    <div class="modal-body legal-body guide-body">
+      <h3>Reading the canvas</h3>
+      <p>Node <b>size</b> is a metric you choose — betweenness centrality by default — mapped to a
+      15–62&nbsp;px radius, with degree as fallback when a metric has not been computed. Node
+      <b>colour</b> is the entity's label (person, organisation, shell, foundation, location, craft),
+      or its <code>cluster_id</code> when "colour by cluster" is on, which makes a whole offshore
+      cluster light up as one. Edge <b>width</b> is <code>weight</code>; edge <b>colour</b> is the
+      relationship family; violet dashed edges are <b>calculated</b>
+      (<code>PUPPET_MASTER_OF</code>) — inference, drawn so it never looks like evidence. The HUD
+      reports visible nodes and ties, the current scope, and tells you when a response was truncated
+      by the node ceiling.</p>
+
+      <h3>The metrics, honestly</h3>
+      <p><b>Betweenness centrality</b> is the share of all shortest paths in the graph that pass
+      through a node (Brandes' algorithm, normalised 0–1). High betweenness marks <i>brokers</i>: the
+      lawyer, fund or intermediary sitting between otherwise separate clusters. It is the single best
+      triage signal in offshore work — and it is sensitive to graph completeness, so treat a broker
+      in a sparse graph as a hypothesis.</p>
+      <p><b>Degree</b> is the count of direct ties. It favours the loud (a registry agent with
+      thousands of clients) over the important; use it to sanity-check betweenness, not to replace
+      it.</p>
+      <p><b>Clustering coefficient</b> measures how tightly a node's neighbours tie to each other:
+      closed triangles divided by possible triangles. Low values on a high-betweenness node are the
+      classic broker signature — connecting groups that do not know each other. PuppetNET stores
+      <code>cluster_id</code> (label propagation) and articulation points (Tarjan), not a per-node
+      coefficient; compute it where the data lives:</p>
+      <pre><code>MATCH (n:Entity {canonical_key: $key})-[]-(m)
+WITH n, collect(DISTINCT m) AS nb
+WITH n, size(nb) AS k, nb WHERE k &gt; 1
+UNWIND nb AS a UNWIND nb AS b
+WITH n, k, a, b WHERE id(a) &lt; id(b)
+OPTIONAL MATCH (a)-[r]-(b)
+WITH n, k, a, b, count(r) &gt; 0 AS linked
+RETURN n.canonical_key AS key,
+       2.0 * size([x IN collect(linked) WHERE x]) / (k * (k - 1)) AS clustering_coefficient;</code></pre>
+      <p><b>Anomaly score</b> is a weighted triage queue, not a verdict:
+      <code>0.40 × betweenness + 0.35 × 24 h degree spike + 0.25 × offshore-cluster ratio</code>.
+      The middle term is what catches a dormant shell suddenly acquiring directors; the last term is
+      how much of a node's neighbourhood sits in offshore jurisdictions.</p>
+      <p><b>Weight vs confidence</b>: <code>weight</code> is source trust × extraction method (a
+      structured registry row scores up to 1.0; an NLP-extracted triple starts at 0.4), while
+      <code>confidence</code> is the noisy-OR of every independent observation of the same tie. When
+      they disagree — high weight, low confidence — you have one good source and no corroboration:
+      that is exactly the tie to chase citations for.</p>
+
+      <h3>Search: what matches, in what order</h3>
+      <p>Search scores candidates as exact canonical key (100), exact identifier such as a company
+      number, IMO/MMSI or tail (95), exact name (90), name prefix (70), name contains (50), alias
+      (40) and jurisdiction code (12), with accents folded and case ignored. Locally it scores what
+      is loaded; against a live API the full-text index answers first and a scored
+      <code>CASE</code> expression takes over when the index is absent. Practical tips: paste a
+      <code>HE312345</code>-style company number or an <code>A4B2C6</code> hex transponder rather than
+      a name when you have one; a canonical key always resolves exactly and never fuzzily; two-letter
+      tokens like <code>CY</code> or <code>PA</code> match jurisdictions.</p>
+
+      <h3>Handshakes and paths</h3>
+      <p>A handshake is a shortest path between two entities: hops ≤ 12, direction undirected /
+      outgoing / incoming, cost by hop count or by inverse weight / inverse confidence (weighted
+      searches are capped at 4 hops so a free-tier database survives). Read the <b>weakest tie</b>
+      first — it is where the chain is most likely to be wrong — and read the up to three
+      alternatives: two disjoint routes are corroboration, one route is a story. <b>An absent path is
+      evidence too</b>: "no connection within six hops" is a publishable negative. If the API is
+      unreachable the console solves the path over what is loaded and labels the result
+      <i>local</i>, so you always know which graph you proved something about.</p>
+
+      <h3>Provenance discipline</h3>
+      <p>Every tie carries its extraction <code>method</code>, <code>source_id</code> and
+      <code>doc_id</code>; the inspector lists the underlying documents with dates and URLs. Before
+      any conclusion leaves your desk: open the citations, check the date (a directorship ended in
+      2019 is not a current tie), and record your query — the address bar holds a deep link to the
+      exact view, and <i>copy Cypher</i> gives you the reproducible query for your notes.</p>
+
+      <h3>Responsible investigation checklist</h3>
+      <ul>
+        <li>Corroborate: one source is a lead, two independent sources are a finding.</li>
+        <li>Date everything: current ties and historical ties answer different questions.</li>
+        <li>Check the homonym: same name, same person? Identifier or shared context, not spelling.</li>
+        <li>Read the weakest tie before you trust the chain.</li>
+        <li>Record the deep link and the Cypher, so anyone can re-run your work.</li>
+      </ul>
+    </div>
+    <footer class="modal-foot">
+      <span class="modal-foot-note">Keyboard: <kbd>⌘K</kbd> search · <kbd>E</kbd> expand · <kbd>I</kbd> isolate · <kbd>P</kbd> handshake · <kbd>T</kbd> table · <kbd>?</kbd> shortcuts · <kbd>d</kbd> support.</span>
+    </footer>
+  </div>
+</div>
+
+<!-- ==============================  contact  ================================ -->
+<div id="modal-contact" class="modal" role="dialog" aria-modal="true" aria-labelledby="contact-title" hidden>
+  <div class="modal-backdrop" data-close="1"></div>
+  <div class="modal-card">
+    <header class="modal-head">
+      <h2 id="contact-title">Contact &amp; attribution</h2>
+      <button class="icon-btn" type="button" data-close="1" aria-label="Close">✕</button>
+    </header>
+    <div class="modal-body contact-body">
+      <div class="contact-card">
+        <span class="contact-avatar" aria-hidden="true">◈</span>
+        <div>
+          <p class="contact-name">Created by <b>AndrexTheDev</b></p>
+          <p class="contact-mail"><a href="mailto:hippie.highho@gmail.com">hippie.highho@gmail.com</a></p>
+          <p class="contact-links">
+            <a href="https://github.com/AndrexTheDev" rel="noopener">github.com/AndrexTheDev</a> ·
+            <a href="https://github.com/AndrexTheDev/PuppetNET" rel="noopener">repository</a>
+          </p>
+        </div>
+        <button id="contact-copy" class="btn btn-ghost btn-sm" type="button">Copy email</button>
+      </div>
+      <h3>What to include in a report</h3>
+      <p>The console version and Worker version (settings dialog footer), the data source mode, the
+      deep link from your address bar, and what you expected versus what you saw. For data
+      corrections or rights requests, name the source document. For security reports, put
+      <b>SECURITY</b> in the subject and do not publish the detail first — you will get a reply and a
+      fix window before disclosure.</p>
+      <p class="contact-note">PuppetNET is a one-maintainer open-source project. Replies are best
+      effort and usually fast; there is no support SLA, and there is no paid tier to buy one.</p>
+    </div>
+    <footer class="modal-foot">
+      <span class="modal-foot-note">© <span class="js-year">2026</span> AndrexTheDev · MIT licence</span>
+    </footer>
+  </div>
+</div>
+
 <!-- context menu -->
 <div id="ctx-menu" class="ctx-menu" role="menu" hidden></div>
 
@@ -598,6 +1039,10 @@
 <script src="vendor/cose-base.min.js"></script>
 <script src="vendor/cytoscape.min.js"></script>
 <script src="vendor/cytoscape-fcose.min.js"></script>
+<!-- QR codes for the donation dialog, rendered locally as SVG: a third-party QR
+     image service would learn the address and who is looking at it. -->
+<script src="vendor/qrcode.min.js"></script>
 <script src="app.js" defer></script>
+<script src="modals.js" defer></script>
 </body>
 </html>

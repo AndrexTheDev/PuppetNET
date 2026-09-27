@@ -69,6 +69,7 @@
   /* metrics */
   --header-h:    58px;
   --status-h:    26px;
+  --footer-h:    34px;   /* site footer: legal links, attribution, support */
   --rail-w:      268px;
   --inspector-w: 340px;
   --radius:      10px;
@@ -197,7 +198,7 @@ code { color: var(--cyan); background: rgba(34,211,238,.07); padding: .06em .34e
 .app-shell {
   height: 100dvh;
   display: grid;
-  grid-template-rows: var(--header-h) minmax(0, 1fr);
+  grid-template-rows: var(--header-h) minmax(0, 1fr) var(--footer-h);
   opacity: 0;
   animation: shell-in 380ms var(--ease-out) forwards;
 }
@@ -1242,10 +1243,157 @@ body.reduce-motion *, body.reduce-motion *::before, body.reduce-motion *::after 
 
 @media print {
   body { background: #fff; color: #000; overflow: visible; }
-  .app-header, .rail, .inspector, .statusbar, .toast-host, .cy-hud, .modal, .ctx-menu, .scrim { display: none !important; }
+  .app-header, .rail, .inspector, .statusbar, .site-footer, .toast-host, .cy-hud, .modal, .ctx-menu, .scrim { display: none !important; }
   .app-shell, .app-body, .main, .view { display: block !important; height: auto !important; overflow: visible !important; }
   .cy { height: 620px; background: #fff; }
   .table-scroll { overflow: visible; }
   .data-table thead th { background: #eee; color: #000; }
   .data-table tbody td { color: #111; border-bottom: 1px solid #ccc; }
 }
+
+/* -------------------------------------------------------------------------- */
+/*  12. Production package — site footer, donations, legal pages, contact      */
+/* -------------------------------------------------------------------------- */
+
+/* Site footer: a slim instrument-panel strip. It is the third row of the shell
+   grid, so the canvas keeps every remaining pixel; nothing scrolls underneath
+   it and the boot splash still covers the whole viewport. */
+.site-footer {
+  display: flex; align-items: center; gap: 14px;
+  height: var(--footer-h); padding: 0 12px;
+  background: linear-gradient(180deg, var(--void-2), #04060b);
+  border-top: 1px solid var(--edge);
+  font-size: 11px; color: var(--text-dim);
+  white-space: nowrap; overflow: hidden;
+}
+.sf-item { display: inline-flex; align-items: center; gap: 5px; min-width: 0; }
+.sf-dim  { color: var(--text-faint); }
+.sf-grow { flex: 1 1 auto; }
+.sf-nav  { display: inline-flex; align-items: center; gap: 2px; }
+.sf-link {
+  background: none; border: 0; padding: 3px 7px; border-radius: var(--radius-xs);
+  color: var(--text-dim); font: inherit; cursor: pointer; text-decoration: none;
+  transition: color 140ms var(--ease-out), background-color 140ms var(--ease-out);
+}
+.sf-link:hover, .sf-link:focus-visible { color: var(--cyan); background: var(--cyan-soft); }
+a.sf-link:hover { text-decoration: underline; }
+.sf-donate {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 12px; border-radius: 99px;
+  border: 1px solid rgba(244, 63, 94, .45);
+  background: var(--rose-soft); color: #fda4af;
+  font: inherit; font-weight: 600; cursor: pointer;
+  transition: background-color 160ms var(--ease-out), box-shadow 160ms var(--ease-out), color 160ms var(--ease-out);
+}
+.sf-donate:hover, .sf-donate:focus-visible {
+  background: rgba(244, 63, 94, .22); color: #fecdd3;
+  box-shadow: 0 0 14px rgba(244, 63, 94, .35);
+}
+.sf-donate span { font-size: 10px; }
+
+/* The header heart, tinted rose so it reads as "support" and never as a control */
+.donate-btn { color: var(--rose); }
+.donate-btn:hover, .donate-btn:focus-visible { color: #fda4af; box-shadow: 0 0 12px rgba(244, 63, 94, .35); }
+
+/* --- donation dialog ------------------------------------------------------ */
+.donate-lead { margin: 0 0 14px; font-size: 12.5px; line-height: 1.65; color: var(--text-dim); }
+.donate-lead b { color: var(--text); }
+.donate-tabs { display: flex; gap: 6px; margin-bottom: 12px; }
+.donate-tab {
+  flex: 1 1 0; padding: 8px 0; border-radius: var(--radius);
+  border: 1px solid var(--edge); background: var(--panel-2);
+  color: var(--text-dim); font: inherit; font-weight: 700; font-size: 12px;
+  letter-spacing: .14em; cursor: pointer;
+  transition: color 140ms var(--ease-out), border-color 140ms var(--ease-out),
+              background-color 140ms var(--ease-out), box-shadow 140ms var(--ease-out);
+}
+.donate-tab:hover { color: var(--text); border-color: var(--edge-strong); }
+.donate-tab.is-active {
+  color: var(--cyan); border-color: var(--cyan);
+  background: var(--cyan-soft); box-shadow: var(--glow-soft);
+}
+.donate-panel { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 16px; align-items: start; }
+/* The QR is rendered dark-on-light on purpose: wallets scan contrast, not mood. */
+.donate-qr { padding: 8px; background: #f8fafc; border-radius: var(--radius); line-height: 0; }
+.donate-qr .qr-svg { width: 148px; height: 148px; display: block; }
+.qr-missing { width: 148px; font-size: 11px; line-height: 1.5; color: #334155; }
+.donate-network { margin: 0 0 6px; font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--text-faint); }
+.donate-address {
+  display: block; padding: 9px 10px; border-radius: var(--radius-sm);
+  background: var(--void-2); border: 1px solid var(--edge);
+  color: var(--emerald); font-family: var(--font-mono); font-size: 11.5px;
+  word-break: break-all; user-select: all;
+}
+.donate-fp { margin: 6px 0 10px; font-size: 11px; color: var(--text-faint); }
+.donate-fp b { color: var(--cyan); font-family: var(--font-mono); font-weight: 600; }
+#donate-copy.is-copied { border-color: var(--emerald); color: var(--emerald); }
+.donate-note { margin: 10px 0 0; font-size: 11.5px; line-height: 1.6; color: var(--text-dim); }
+.donate-safety {
+  margin: 14px 0 0; padding: 10px 12px; border-radius: var(--radius);
+  border: 1px solid rgba(245, 158, 11, .35); background: var(--amber-soft);
+  font-size: 11.5px; line-height: 1.6; color: #fcd34d;
+}
+.donate-safety code { color: #fde68a; }
+
+/* --- legal pages and the OSINT guide -------------------------------------- */
+.legal-body h3 {
+  margin: 18px 0 6px; font-size: 11.5px; letter-spacing: .12em;
+  text-transform: uppercase; color: var(--cyan);
+}
+.legal-body h3:first-child { margin-top: 2px; }
+.legal-body p { margin: 0 0 10px; font-size: 12.5px; line-height: 1.7; color: var(--text-dim); }
+.legal-body b { color: var(--text); }
+.legal-body i { color: var(--purple); }
+.legal-body a { color: var(--cyan); }
+.legal-body ul { margin: 0 0 10px; padding-left: 18px; font-size: 12.5px; line-height: 1.75; color: var(--text-dim); }
+.legal-body code {
+  font-family: var(--font-mono); font-size: 11.5px; color: var(--emerald);
+  background: var(--void-2); padding: 1px 5px; border-radius: var(--radius-xs);
+}
+.legal-body pre {
+  margin: 0 0 12px; padding: 10px 12px; border-radius: var(--radius);
+  background: var(--void-2); border: 1px solid var(--edge); overflow-x: auto;
+}
+.legal-body pre code { background: none; padding: 0; color: #a5f3fc; font-size: 11px; line-height: 1.6; }
+
+/* --- contact -------------------------------------------------------------- */
+.contact-card {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 12px;
+  align-items: center; padding: 12px; margin-bottom: 14px;
+  border-radius: var(--radius); border: 1px solid var(--edge); background: var(--panel-2);
+}
+.contact-avatar {
+  width: 42px; height: 42px; display: grid; place-items: center;
+  border-radius: var(--radius); background: var(--cyan-soft);
+  color: var(--cyan); font-size: 20px; box-shadow: var(--glow-soft);
+}
+.contact-name { margin: 0; font-size: 12.5px; color: var(--text); }
+.contact-mail { margin: 2px 0; font-size: 12px; }
+.contact-mail a { color: var(--emerald); }
+.contact-links { margin: 0; font-size: 11px; color: var(--text-faint); }
+.contact-links a { color: var(--text-dim); }
+.contact-body h3 { margin: 4px 0 6px; font-size: 11.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--cyan); }
+.contact-body p { margin: 0 0 10px; font-size: 12.5px; line-height: 1.7; color: var(--text-dim); }
+.contact-note { color: var(--text-faint); }
+.mh-glyph { color: var(--rose); margin-right: 7px; }
+
+/* --- responsive + reduced motion, for this section only -------------------- */
+@media (max-width: 900px) {
+  .sf-hide-md { display: none; }
+}
+@media (max-width: 640px) {
+  .sf-hide-sm { display: none; }
+  /* A phone cannot fit attribution plus five legal links. Clipping them would
+     hide the disclaimer behind a pixel of overflow, so the strip scrolls instead
+     — with the scrollbar suppressed, because a scrollbar in a 34 px bar is noise. */
+  .site-footer { gap: 8px; padding: 0 8px; overflow-x: auto; scrollbar-width: none; }
+  .site-footer::-webkit-scrollbar { display: none; }
+  .donate-panel { grid-template-columns: minmax(0, 1fr); }
+  .donate-qr { justify-self: start; }
+  .contact-card { grid-template-columns: auto minmax(0, 1fr); }
+  .contact-card #contact-copy { grid-column: 2; justify-self: start; }
+}
+body.reduce-motion .sf-link,
+body.reduce-motion .sf-donate,
+body.reduce-motion .donate-tab { transition: none; }
+body.reduce-motion .sf-donate:hover { box-shadow: none; }

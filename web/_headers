@@ -55,8 +55,16 @@
 /vendor/*
   Cache-Control: public, max-age=604800, must-revalidate
 
+# The OG/Twitter card image: content-addressed in practice (it only changes with
+# a release), so a week of caching plus revalidation is right.
+/assets/*
+  Cache-Control: public, max-age=604800, must-revalidate
+
 /styles.css
   Cache-Control: public, max-age=3600, must-revalidate
 
 /app.js
+  Cache-Control: public, max-age=3600, must-revalidate
+
+/modals.js
   Cache-Control: public, max-age=3600, must-revalidate

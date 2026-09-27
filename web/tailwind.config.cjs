@@ -10,9 +10,10 @@
  * CI (`ci.yml`, job `web`) rebuilds and fails if the committed stylesheet is
  * stale, which is the usual way a purge-based setup silently loses a class.
  *
- * Content scanning covers `index.html`, `app.js` (which builds DOM from template
- * literals) and `styles.css` (which uses `@apply`). Every class must appear as a
- * complete literal string in one of those files — anything constructed at
+ * Content scanning covers `index.html`, `app.js` and `modals.js` (both of which
+ * build DOM from template literals) and `styles.css` (which uses `@apply`).
+ * Every class must appear as a complete literal string in one of those files —
+ * anything constructed at
  * runtime (`text-${colour}-400`) is invisible to the scanner and must be listed
  * in `safelist` below.
  */
@@ -24,7 +25,8 @@ const path = require("node:path");
  * `npm run build:css` from the repo root and from `web/` must produce the same
  * stylesheet, and a relative glob is how a purge silently drops every class.
  */
-const CONTENT = ["index.html", "app.js", "styles.css", "tailwind.input.css"].map((file) => path.join(__dirname, file));
+const CONTENT = ["index.html", "app.js", "modals.js", "styles.css", "tailwind.input.css"]
+  .map((file) => path.join(__dirname, file));
 
 /** @type {import('tailwindcss').Config} */
 module.exports = {

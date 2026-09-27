@@ -49,9 +49,13 @@ const LIBRARIES = [
   { pkg: "cose-base", source: "cose-base.js", target: "cose-base.min.js", minify: true, global: "coseBase" },
   { pkg: "cytoscape", source: "dist/cytoscape.min.js", target: "cytoscape.min.js", minify: false, global: "cytoscape" },
   { pkg: "cytoscape-fcose", source: "cytoscape-fcose.js", target: "cytoscape-fcose.min.js", minify: true, global: "cytoscapeFcose" },
+  // Donation QR codes. Zero dependencies, ships an unminified UMD bundle that
+  // declares `var qrcode` at the top level, so terser's default (non-toplevel)
+  // mangling keeps the browser global intact — asserted below.
+  { pkg: "qrcode-generator", source: "dist/qrcode.js", target: "qrcode.min.js", minify: true, global: "qrcode" },
 ];
 
-const LICENSES = ["layout-base", "cose-base", "cytoscape", "cytoscape-fcose"];
+const LICENSES = ["layout-base", "cose-base", "cytoscape", "cytoscape-fcose", "qrcode-generator"];
 
 function fail(message) {
   console.error("vendor-libs: " + message);
@@ -124,15 +128,32 @@ async function main() {
     console.log(`  ✓ ${lib.target.padEnd(26)} ${lib.pkg}@${installed}  ${formatSize(bytes)}`);
   }
 
+  // MIT code does not ship without its licence text. Some packages declare
+  // "license": "MIT" in package.json but omit the file from the tarball
+  // (qrcode-generator does); for those the text is committed here, taken
+  // verbatim from the upstream repository, and this step verifies it is present
+  // rather than silently regenerating a paraphrase.
+  let copied = 0;
   for (const pkg of LICENSES) {
     const licence = pkgPath(pkg, "LICENSE");
-    if (!existsSync(licence)) {
-      console.warn(`  ! ${pkg}: no LICENSE file found — check the package before shipping`);
+    const target = path.join(vendorDir, "LICENSE." + pkg);
+    if (existsSync(licence)) {
+      await copyFile(licence, target);
+      copied += 1;
       continue;
     }
-    await copyFile(licence, path.join(vendorDir, "LICENSE." + pkg));
+    if (existsSync(target)) {
+      const text = await readFile(target, "utf8");
+      if (!/Permission is hereby granted/i.test(text)) {
+        fail(`${pkg}: committed LICENSE.${pkg} does not look like a licence text`);
+      }
+      console.log(`  = ${pkg}: tarball ships no LICENSE — keeping the committed upstream text`);
+      copied += 1;
+      continue;
+    }
+    fail(`${pkg}: no LICENSE in the tarball and none committed — cannot ship it`);
   }
-  console.log(`  ✓ licences copied (${LICENSES.length} packages)`);
+  console.log(`  ✓ licences present for ${copied}/${LICENSES.length} packages`);
 
   // Rewrite the inventory table in web/vendor/README.md so the sizes and
   // versions documented there are generated, not remembered.

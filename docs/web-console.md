@@ -5,8 +5,10 @@ neighbourhood assemble on a 2D canvas, walk the ties that connect two of them, a
 export the evidence. Dark, keyboard-driven, and built to be readable at 2 a.m. on a
 laptop with the lights off.
 
-* Source: [`web/index.html`](../web/index.html) · [`web/app.js`](../web/app.js) · [`web/styles.css`](../web/styles.css)
+* Source: [`web/index.html`](../web/index.html) · [`web/app.js`](../web/app.js) · [`web/modals.js`](../web/modals.js) · [`web/styles.css`](../web/styles.css)
 * Graph engine: Cytoscape.js 3.30.4 with the fcose force-directed layout (2.2.0) — vendored, MIT
+* QR codes: qrcode-generator 2.0.4 — vendored, MIT, rendered as inline SVG
+* Social card: `web/assets/og-cover.jpg` (1200×630, ~150 KB)
 * Styling: Tailwind 3.4.17, compiled to `web/vendor/tailwind.css` (13 KB) plus hand-written `styles.css`
 * Hosting: any static host. Cloudflare Pages is the reference deployment; `_headers` ships with it
 * **No build step at deploy time, no runtime dependency, no CDN, no paid service.** Every
@@ -262,6 +264,64 @@ name, so a poisoned metric falls back to `anomaly_score` instead of being interp
 
 ---
 
+## Donations, legal pages & SEO
+
+Everything an operator needs *around* the graph — support, legal text, help and crawler
+metadata — lives in [`web/modals.js`](../web/modals.js) plus the markup in
+[`web/index.html`](../web/index.html). It is one more static file, not a second site: no
+routes, no server rendering, no third-party requests.
+
+**Site footer.** A 34 px third row of the shell grid (`.app-shell` is
+`header / body / footer`), carrying attribution — © year, AndrexTheDev,
+hippie.highho@gmail.com — and five links: Disclaimer, Terms of Service, Help & OSINT
+guide, Keyboard and Contact, plus a ♥ Support button. The year and the address are filled
+in at boot by `bindFooter()`, so neither goes stale in a fork.
+
+**Donation dialog.** Reachable from the header heart, the footer button and the
+<kbd>d</kbd> key. Three currencies (SOL / BTC / ETH) as a real `role="tablist"` with
+roving focus and arrow-key navigation; each tab renders the address, its
+`first6…last6` fingerprint, a note about the network, and a QR code. One click copies,
+the button flips to *Copied ✓*, and a toast repeats the fingerprint to verify against —
+because clipboard malware swaps addresses and the fingerprint is the only defence an
+operator has. The QR is rendered **locally** as inline SVG by the vendored
+qrcode-generator: calling a QR image service would tell that service both the address and
+who is looking at it, which is exactly the leak this console exists to avoid. If the
+vendored file is missing the dialog still works — the address stays selectable and the
+box says so.
+
+**Modal plumbing.** `modals.js` does not own a second idea of "which dialog is open". When
+the console is present it calls `PuppetNET.actions.openModal/closeModal`, so `state.modalOpen`,
+the <kbd>Esc</kbd> cascade and the document-level `[data-close]` delegation all keep
+working, and it closes a previously open dialog first — the footer's five links sit next
+to each other, and the console's `openModal` only records state. Without `app.js`
+(a fork that ships the dialogs alone) it falls back to its own open/close and focus
+handling. The legal and guide **copy lives in the HTML**, not in the JS: it is prose, it
+should be readable without JavaScript, and it should be diffable in review.
+
+**SEO.** `index.html` ships a SERP-sized `<title>` (≤ 70 characters) and description
+(120–180), keyword metadata for *OSINT*, *network analysis* and *graph visualizer*,
+Open Graph with a 1200×630 card image, Twitter `summary_large_image`, a canonical, author
+and theme colour, and one JSON-LD block holding both a `SoftwareApplication` /
+`WebApplication` and a `WebSite` with a `SearchAction` whose template
+(`./#/q={search_term_string}`) points at a hash route the console really resolves.
+
+Every URL in that metadata ships **relative**, because the deployment origin is not known
+at build time, and `hydrateSeo()` rewrites canonical, `og:url`, `og:image`,
+`twitter:image` and the JSON-LD `@id` / `url` / `image` / `urlTemplate` values against
+`location.origin` on boot — idempotently, and leaving authoritative external identifiers
+(`github.com/AndrexTheDev`, the MIT licence URL, the `schema.org` context) alone. A
+crawler that runs JavaScript sees absolute URLs; one that does not still sees valid
+relative ones.
+
+**Testing.** `tests/web_smoke.mjs` boots the shipped document with `modals.js` and
+asserts the three addresses verbatim (a typo is a permanently lost donation), the QR
+density, tab and arrow-key behaviour, the copy toast, the blocked-clipboard path, the
+missing-QR-library path, every footer link resolving to a real dialog, the substance of
+each legal page, the metadata sizes and values, and that hydration is absolute and
+idempotent — without weakening the CSP.
+
+---
+
 ## Hardening
 
 The console renders text harvested from hostile sources — document titles, entity names,
@@ -283,6 +343,17 @@ local HTTP endpoint — **tighten it to your Worker's exact origin in production
 /*
   Connect-Src: 'self' https://relay.example.dev
 ```
+
+**Indexability.** `index.html` ships `robots: index, follow, max-image-preview:large,
+max-snippet:-1`, because the SEO metadata above is worthless to a page nobody may index.
+That is a decision about *this* deployment, not about the software: a private
+investigative instance should revert that one line to `noindex, nofollow` (and usually
+also put the deployment behind Cloudflare Access). Nothing else in the head needs to
+change — the metadata stays useful for internal link previews. The JSON-LD block does not
+weaken the CSP either: `type="application/ld+json"` is a **data block**, which the HTML
+parser never executes, so `script-src 'self'` still forbids every executable inline
+script. The smoke suite enforces exactly that distinction — an inline `<script>` with a
+JavaScript type fails the build, and a data block must parse as JSON.
 
 **Escaping.** One `escapeHtml` helper is used on every rendered surface — suggestions,
 leaderboard, inspector, table cells, path chains, toasts, scope labels — and the smoke
@@ -407,8 +478,8 @@ concatenation will not appear in the compiled CSS — write class names literall
 ## Testing
 
 ```bash
-npm run check         # node --check worker.js && node --check web/app.js
-npm run test:web      # 24 checks, ~19 s
+npm run check         # node --check worker.js web/app.js web/modals.js
+npm run test:web      # 28 checks, ~25 s
 npm run test:worker   # 32 checks
 npm test              # all three
 ```
@@ -425,7 +496,9 @@ keyboard shortcuts and the <kbd>Esc</kbd> cascade; deep-link round-trips includi
 and hostile parameters; booting without Cytoscape; **worker mode against the real
 `worker.js`** with a fake Neo4j behind it; the offline fallback; canonical-key format
 agreement with the Python resolver; the formatting helpers; copy-Cypher injection
-resistance; and credential handling.
+resistance; credential handling; the donation dialog (addresses, QR, tabs, copy, blocked
+clipboard); the footer's legal, guide and contact dialogs; the crawler metadata and
+JSON-LD; and SEO hydration against the deployment origin.
 
 Both suites stub every upstream, so they cannot pass because a third-party API happened
 to be reachable — and they assert that nothing they ran threw an uncaught error.

@@ -20,6 +20,7 @@ fetched from a CDN**, for three reasons that matter more than convenience here:
 | `cose-base.min.js` | [cose-base](https://www.npmjs.com/package/cose-base) | 2.2.0 | MIT | 43.2 KB |
 | `cytoscape.min.js` | [cytoscape](https://www.npmjs.com/package/cytoscape) | 3.30.4 | MIT | 365 KB |
 | `cytoscape-fcose.min.js` | [cytoscape-fcose](https://www.npmjs.com/package/cytoscape-fcose) | 2.2.0 | MIT | 19.7 KB |
+| `qrcode.min.js` | [qrcode-generator](https://www.npmjs.com/package/qrcode-generator) | 2.0.4 | MIT | 20 KB |
 | `tailwind.css` | [tailwindcss](https://www.npmjs.com/package/tailwindcss) | 3.4.17 | MIT | 12.7 KB (purged build) |
 
 `layout-base` → `cose-base` → `cytoscape-fcose` is the UMD chain the fcose
@@ -27,7 +28,17 @@ force-directed layout needs; each attaches a browser global (`layoutBase`,
 `coseBase`, `cytoscapeFcose`) and must load in that order, before `app.js`.
 Load order is fixed in `web/index.html`.
 
+`qrcode-generator` attaches the global `qrcode` and renders the donation addresses
+in `web/modals.js` as inline SVG. It is used instead of a QR image service because a
+`api.qrserver.com`-style call would hand a third party the address *and* the fact
+that this operator is looking at it — the same reason nothing else here is on a CDN.
+It must load before `modals.js`.
+
 Each package's MIT licence text is kept alongside it as `LICENSE.<package>`.
+`qrcode-generator` publishes no LICENSE file in its npm tarball, so
+`LICENSE.qrcode-generator` is the upstream text taken verbatim from
+[kazuhikoarase/qrcode-generator](https://github.com/kazuhikoarase/qrcode-generator/blob/master/LICENSE);
+`npm run vendor:libs` verifies that file is still present instead of inventing one.
 
 ## Reproducing this directory
 
