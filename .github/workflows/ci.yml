@@ -227,20 +227,11 @@ jobs:
           npm run audit 2>&1 | tee audit.log
 
       # Both suites name the check that failed and print the assertion under it;
-      # the audit prints one finding per three lines. Annotations carry that
-      # text to the run page and to the API.
+      # the audit prints one finding per three lines. scripts/annotate-log.mjs turns
+      # that into annotations, which travel with the run to the run page and the
+      # API — the job log itself lives on a host not every environment can read.
+      # It exits non-zero when it finds nothing, so a broken helper cannot hide the
+      # failure it was supposed to explain.
       - name: Surface failures as annotations
         if: failure()
-        run: |
-          for log in smoke-web.log smoke-worker.log audit.log; do
-            [ -f "$log" ] || continue
-            awk -v log="$log" '
-              function emit(text) {
-                gsub(/%/, "%25", text); gsub(/\r/, "%0D", text);
-                print "::error::" log ": " text;
-              }
-              /^FAIL/ { name = $0; getline detail; getline more; emit(name " | " detail " | " more); next }
-              /^  \[[a-z0-9]+\] [a-z]+\// { id = $0; getline where; getline what; emit(id " | " where " | " what); next }
-              /^AUDIT FAILED/ { emit($0) }
-            ' "$log"
-          done
+        run: node scripts/annotate-log.mjs smoke-web.log smoke-worker.log audit.log
