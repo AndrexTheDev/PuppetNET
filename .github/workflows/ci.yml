@@ -204,15 +204,43 @@ jobs:
       # the real UI: search, canvas, filters, N-hop expansion, handshake
       # pathfinding, the data table, CSV export, keyboard shortcuts, deep links,
       # worker mode against the actual worker.js, and the offline fallback.
+      # Tee'd, because the failure text is worth more than the exit code: the
+      # step below turns it into annotations, which stay readable through the
+      # GitHub API from places where the job-log host is not reachable.
       - name: Console smoke test (headless browser)
-        run: node tests/web_smoke.mjs
+        run: |
+          set -o pipefail
+          node tests/web_smoke.mjs 2>&1 | tee smoke-web.log
 
       - name: Graph API smoke test
-        run: node tests/worker_smoke.mjs
+        run: |
+          set -o pipefail
+          node tests/worker_smoke.mjs 2>&1 | tee smoke-worker.log
 
       # Feature tests say a module works; the audit says the modules still agree
       # with each other — client caps versus GRAPH_LIMITS, Aura budgets versus the
       # HUD, the cost perimeter, dangling ARIA references, SEO completeness.
       # Accepted risks are registered in scripts/audit.mjs with a written reason.
       - name: Repository audit
-        run: npm run audit
+        run: |
+          set -o pipefail
+          npm run audit 2>&1 | tee audit.log
+
+      # Both suites name the check that failed and print the assertion under it;
+      # the audit prints one finding per three lines. Annotations carry that
+      # text to the run page and to the API.
+      - name: Surface failures as annotations
+        if: failure()
+        run: |
+          for log in smoke-web.log smoke-worker.log audit.log; do
+            [ -f "$log" ] || continue
+            awk -v log="$log" '
+              function emit(text) {
+                gsub(/%/, "%25", text); gsub(/\r/, "%0D", text);
+                print "::error::" log ": " text;
+              }
+              /^FAIL/ { name = $0; getline detail; getline more; emit(name " | " detail " | " more); next }
+              /^  \[[a-z0-9]+\] [a-z]+\// { id = $0; getline where; getline what; emit(id " | " where " | " what); next }
+              /^AUDIT FAILED/ { emit($0) }
+            ' "$log"
+          done

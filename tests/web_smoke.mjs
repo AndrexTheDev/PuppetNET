@@ -2205,7 +2205,9 @@ await check("credentials never travel in a URL, and persistence is honest", asyn
     const { win, api, q, jsdomErrors } = await bootConsole({ quiet: true });
     // modals.js owns the footer's delegated openers and calls into app.js.
     win.eval(readWeb("modals.js"));
-    await sleep(20);
+    // Poll instead of sleeping: a slower runner must not turn somebody's timing
+    // constant into a red suite.
+    await until(() => typeof win.PuppetNETModals === "object", "modals.js to publish its API", 4000);
     const openDialogs = () => Array.from(win.document.querySelectorAll(".modal"))
       .filter((modal) => !modal.hidden)
       .map((modal) => modal.id);
@@ -2227,13 +2229,13 @@ await check("credentials never travel in a URL, and persistence is honest", asyn
     // Mixed path: a console dialog open, then a footer link.
     q("#btn-settings").dispatchEvent(new win.MouseEvent("click", { bubbles: true }));
     q('[data-open-modal="#modal-donate"]').dispatchEvent(new win.MouseEvent("click", { bubbles: true }));
-    await sleep(20);
+    await until(() => api.state.modalOpen === "#modal-donate", "the footer's donation link to open", 4000);
     assert.deepEqual(openDialogs(), ["modal-donate"], "a footer dialog replaces a console dialog");
     assert.equal(win.document.body.style.overflow, "hidden",
       "the page must not scroll behind an open dialog");
 
     win.document.dispatchEvent(new win.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-    await sleep(30);
+    await until(() => openDialogs().length === 0, "Escape to close the dialog", 4000);
     assert.deepEqual(openDialogs(), [], "Escape closes whichever dialog is open");
     assert.equal(win.document.body.style.overflow, "", "and unlocks scrolling");
 
