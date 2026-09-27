@@ -398,14 +398,136 @@ def test_local_state_accepts_a_bare_list(env):
     assert pipeline._read_local_state() == {"abc", "def"}
 
 
-def test_local_state_is_bounded(env):
+def test_local_state_records_when_each_hash_was_seen(env):
+    """The cache is timestamped, because the window is what makes the tiers work."""
     pipeline = make_pipeline(env)
     docs = [Document(doc_id=f"d{i}", source_id="s", url=f"https://example.test/{i}", content_hash=f"{i:06d}") for i in range(5)]
     pipeline._flush_local_state(docs)
     payload = json.loads(pipeline._state_file().read_text(encoding="utf-8"))
+    assert payload["format"] == 2
     assert payload["count"] == 5
-    assert payload["hashes"] == sorted(payload["hashes"])
+    assert isinstance(payload["hashes"], dict), "hash → seen_at"
+    assert len(payload["hashes"]) == 5
+    assert all(str(stamp).endswith("Z") for stamp in payload["hashes"].values())
     assert "updated_at" in payload
+
+
+def test_local_state_is_bounded_by_recency(env, monkeypatch):
+    """Over the cap the *newest* entries survive — the old code sorted the digests
+    and therefore kept an arbitrary slice, which could drop what was read minutes
+    ago while keeping a two-month-old hash."""
+    from datetime import timedelta
+
+    import puppetnet.pipeline as pipeline_module
+    from puppetnet.models import iso, utcnow
+
+    monkeypatch.setattr(pipeline_module, "LOCAL_STATE_LIMIT", 3)
+    pipeline = make_pipeline(env)
+    state = pipeline._state_file()
+    state.parent.mkdir(parents=True, exist_ok=True)
+    now = utcnow()
+    state.write_text(
+        json.dumps(
+            {
+                "format": 2,
+                "updated_at": iso(now),
+                "count": 5,
+                "hashes": {
+                    # "zzz" sorts last alphabetically but is the second oldest.
+                    "oldest": iso(now - timedelta(days=4)),
+                    "zzz-not-recent": iso(now - timedelta(days=3)),
+                    "newer": iso(now - timedelta(days=2)),
+                    "newest": iso(now - timedelta(days=1)),
+                    "fresh": iso(now),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    pipeline._flush_local_state([Document(doc_id="d", source_id="s", url="https://example.test/x", content_hash="fresh")])
+
+    payload = json.loads(state.read_text(encoding="utf-8"))
+    assert payload["count"] == 3
+    assert set(payload["hashes"]) == {"newest", "fresh", "newer"}, (
+        "an alphabetically-last hash must not outrank a recent one"
+    )
+
+
+def test_local_state_honours_the_dedupe_window(env):
+    """A narrower tier must not skip what a wider tier is supposed to re-check."""
+    from datetime import timedelta
+
+    from puppetnet.models import iso, utcnow
+
+    pipeline = make_pipeline(env)
+    state = pipeline._state_file()
+    state.parent.mkdir(parents=True, exist_ok=True)
+    state.write_text(
+        json.dumps(
+            {
+                "format": 2,
+                "hashes": {
+                    "recent": iso(utcnow() - timedelta(days=2)),
+                    "forty-days": iso(utcnow() - timedelta(days=40)),
+                    "untimed": None,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    daily = make_pipeline(dataclasses.replace(env, dedupe_window_days=30))
+    assert daily._read_local_state() == {"recent", "untimed"}, "40 days is outside the daily window"
+
+    weekly = make_pipeline(dataclasses.replace(env, dedupe_window_days=90))
+    assert weekly._read_local_state() == {"recent", "forty-days", "untimed"}, "the weekly window reaches it"
+
+    unbound = make_pipeline(dataclasses.replace(env, dedupe_window_days=0))
+    assert unbound._read_local_state() == {"recent", "forty-days", "untimed"}, "0 disables the window"
+
+
+def test_the_cache_keeps_more_history_than_the_run_that_wrote_it(env):
+    """The file is shared between the tiers through actions/cache: an hourly run
+    must not prune the ninety days the weekly run depends on."""
+    from datetime import timedelta
+
+    from puppetnet.models import iso, utcnow
+
+    hourly = make_pipeline(dataclasses.replace(env, dedupe_window_days=7))
+    state = hourly._state_file()
+    state.parent.mkdir(parents=True, exist_ok=True)
+    state.write_text(
+        json.dumps({"format": 2, "hashes": {"sixty-days": iso(utcnow() - timedelta(days=60))}}),
+        encoding="utf-8",
+    )
+    hourly._flush_local_state([Document(doc_id="d", source_id="s", url="https://example.test/x", content_hash="fresh")])
+
+    payload = json.loads(state.read_text(encoding="utf-8"))
+    assert "sixty-days" in payload["hashes"], "retention outlives the run's own window"
+    assert hourly._read_local_state() == {"fresh"}, "but the run still applies its own window"
+
+    weekly = make_pipeline(dataclasses.replace(env, dedupe_window_days=90))
+    assert weekly._read_local_state() == {"sixty-days", "fresh"}, "and the deep run can still use it"
+
+
+def test_a_legacy_state_file_inherits_its_own_timestamp(env):
+    """The old format kept a bare list plus one `updated_at`: that timestamp is the
+    only evidence of when those documents were read, so it is used as theirs."""
+    from datetime import timedelta
+
+    from puppetnet.models import iso, utcnow
+
+    pipeline = make_pipeline(env)
+    state = pipeline._state_file()
+    state.parent.mkdir(parents=True, exist_ok=True)
+    state.write_text(
+        json.dumps({"updated_at": iso(utcnow() - timedelta(days=40)), "count": 2, "hashes": ["abc", "def"]}),
+        encoding="utf-8",
+    )
+    daily = make_pipeline(dataclasses.replace(env, dedupe_window_days=30))
+    assert daily._read_local_state() == set(), "a 40-day-old file is outside a 30-day window"
+    weekly = make_pipeline(dataclasses.replace(env, dedupe_window_days=90))
+    assert weekly._read_local_state() == {"abc", "def"}
 
 
 def test_flush_local_state_with_no_documents_writes_nothing(env):

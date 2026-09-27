@@ -30,6 +30,7 @@ import time
 import uuid
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -58,6 +59,28 @@ from .sources import AdapterContext, AdapterError, create_adapter
 from .sources.registry import SOURCE_REGISTRY, specs_for_tier
 
 __all__ = ["IngestPipeline", "PipelineOptions", "run_pipeline", "RunReport"]
+
+#: Retention for the local dedupe cache (`.state/content_hashes.json`). Wider
+#: than any tier's window on purpose: the file travels between runs through
+#: `actions/cache`, so a narrow run must not prune what a deep run needs. See
+#: `_flush_local_state`.
+LOCAL_STATE_RETENTION_DAYS = 120
+
+#: Hard bound on the cache file (entries), independent of the retention above.
+LOCAL_STATE_LIMIT = 100_000
+
+
+def _parse_state_timestamp(value: Any) -> datetime | None:
+    """Parse a timestamp from the local dedupe cache; ``None`` when unusable."""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        stamp = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return stamp if stamp.tzinfo is not None else stamp.replace(tzinfo=timezone.utc)
+
 
 logger = get_logger("pipeline")
 
@@ -635,30 +658,105 @@ class IngestPipeline:
         return self.settings.state_path / "content_hashes.json"
 
     def _read_local_state(self) -> set[str]:
+        """Content hashes seen inside *this run's* dedupe window.
+
+        The window matters because the three tiers set it differently (7 days
+        hourly, 30 daily, 90 weekly) and the file is shared between them: a
+        document last read five weeks ago must be skipped by the weekly deep run,
+        which is designed to re-check further back, and must not be skipped by an
+        hourly run, which is not. An entry with no usable timestamp counts as
+        current — keeping a hash can only suppress re-processing content the graph
+        already holds, while dropping one that should have been kept costs a
+        re-read.
+        """
+        entries = self._read_local_state_entries()
+        window = int(self.settings.dedupe_window_days or 0)
+        if window <= 0:
+            return set(entries)
+        cutoff = utcnow() - timedelta(days=window)
+        kept = {
+            digest
+            for digest, seen_at in entries.items()
+            if (stamp := _parse_state_timestamp(seen_at)) is None or stamp >= cutoff
+        }
+        skipped = len(entries) - len(kept)
+        if skipped:
+            self.logger.debug(
+                "local dedupe cache: %d of %d hashes are older than the %d-day window",
+                skipped, len(entries), window,
+            )
+        return kept
+
+    def _read_local_state_entries(self) -> dict[str, str | None]:
+        """The raw cache: ``{content_hash: seen_at}``, window not applied.
+
+        Reads all three layouts the file has had: the current timestamped map,
+        the older ``{"updated_at", "hashes": [...]}`` document (every entry then
+        inherits the file's ``updated_at``, which is the best evidence of when it
+        was written) and a bare JSON list.
+        """
         path = self._state_file()
         if not path.exists():
-            return set()
+            return {}
         try:
             with path.open("r", encoding="utf-8") as handle:
                 payload = json.load(handle)
-            entries = payload.get("hashes") if isinstance(payload, dict) else payload
-            return {str(item) for item in (entries or []) if item}
         except (OSError, ValueError) as exc:
             self.logger.warning("could not read local dedupe state %s: %s", path, exc)
-            return set()
+            return {}
+
+        if isinstance(payload, dict):
+            entries = payload.get("hashes")
+            if isinstance(entries, dict):
+                return {str(digest): str(stamp) if stamp else None for digest, stamp in entries.items() if digest}
+            fallback = payload.get("updated_at")
+            return {str(item): fallback for item in (entries or []) if item}
+        if isinstance(payload, list):
+            return {str(item): None for item in payload if item}
+        return {}
 
     def _flush_local_state(self, documents: Sequence[Document]) -> None:
+        """Record what was read, pruned to a retention that serves every tier.
+
+        The retention is deliberately *wider* than this run's window
+        (``LOCAL_STATE_RETENTION_DAYS``): the file travels between runs through
+        `actions/cache`, so an hourly run that pruned it to its own seven days
+        would silently disable the weekly deep run's ninety-day view whenever the
+        graph is unreachable. The run's own window is applied on read.
+        """
         if not documents:
             return
         path = self._state_file()
-        existing = self._read_local_state()
-        existing.update(doc.content_hash for doc in documents if doc.content_hash)
-        # Keep the file bounded: most recent 100k hashes.
-        trimmed = sorted(existing)[-100_000:]
+        entries = self._read_local_state_entries()
+        stamp = iso(utcnow())
+        for document in documents:
+            if document.content_hash:
+                entries[document.content_hash] = stamp
+
+        retention = max(int(self.settings.dedupe_window_days or 0), LOCAL_STATE_RETENTION_DAYS)
+        cutoff = utcnow() - timedelta(days=retention)
+        entries = {
+            digest: seen_at
+            for digest, seen_at in entries.items()
+            if (stamp_seen := _parse_state_timestamp(seen_at)) is None or stamp_seen >= cutoff
+        }
+        if len(entries) > LOCAL_STATE_LIMIT:
+            # Keep the most recently seen entries, not the lexicographically
+            # largest hashes: the previous version sorted the digests, which kept
+            # an arbitrary slice and could drop documents read minutes ago.
+            entries = dict(
+                sorted(
+                    entries.items(),
+                    key=lambda item: _parse_state_timestamp(item[1]) or datetime.min.replace(tzinfo=timezone.utc),
+                )[-LOCAL_STATE_LIMIT:]
+            )
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             with path.open("w", encoding="utf-8") as handle:
-                json.dump({"updated_at": iso(utcnow()), "count": len(trimmed), "hashes": trimmed}, handle)
+                json.dump(
+                    {"format": 2, "updated_at": stamp, "count": len(entries), "hashes": entries},
+                    handle,
+                )
         except OSError as exc:
             self.logger.warning("could not persist local dedupe state: %s", exc)
 

@@ -121,6 +121,9 @@ INDEXES: tuple[str, ...] = (
     "CREATE INDEX puppetnet_document_source IF NOT EXISTS FOR (d:Document) ON (d.source_id)",
     "CREATE INDEX puppetnet_document_published IF NOT EXISTS FOR (d:Document) ON (d.published_at)",
     "CREATE INDEX puppetnet_document_fetched IF NOT EXISTS FOR (d:Document) ON (d.fetched_at)",
+    # The dedupe index reads `last_ingested_at`, so it needs its own range index:
+    # without one the query below is a full label scan on every run — 24 times a day.
+    "CREATE INDEX puppetnet_document_ingested IF NOT EXISTS FOR (d:Document) ON (d.last_ingested_at)",
     "CREATE INDEX puppetnet_run_started IF NOT EXISTS FOR (r:IngestRun) ON (r.started_at)",
 )
 
@@ -171,6 +174,7 @@ ON CREATE SET
     d.fetched_at = row.fetched_at,
     d.external_id = row.external_id,
     d.first_ingested_at = row.fetched_at,
+    d.last_ingested_at = row.fetched_at,
     d.ingest_count = 1
 ON MATCH SET
     d.title = CASE WHEN size(coalesce(row.title,'')) > size(coalesce(d.title,'')) THEN row.title ELSE d.title END,
@@ -447,9 +451,25 @@ MATCH (e:Entity)
 RETURN count(e) AS nodes
 """
 
+# The dedupe index: "which documents have we already read inside the window?".
+#
+# It filters on `last_ingested_at` alone, and that is deliberate:
+#
+#   * `ON CREATE` and `ON MATCH` both stamp `last_ingested_at`, so the property is
+#     set on every document this writer has ever written. `fetched_at` is not:
+#     it is only the first fetch.
+#   * `last_ingested_at` has a range index (`puppetnet_document_ingested`), so the
+#     planner seeks the window instead of scanning every `:Document`. The earlier
+#     `WHERE d.fetched_at >= $since OR d.last_ingested_at >= $since` gave up that
+#     index — an `OR` across two different properties cannot use either one, so
+#     every run paid a full label scan over a graph that only grows.
+#   * A document written before this property existed is therefore invisible to
+#     dedupe exactly once: the next run re-ingests it, stamps the property, and
+#     every run after that sees it. Re-ingesting is harmless — the evidence ledger
+#     in the writer keeps a re-read from counting as corroboration.
 RECENT_CONTENT_HASHES = """
 MATCH (d:Document)
-WHERE d.fetched_at >= $since OR d.last_ingested_at >= $since
+WHERE d.last_ingested_at >= $since
 RETURN d.content_hash AS content_hash, d.doc_id AS doc_id
 """
 

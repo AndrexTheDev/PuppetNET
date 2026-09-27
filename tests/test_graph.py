@@ -1311,6 +1311,39 @@ def test_persist_summary_is_serialisable(writer):
     assert payload["relations_by_type"] == {}
 
 
+def test_the_dedupe_read_is_index_backed():
+    """The dedupe index runs on every scheduled run — 24 times a day on the hourly
+    tier — so it must not be a full label scan over a graph that only grows.
+
+    It filters on `last_ingested_at` alone, and that property has a range index.
+    The earlier `WHERE d.fetched_at >= $since OR d.last_ingested_at >= $since`
+    looked harmless and cost a scan of every `:Document` on every run, because an
+    `OR` across two different properties cannot use either index.
+    """
+    query = schema.RECENT_CONTENT_HASHES
+    where = query.split("WHERE", 1)[1]
+    assert "d.last_ingested_at >= $since" in where
+    assert " OR " not in where, "an OR across properties defeats the index"
+    assert "d.fetched_at" not in where, "fetched_at is not the dedupe timestamp — last_ingested_at is"
+
+    indexed = "\n".join(schema.INDEXES)
+    assert "ON (d.last_ingested_at)" in indexed, (
+        "the dedupe read filters on a property without a range index: it would scan every Document node"
+    )
+
+
+def test_documents_always_carry_the_dedupe_timestamp():
+    """The index-backed dedupe read is only complete if *every* write stamps the
+    property it filters on — on create as well as on match."""
+    create_clause, match_clause = schema.DOCUMENT_UPSERT.split("ON MATCH SET", 1)
+    assert "d.last_ingested_at = row.fetched_at" in create_clause, (
+        "a document created without last_ingested_at is invisible to dedupe until it is read a second time"
+    )
+    assert "d.last_ingested_at = row.fetched_at" in match_clause, (
+        "without the match-side stamp a document leaves the window as soon as it is a day old"
+    )
+
+
 def test_recent_content_hashes_reads_the_dedupe_window(writer):
     seen: dict = {}
 

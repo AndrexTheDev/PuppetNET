@@ -77,7 +77,9 @@ as a warning so one flaky feed cannot fail a daily run.
 4. **NLP init** — only if an unstructured source is enabled *and* `NLP_ENABLED`; a
    structured-only run never pays the spaCy load cost.
 5. **Dedupe index** — recent content hashes from the graph (`DEDUPE_WINDOW_DAYS`)
-   plus `.state/content_hashes.json`, so a dry run still dedupes.
+   plus `.state/content_hashes.json`, so a dry run still dedupes: the local half is
+   timestamped and windowed like the graph half, so each tier skips exactly what its own
+   cadence says it has already read.
 6. **Harvest loop** — per source: build an `AdapterContext`, run the adapter, parse
    unstructured documents, merge entities/relations, flush that source's slice to
    Neo4j, update counters. Three hard stops: the wall-clock budget

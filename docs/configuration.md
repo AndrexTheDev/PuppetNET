@@ -104,10 +104,10 @@ direct fallback must be available; `MAX_RUNTIME_SECONDS ≥ 60`; `NEO4J_BATCH_SI
 | `MAX_DOCUMENTS_PER_SOURCE` | `max_documents_per_source` | `150` | Clamps each spec's `max_documents`. |
 | `MAX_DOCUMENTS_TOTAL` | `max_documents_total` | `1500` | Global cap for the run. |
 | `MAX_RUNTIME_SECONDS` | `max_runtime_seconds` | `2100` | 35 min; must be ≥ 60. The workflow allows 90 min total. |
-| `STATE_DIR` | `state_dir` | `.state` | Holds `content_hashes.json` (bounded to 100k hashes). |
+| `STATE_DIR` | `state_dir` | `.state` | Holds `content_hashes.json`: `{content_hash: seen_at}`, windowed on read (`DEDUPE_WINDOW_DAYS`), retained 120 days, capped at the 100k newest hashes. |
 | `REPORT_DIR` | `report_dir` | `reports` | `<run_id>.json` + `<run_id>.md`. |
 | `ONLY_NEW_DOCUMENTS` | `only_new_documents` | `true` | Content-hash dedupe. |
-| `DEDUPE_WINDOW_DAYS` | `dedupe_window_days` | `30` | Graph-side dedupe window; `0` ⇒ everything is new. |
+| `DEDUPE_WINDOW_DAYS` | `dedupe_window_days` | `30` | Dedupe window, matching the tier (`7` hourly, `30` daily, `90` weekly); `0` ⇒ everything is new. Applied to the graph index *and* to the local state cache. |
 
 ## Source credentials & queries
 

@@ -317,15 +317,33 @@ returned nothing:
 
 * **Neo4j is authoritative.** `Document.doc_id` and `Entity.canonical_key` are unique
   constraints; a document already in the graph is skipped by MERGE semantics, and
-  `ONLY_NEW_DOCUMENTS=true` filters by `seen_at`/`DEDUPE_WINDOW_DAYS` before that.
-* **`.state/content_hashes.json`** is a warm cache of content hashes from recent runs,
-  bounded to the most recent 100 000 entries. It survives a graph outage and makes an
-  unchanged feed free. It is restored between Actions runs via `actions/cache`
-  (`restore-keys: puppetnet-state-`). Deleting it is always safe — the next run simply
-  re-checks the graph.
+  `ONLY_NEW_DOCUMENTS=true` filters by content hash / `doc_id` against
+  `DEDUPE_WINDOW_DAYS` before that.
+* **The window is read from `last_ingested_at`**, which every write stamps (create *and*
+  match) and which carries its own range index (`puppetnet_document_ingested`). The
+  earlier form `WHERE d.fetched_at >= $since OR d.last_ingested_at >= $since` could use no
+  index at all — an `OR` across two properties defeats both — so every run scanned every
+  `Document` node, 24 times a day on the hourly tier. `tests/test_graph.py` pins both the
+  query shape and the index.
+* **`.state/content_hashes.json`** is a warm cache of content hashes from recent runs:
+  `{hash: seen_at}` with the run's own window applied on read (7/30/90 days depending on
+  the tier) and a retention of `LOCAL_STATE_RETENTION_DAYS` (120) on write, so an hourly
+  run cannot prune what the weekly deep run depends on. It is capped at the newest
+  `LOCAL_STATE_LIMIT` (100 000) *by timestamp* — the earlier version sorted the digests,
+  which kept an arbitrary slice and could drop what had just been read. The file survives
+  a graph outage and makes an unchanged feed free; it is restored between Actions runs via
+  `actions/cache` (`restore-keys: puppetnet-state-`). Deleting it is always safe — the next
+  run simply re-checks the graph.
+* **Re-reading is safe, but it is not free.** A document inside the window is skipped
+  entirely; one outside it is fetched again, parsed again and *written* again — which the
+  evidence ledger in the writer absorbs without touching `confidence` or `observations`
+  (see [graph schema](graph-schema.md#new-evidence-vs-a-re-read)). That is why the tiers
+  set different windows: the hourly tier has no reason to re-read a week-old article, and
+  the weekly deep run does have a reason to re-check three months of registers.
 
-**Reprocessing a document deliberately:** delete its state entry (or the whole file) *and*
-remove or re-stamp the `Document` node, because the graph is the authoritative gate.
+**Reprocessing a document deliberately:** set `DEDUPE_WINDOW_DAYS=0` for one manual run, or
+delete its state entry *and* remove or re-stamp the `Document` node — the graph is the
+authoritative gate.
 
 * **`.state/telegram_alerts.json`** is the alert ledger: `sent{dedupe_key: timestamp}` for
   bridge suppression, `digests{chat_id: timestamp}` for the once-per-day rule, and
