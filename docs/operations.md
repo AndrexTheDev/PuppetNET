@@ -124,7 +124,13 @@ a state that does not verify fails the job instead of producing a misleading pic
   only** — it is not a `devDependency`, because its postinstall would download browser
   binaries on every `npm ci` in every other job;
 * `.screenshots/` is uploaded as the `screenshot-matrix` artefact with
-  `if: always()` and a 14-day retention: images are build output, never commits;
+  `if: always()` and a 14-day retention: images are build output, never commits.
+  The upload sets `include-hidden-files: true` — without it upload-artifact skips
+  the dot-directory and reports "No files were found" after a *successful* render;
+* the artefact also carries `run.log` (the step is `tee`d with `pipefail`) and
+  `matrix.json`, which the harness writes in a `finally` block, so a run that died
+  before its first screenshot still says which stage killed it. The job summary is
+  that same `matrix.json` rendered by `scripts/screenshots.mjs --summary`;
 * dispatch inputs (`only`, `viewport`) reach the script through `env` and a bash array,
   never by interpolation into the command line;
 * `concurrency: screenshots-${{ github.ref }}` with `cancel-in-progress: true` — a superseded

@@ -30,6 +30,10 @@
  * Output: <out>/<viewport>/<state>.png plus <out>/matrix.json describing each
  * shot (viewport, state, duration, assertion result). Nothing is committed;
  * CI uploads the directory as a build artefact.
+ *
+ * `--summary <matrix.json>` turns a finished (or failed) run into Markdown for a
+ * CI job summary. It needs no browser and reads nothing but that file, so it can
+ * report on a run whose harness died before its first screenshot.
  */
 
 import { createServer } from "node:http";
@@ -45,10 +49,11 @@ const WEB = path.join(ROOT, "web");
 /* -------------------------------------------------------------------------- */
 
 function parseFlags(argv) {
-  const flags = { out: ".screenshots", only: "", viewport: "", list: false, timeout: 45000 };
+  const flags = { out: ".screenshots", only: "", viewport: "", list: false, summary: "", timeout: 45000 };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--list") flags.list = true;
+    else if (arg === "--summary") flags.summary = String(argv[++i] || "");
     else if (arg === "--only") flags.only = String(argv[++i] || "");
     else if (arg === "--viewport") flags.viewport = String(argv[++i] || "");
     else if (arg === "--out") flags.out = String(argv[++i] || ".screenshots");
@@ -482,7 +487,77 @@ async function launchChromium(chromium) {
   }
 }
 
+/**
+ * Markdown for the CI job summary — the verdict a human reads before opening a
+ * single PNG, and the part of a failed run that survives without the log.
+ */
+function summarise(matrixPath) {
+  let run = null;
+  try {
+    run = JSON.parse(readFileSync(matrixPath, "utf8"));
+  } catch (error) {
+    console.log(`### Screenshot matrix — no result\n\n\`${matrixPath}\` could not be read: `
+      + `${String(error.message).split("\n")[0]}\n`);
+    return;
+  }
+
+  const shots = run.shots || [];
+  const failures = run.failures || [];
+  const fatal = run.fatal || null;
+  const seconds = ((run.durationMs || 0) / 1000).toFixed(1);
+  const lines = [];
+
+  if (fatal) {
+    lines.push(`### Screenshot matrix — FAILED during \`${fatal.stage}\``, "");
+    lines.push("```", fatal.message, "```", "");
+    if (fatal.page) lines.push(`Page state: \`${JSON.stringify(fatal.page)}\``, "");
+    if (fatal.stack) lines.push("<details><summary>stack</summary>", "", "```", fatal.stack, "```", "", "</details>", "");
+  } else {
+    const verified = shots.length - failures.length;
+    lines.push(`### Screenshot matrix — ${verified}/${shots.length} states verified`, "");
+    lines.push(failures.length
+      ? `Rendered in ${seconds} s, but ${failures.length} state(s) did not verify — see below.`
+      : `Rendered in ${seconds} s. Every state was asserted in-page before it was photographed.`, "");
+  }
+
+  if (shots.length) {
+    const byViewport = new Map();
+    shots.forEach((shot) => {
+      const row = byViewport.get(shot.viewport) || { ok: 0, total: 0, slowest: null };
+      row.total += 1;
+      if (shot.ok) row.ok += 1;
+      if (!row.slowest || shot.ms > row.slowest.ms) row.slowest = shot;
+      byViewport.set(shot.viewport, row);
+    });
+    lines.push("| Viewport | Verified | Slowest state |", "| --- | --- | --- |");
+    byViewport.forEach((row, viewport) => {
+      lines.push(`| \`${viewport}\` | ${row.ok}/${row.total} | \`${row.slowest.state}\` (${row.slowest.ms} ms) |`);
+    });
+    lines.push("");
+  }
+
+  if (failures.length) {
+    lines.push("| State | Viewport | Problem |", "| --- | --- | --- |");
+    failures.forEach((failure) => {
+      lines.push(`| \`${failure.state}\` | \`${failure.viewport}\` | ${failure.problem || "unknown"} |`);
+    });
+    lines.push("");
+  }
+
+  const pageErrors = run.pageErrors || [];
+  if (pageErrors.length) {
+    lines.push(`**Uncaught page errors (${pageErrors.length}):**`, "");
+    pageErrors.slice(0, 10).forEach((error) => lines.push(`- \`${error}\``));
+    lines.push("");
+  }
+
+  lines.push(`Artefact **screenshot-matrix** (kept 14 days): ${shots.length} PNG`
+    + `${shots.length === 1 ? "" : "s"}, \`matrix.json\`, \`run.log\`.`, "");
+  console.log(lines.join("\n"));
+}
+
 async function main() {
+  if (FLAGS.summary) { summarise(path.resolve(ROOT, FLAGS.summary)); return; }
   if (FLAGS.list) { printMatrix(); return; }
 
   let chromium;
