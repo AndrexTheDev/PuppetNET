@@ -89,7 +89,12 @@ jobs:
           args=(--out .screenshots)
           if [ -n "$ONLY" ]; then args+=(--only "$ONLY"); fi
           if [ -n "$VIEWPORT" ]; then args+=(--viewport "$VIEWPORT"); fi
-          node scripts/screenshots.mjs "${args[@]}"
+          mkdir -p .screenshots
+          # tee: the harness writes its own evidence (matrix.json, failure.png)
+          # into .screenshots, and this puts the full log in the same artefact, so
+          # a red run can be triaged from the download alone.
+          set -o pipefail
+          node scripts/screenshots.mjs "${args[@]}" 2>&1 | tee .screenshots/run.log
 
       # Uploaded even on failure: a red matrix is exactly when the pictures matter.
       - name: Upload the matrix

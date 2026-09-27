@@ -464,6 +464,24 @@ async function reset(page, origin) {
   await page.waitForTimeout(250);
 }
 
+/**
+ * Launch Chromium, and if the sandbox is what stopped it, say so and retry
+ * without it. Container runners whose user namespace is unprivileged refuse the
+ * setuid sandbox, and "Failed to launch" alone does not tell you that — a
+ * screenshot job that dies in silence is undebuggable, so it dies loudly.
+ */
+async function launchChromium(chromium) {
+  const args = ["--force-color-profile=srgb", "--font-render-hinting=none",
+    "--hide-scrollbars", "--disable-dev-shm-usage"];
+  try {
+    return await chromium.launch({ args });
+  } catch (error) {
+    console.error(`screenshots: Chromium refused to launch — ${String(error.message).split("\n")[0]}`);
+    console.error("screenshots: retrying without the setuid sandbox (CI runner only).");
+    return chromium.launch({ args: args.concat(["--no-sandbox"]) });
+  }
+}
+
 async function main() {
   if (FLAGS.list) { printMatrix(); return; }
 
@@ -486,20 +504,32 @@ async function main() {
 
   const out = path.resolve(ROOT, FLAGS.out);
   mkdirSync(out, { recursive: true });
-  const { server, origin } = await serve(WEB);
-  const browser = await chromium.launch({
-    args: ["--force-color-profile=srgb", "--font-render-hinting=none", "--hide-scrollbars"],
-  });
 
   const shots = [];
   const failures = [];
   const pageErrors = [];
   const began = Date.now();
 
+  // Everything below is staged, and the stage name is part of the failure
+  // report: a run dies in seconds when a browser will not launch and in
+  // forty-five when a state will not verify, and those need different fixes.
+  let stage = "start";
+  let origin = null;
+  let server = null;
+  let browser = null;
+  let page = null;
+  let fatal = null;
+
   try {
+    stage = "serve";
+    ({ server, origin } = await serve(WEB));
+    stage = "launch";
+    browser = await launchChromium(chromium);
+
     for (const viewport of viewports) {
       const applicable = states.filter((state) => !state.viewports || state.viewports.includes(viewport.id));
       if (!applicable.length) continue;
+      stage = `context:${viewport.id}`;
       const context = await browser.newContext({
         viewport: { width: viewport.width, height: viewport.height },
         deviceScaleFactor: viewport.scale,
@@ -508,14 +538,17 @@ async function main() {
         colorScheme: "dark",
         reducedMotion: "no-preference",
       });
-      const page = await context.newPage();
+      page = await context.newPage();
       page.on("pageerror", (error) => pageErrors.push(`${viewport.id}: ${error.message}`));
       page.on("console", (message) => {
         if (message.type() === "error") pageErrors.push(`${viewport.id} console.error: ${message.text()}`);
       });
 
+      stage = `goto:${viewport.id}`;
       await page.goto(`${origin}/`, { waitUntil: "load" });
+      stage = `ready:${viewport.id}`;
       await page.waitForFunction(() => window.PuppetNET && window.PuppetNET.state.ready === true, null, { timeout: FLAGS.timeout });
+      stage = `data:${viewport.id}`;
       await page.waitForFunction(() => window.PuppetNET.state.nodes.size > 0, null, { timeout: FLAGS.timeout });
       await page.waitForTimeout(900); // let fcose settle; a mid-layout shot is a lie
 
@@ -523,6 +556,7 @@ async function main() {
       mkdirSync(dir, { recursive: true });
 
       for (const state of applicable) {
+        stage = `state:${viewport.id}/${state.id}`;
         const started = Date.now();
         await reset(page, origin);
         let prepareError = null;
@@ -551,19 +585,55 @@ async function main() {
         if (verdict) failures.push(shot);
         console.log(`  ${verdict ? "FAIL" : " ok "} ${viewport.id}/${state.id}.png  ${shot.ms} ms${verdict ? `  — ${verdict}` : ""}`);
       }
+      stage = `close:${viewport.id}`;
       await context.close();
+      page = null;
+    }
+  } catch (error) {
+    fatal = {
+      stage,
+      message: String((error && error.message) || error),
+      stack: String((error && error.stack) || "").split("\n").slice(0, 12).join("\n"),
+    };
+    // Evidence before exit: the run's log host is not always reachable from
+    // wherever the failure is being triaged, but the artefact is.
+    if (page) {
+      try {
+        await page.screenshot({ path: path.join(out, "failure.png"), fullPage: true });
+        fatal.screenshot = "failure.png";
+      } catch (_) { /* the page may already be gone */ }
+      try {
+        fatal.page = await page.evaluate(() => ({
+          url: location.href,
+          title: document.title,
+          hasApi: Boolean(window.PuppetNET),
+          ready: window.PuppetNET ? window.PuppetNET.state.ready : null,
+          provider: window.PuppetNET && window.PuppetNET.state.provider
+            ? window.PuppetNET.state.provider.name : null,
+          nodes: window.PuppetNET ? window.PuppetNET.state.nodes.size : null,
+          bootStatus: document.querySelector("#boot-status")
+            ? document.querySelector("#boot-status").textContent : null,
+          appHidden: document.querySelector("#app") ? document.querySelector("#app").hidden : null,
+        }));
+      } catch (_) { /* same */ }
+    }
+    console.error(`\nscreenshot matrix FAILED during "${stage}":`);
+    console.error(`  ${fatal.message}`);
+    if (fatal.page) console.error(`  page state: ${JSON.stringify(fatal.page)}`);
+    if (fatal.stack) {
+      console.error(fatal.stack.split("\n").slice(1, 6).map((line) => `  ${line.trim()}`).join("\n"));
     }
   } finally {
-    await browser.close();
-    server.close();
+    if (browser) { try { await browser.close(); } catch (_) { /* already down */ } }
+    if (server) { try { server.close(); } catch (_) { /* already down */ } }
+    writeFileSync(path.join(out, "matrix.json"), JSON.stringify({
+      generated: new Date().toISOString(),
+      durationMs: Date.now() - began,
+      viewports: VIEWPORTS,
+      states: STATES.map(({ id, title, viewports: only }) => ({ id, title, viewports: only || "all" })),
+      shots, failures, pageErrors, fatal,
+    }, null, 2) + "\n");
   }
-
-  writeFileSync(path.join(out, "matrix.json"), JSON.stringify({
-    generated: new Date().toISOString(),
-    durationMs: Date.now() - began,
-    viewports: VIEWPORTS, states: STATES.map(({ id, title, viewports: only }) => ({ id, title, viewports: only || "all" })),
-    shots, failures, pageErrors,
-  }, null, 2) + "\n");
 
   console.log(`\nscreenshot matrix: ${shots.length - failures.length}/${shots.length} states verified `
     + `in ${((Date.now() - began) / 1000).toFixed(1)}s → ${path.relative(ROOT, out)}/`);
@@ -571,7 +641,10 @@ async function main() {
     console.log(`\nuncaught page errors (${pageErrors.length}):`);
     pageErrors.slice(0, 10).forEach((error) => console.log(`  ${error}`));
   }
-  if (failures.length) {
+  if (fatal) {
+    console.log("\nMATRIX FAILED: the stage above and matrix.json in the artefact say where.");
+    process.exitCode = 1;
+  } else if (failures.length) {
     console.log(`\nMATRIX FAILED: ${failures.length} state(s) did not verify.`);
     process.exitCode = 1;
   } else if (pageErrors.length) {
