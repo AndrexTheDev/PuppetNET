@@ -49,7 +49,7 @@
  */
 
 const WORKER_NAME = "puppetnet-edge-relay";
-const WORKER_VERSION = "1.6.0";
+const WORKER_VERSION = "1.6.1";
 
 /* -------------------------------------------------------------------------- */
 /*  Tunables (env-overridable)                                                */
@@ -274,19 +274,52 @@ function isTextContentType(contentType) {
 /*  HTTP response helpers                                                     */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * env plus the caller's Origin, resolved once per request in the fetch
+ * entrypoint. corsHeaders has to answer per request (see below) but is reached
+ * through jsonResponse from deep inside handlers, and a module-level "current
+ * origin" would leak between concurrent requests at every await — so it travels
+ * with the env copy instead. Not operator configuration: the key is prefixed to
+ * say so.
+ */
+function withRequestOrigin(env, request) {
+  const origin = request && request.headers ? (request.headers.get("origin") || "") : "";
+  return Object.assign({}, env, { __requestOrigin: origin.trim() });
+}
+
 function corsHeaders(env) {
   const allowed = String(env.ALLOWED_ORIGINS || "*")
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
-  const origin = allowed.length === 1 ? allowed[0] : allowed.join(", ");
-  return {
-    "Access-Control-Allow-Origin": origin,
+  const requestOrigin = String(env.__requestOrigin || "");
+  const headers = {
     "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
     "Access-Control-Allow-Headers": "Authorization, Content-Type, X-Request-Id, X-Source-Id",
     "Access-Control-Max-Age": "86400",
+    // The answer depends on the caller's Origin, so no cache may serve one
+    // origin's response to another.
     Vary: "Origin",
+    // Every route answers JSON, including the ones that echo a path or an error
+    // message back; nosniff keeps a browser from guessing otherwise.
+    "X-Content-Type-Options": "nosniff",
   };
+  // Access-Control-Allow-Origin names exactly one origin, or `*`. Joining a list
+  // into it — what this function used to do — produces a value every browser
+  // rejects, so a deployment allowing two origins served neither: the console
+  // would fail CORS on all but (at best) the first.
+  if (allowed.length === 1 && allowed[0] === "*") {
+    headers["Access-Control-Allow-Origin"] = "*";
+  } else if (requestOrigin && allowed.indexOf(requestOrigin) >= 0) {
+    headers["Access-Control-Allow-Origin"] = requestOrigin;
+  } else if (allowed.length === 1 && !requestOrigin) {
+    // No Origin header (curl, a health probe, the queue): naming the single
+    // allowed origin costs nothing and keeps non-browser callers working.
+    headers["Access-Control-Allow-Origin"] = allowed[0];
+  }
+  // Anything else gets no Access-Control-Allow-Origin at all, which is the
+  // refusal: the browser blocks the response and nothing was leaked by it.
+  return headers;
 }
 
 function jsonResponse(payload, status = 200, extraHeaders = {}, env = {}) {
@@ -678,7 +711,9 @@ function checkGlobalRate(cfg) {
     globalWindow.count = 0;
   }
   if (globalWindow.count >= cfg.globalRpm) {
-    const retryAfter = Math.max(1, Math.ceil((minute + 1) * 60000 - now) / 1000);
+    // Whole seconds: this number reaches clients as retry_after and the queue
+    // consumer as delaySeconds, and Cloudflare Queues takes an integer.
+    const retryAfter = Math.max(1, Math.ceil(((minute + 1) * 60000 - now) / 1000));
     return { allowed: false, retryAfter };
   }
   globalWindow.count += 1;
@@ -711,7 +746,12 @@ async function syncBucketWithKv(env, cfg, host, local) {
   }
 
   if (remote && Number.isFinite(remote.tokens) && Number.isFinite(remote.ts)) {
-    const remoteRefilled = refill({ tokens: remote.tokens, ts: remote.ts }, remote.rate || cfg.hostRatePerSec, cfg.maxHostBurst, now);
+    // Refill the remote bucket with *its own* rate and burst. Using
+    // cfg.maxHostBurst here let a neighbour's bucket refill far above the burst
+    // it was written with, so the conservative merge below compared against an
+    // inflated number and dropped the constraint instead of applying it.
+    const remoteBurst = num(remote.burst, cfg.hostBurst, 1, cfg.maxHostBurst);
+    const remoteRefilled = refill({ tokens: remote.tokens, ts: remote.ts }, remote.rate || cfg.hostRatePerSec, remoteBurst, now);
     if (remoteRefilled.tokens < local.tokens) {
       local.tokens = remoteRefilled.tokens;
       local.ts = now;
@@ -2438,9 +2478,21 @@ async function graphPath(params, env, gcfg) {
     statements.push({
       statement:
         `MATCH (a:Entity {canonical_key: $from}), (b:Entity {canonical_key: $to}) ` +
+        // Cap first, then order — as two WITH clauses, each carrying its own
+        // subclauses. The shape this replaced (`WITH p, cost LIMIT $enumCap`
+        // followed by a *standalone* `ORDER BY cost ASC LIMIT $alts`) only parses
+        // on Neo4j 5.24 or newer, where ORDER BY became a standalone clause; on
+        // any earlier 5.x — which is what an Aura Free instance may well be
+        // provisioned with — it is a syntax error, so every weighted handshake
+        // would fail against a real database while the offline suite (which stubs
+        // Neo4j and never parses Cypher) stayed green. A CALL subquery would also
+        // work, but the read-only guard rejects `CALL {` outright and that guard
+        // is worth more than the shorter statement.
         `MATCH p = (a)${left}[*1..${weightedHops}]${right}(b) ` +
-        `WITH p, ${costExpr} AS cost LIMIT $enumCap ` +
-        `ORDER BY cost ASC LIMIT $alts ` +
+        `WITH p LIMIT $enumCap ` +
+        `WITH p, ${costExpr} AS cost ` +
+        `ORDER BY cost ASC ` +
+        `LIMIT $alts ` +
         `RETURN [n IN nodes(p) | {key: n.canonical_key, name: n.name, entity_type: n.entity_type, ` +
         `labels: labels(n), jurisdiction: n.jurisdiction, cluster_id: n.cluster_id, ` +
         `anomaly_score: n.anomaly_score}] AS chain, ` +
@@ -2453,9 +2505,12 @@ async function graphPath(params, env, gcfg) {
     statements.push({
       statement:
         `MATCH (a:Entity {canonical_key: $from}), (b:Entity {canonical_key: $to}) ` +
+        // Same version-safety rule as the weighted branch above.
         `MATCH p = (a)${left}[*1..${altHops}]${right}(b) ` +
-        `WITH p, length(p) AS hops LIMIT $enumCap ` +
-        `ORDER BY hops ASC LIMIT $alts ` +
+        `WITH p LIMIT $enumCap ` +
+        `WITH p, length(p) AS hops ` +
+        `ORDER BY hops ASC ` +
+        `LIMIT $alts ` +
         `RETURN [n IN nodes(p) | {key: n.canonical_key, name: n.name, entity_type: n.entity_type, ` +
         `labels: labels(n), jurisdiction: n.jurisdiction, cluster_id: n.cluster_id, ` +
         `anomaly_score: n.anomaly_score}] AS chain, ` +
@@ -2657,7 +2712,9 @@ async function handleGraph(request, env, cfg, gcfg, ctx, path, url) {
   if (gcfg.cacheTtlSeconds > 0) {
     const hit = await readCache(env, cacheKey);
     if (hit) {
-      return jsonResponse({ ...hit.result, cached: true, auth_mode: auth.mode }, 200, { "X-PuppetNET-Cache": "HIT" }, env);
+      // took_ms describes the work behind *this* response; re-serving the number
+      // measured when the entry was written reports a query time nobody just paid.
+      return jsonResponse({ ...hit.result, cached: true, took_ms: 0, auth_mode: auth.mode }, 200, { "X-PuppetNET-Cache": "HIT" }, env);
     }
   }
 
@@ -2724,9 +2781,10 @@ export default {
   async fetch(request, env, ctx) {
     const cfg = readConfig(env);
     const started = nowMs();
+    const reqEnv = withRequestOrigin(env, request);
 
     if (request.method === "OPTIONS") {
-      return new Response(null, { status: 204, headers: corsHeaders(env) });
+      return new Response(null, { status: 204, headers: corsHeaders(reqEnv) });
     }
 
     const url = new URL(request.url);
@@ -2734,39 +2792,39 @@ export default {
 
     try {
       if (path === "/" || path === "/health" || path === "/healthz") {
-        return handleHealth(request, env, cfg);
+        return handleHealth(request, reqEnv, cfg);
       }
 
       // The graph read API gates itself (GRAPH_API_TOKEN / GRAPH_PUBLIC_READ),
       // so it is matched before the relay's bearer check. It is read-only and
       // holds no Neo4j credentials in the response.
-      const gcfg = readGraphConfig(env);
+      const gcfg = readGraphConfig(reqEnv);
       if (path === "/graph/health") {
-        return await handleGraphHealth(request, env, cfg, gcfg);
+        return await handleGraphHealth(request, reqEnv, cfg, gcfg);
       }
       if (path.startsWith("/graph/")) {
-        return await handleGraph(request, env, cfg, gcfg, ctx, path, url);
+        return await handleGraph(request, reqEnv, cfg, gcfg, ctx, path, url);
       }
 
-      const auth = authorised(request, env);
+      const auth = authorised(request, reqEnv);
       if (!auth.ok) {
-        return errorResponse("unauthorised", auth.reason, 401, {}, env);
+        return errorResponse("unauthorised", auth.reason, 401, {}, reqEnv);
       }
 
-      if (path === "/stats" && request.method === "GET") return handleStats(env, cfg);
-      if (path === "/cache" && request.method === "DELETE") return handleCachePurge(request, env);
+      if (path === "/stats" && request.method === "GET") return handleStats(reqEnv, cfg);
+      if (path === "/cache" && request.method === "DELETE") return handleCachePurge(request, reqEnv);
       if ((path === "/fetch" && (request.method === "POST" || request.method === "GET"))) {
-        return await handleFetch(request, env, cfg, ctx);
+        return await handleFetch(request, reqEnv, cfg, ctx);
       }
       const taskMatch = /^\/tasks\/([\w.-]{1,128})$/.exec(path);
       if (taskMatch && (request.method === "GET" || request.method === "DELETE")) {
-        return await handleTaskLookup(request, env, cfg, taskMatch[1]);
+        return await handleTaskLookup(request, reqEnv, cfg, taskMatch[1]);
       }
 
-      return errorResponse("not_found", `Unknown route ${request.method} ${path}`, 404, {}, env);
+      return errorResponse("not_found", `Unknown route ${request.method} ${path}`, 404, {}, reqEnv);
     } catch (err) {
       console.error(`[relay] unhandled error: ${err && err.stack ? err.stack : err}`);
-      return errorResponse("internal_error", err && err.message ? err.message : "Unexpected relay failure", 500, { elapsed_ms: nowMs() - started }, env);
+      return errorResponse("internal_error", err && err.message ? err.message : "Unexpected relay failure", 500, { elapsed_ms: nowMs() - started }, reqEnv);
     }
   },
 

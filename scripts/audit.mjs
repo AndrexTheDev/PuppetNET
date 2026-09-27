@@ -598,6 +598,45 @@ function auditUiState() {
 }
 
 /* ========================================================================== */
+/*  3c. Cypher portability                                                     */
+/* ========================================================================== */
+
+/**
+ * ORDER BY, SKIP/OFFSET and LIMIT became standalone clauses in Neo4j 5.24. On
+ * every earlier 5.x — and an Aura Free database is provisioned with whichever 5.x
+ * is current, not with the one this repository was written against — a statement
+ * like `WITH p, cost LIMIT $enumCap ORDER BY cost ASC` is a syntax error, so the
+ * feature behind it fails against the real database while every offline test
+ * stays green: both smoke suites stub Neo4j and never parse Cypher.
+ *
+ * Scanned as whole files rather than line by line, because Python keeps its
+ * Cypher in triple-quoted strings where the two clauses sit on different lines —
+ * and because both languages build a statement out of quoted fragments, the
+ * delimiters and concatenation operators between two fragments are blanked first
+ * (whitespace only, newlines preserved, so the reported line is still the real
+ * one). Documentation is deliberately not scanned: it quotes the anti-pattern.
+ */
+function auditCypher() {
+  const pattern = /LIMIT\s+(?:\$\w+|\d+)\s+(?:ORDER\s+BY|SKIP|OFFSET)\b/gi;
+  const flatten = (text) => text.replace(/(`|"|')\s*(?:\+\s*)?(`|"|')/g,
+    (chunk) => chunk.replace(/[^\n]/g, " "));
+  const files = ["worker.js", "web/app.js", "graph_analytics.py", "ingest.py", "telegram_bot.py"]
+    .concat(walk("puppetnet", (relative) => relative.endsWith(".py")));
+  for (const file of files) {
+    const text = read(file);
+    if (!text) continue;
+    for (const match of flatten(text).matchAll(pattern)) {
+      const line = text.slice(0, match.index).split("\n").length;
+      finding("cypher/standaloneOrderBy", "bugs", "high", file, `${file}:${line}`,
+        `a Cypher statement needs Neo4j 5.24+ to parse (${match[0].replace(/\s+/g, " ")})`,
+        "Keep ORDER BY/SKIP/LIMIT as subclauses of the WITH or RETURN they belong to: "
+        + "split `WITH x LIMIT $n ORDER BY y` into `WITH x LIMIT $n` followed by "
+        + "`WITH x ORDER BY y LIMIT $m`.");
+    }
+  }
+}
+
+/* ========================================================================== */
 /*  4. Cross-module invariants                                                 */
 /* ========================================================================== */
 
@@ -754,6 +793,41 @@ function auditWorker() {
         "CORS origin is a wildcard", "Echo a validated origin instead.");
     }
   });
+  // Access-Control-Allow-Origin takes exactly one origin, or `*`. A deployment
+  // that lists two of them used to have them joined into the header — a value
+  // every browser rejects, so such a deployment served none of its origins and
+  // the console failed CORS with no clue why. The answer must also depend on the
+  // caller's Origin, which is why the resolution has to happen per request.
+  const corsStart = worker.indexOf("function corsHeaders(env) {");
+  if (corsStart < 0) {
+    finding("worker/corsMissing", "security", "high", file, "corsHeaders",
+      "worker.js no longer exposes corsHeaders",
+      "Restore it, or move these rules to wherever CORS is answered now.");
+  } else {
+    let depth = 0;
+    let end = worker.length - 1;
+    for (let i = worker.indexOf("{", corsStart); i < worker.length; i += 1) {
+      if (worker[i] === "{") depth += 1;
+      else if (worker[i] === "}") {
+        depth -= 1;
+        if (depth === 0) { end = i; break; }
+      }
+    }
+    const body = worker.slice(corsStart, end + 1);
+    if (/Access-Control-Allow-Origin"\]\s*=[^;]*\.join\(/.test(body)) {
+      finding("worker/corsJoinedList", "security", "high", file, "corsHeaders",
+        "the allowed origins are joined into Access-Control-Allow-Origin",
+        "Echo the caller's Origin when it is on the list, send no header at all when it "
+        + "is not, and keep `*` for wildcard deployments — a comma-separated list is "
+        + "rejected by every browser.");
+    }
+    if (body.indexOf("__requestOrigin") < 0) {
+      finding("worker/corsNotPerRequest", "security", "medium", file, "corsHeaders",
+        "the CORS answer does not depend on the request's Origin",
+        "Carry the Origin with the env (withRequestOrigin) and echo it back only when the "
+        + "operator allowed it; a static answer cannot serve a multi-origin deployment.");
+    }
+  }
   if (/Access-Control-Allow-Credentials":\s*"true"/.test(worker)
     && /"Access-Control-Allow-Origin":\s*"\*"/.test(worker)) {
     finding("worker/corsCredentials", "security", "high", file, "CORS",
@@ -1141,6 +1215,7 @@ auditHtmlSinks();
 auditHtml();
 auditSeo();
 auditUiState();
+auditCypher();
 auditInvariants();
 auditWorker();
 auditPython();

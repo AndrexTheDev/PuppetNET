@@ -427,7 +427,10 @@ async function graph(path, options = {}) {
   const token = options.token === undefined ? GRAPH_TOKEN : options.token;
   const request = new Request(`https://relay.example.invalid${path}`, {
     method: options.method || "GET",
-    headers: token === null ? {} : { authorization: `Bearer ${token}` },
+    headers: {
+      ...(token === null ? {} : { authorization: `Bearer ${token}` }),
+      ...(options.headers || {}),
+    },
   });
   const response = await worker.fetch(request, env, makeCtx());
   const text = await response.text();
@@ -461,6 +464,16 @@ function assertReadOnlyAndParameterised(label) {
       for (const poison of POISON) {
         assert.ok(!statement.includes(poison), `${label}: caller text was interpolated into Cypher: ${poison}`);
       }
+      // Portability is part of correctness: ORDER BY, SKIP/OFFSET and LIMIT only
+      // became *standalone* clauses in Neo4j 5.24, so `WITH … LIMIT $n ORDER BY …`
+      // is a syntax error on every earlier 5.x — and an Aura Free instance is
+      // provisioned with whichever 5.x Cloudflare's neighbour decides. This suite
+      // stubs Neo4j and never parses Cypher, so without this assertion a statement
+      // that fails against a real database passes every test we have.
+      const standalone = /LIMIT\s+(?:\$\w+|\d+)\s+(?:ORDER\s+BY|SKIP|OFFSET)\b/i.exec(statement);
+      assert.ok(!standalone,
+        `${label}: statement needs Neo4j 5.24+ (standalone "${standalone ? standalone[0].replace(/\s+/g, " ") : ""}") — `
+        + `keep ORDER BY/SKIP/LIMIT as subclauses of a WITH: ${statement.slice(0, 200)}`);
       // Parameters are the only channel for caller data: every `$name` the
       // statement references must be bound in the parameters map. (A statement
       // that references none — the count queries behind /graph/health — needs no
@@ -1028,13 +1041,77 @@ await check("/health advertises the graph API without exposing it", async () => 
   assert.equal(res.body.bindings.graph_api, false, "the relay env has no NEO4J_* secrets, so the graph API is off");
   assert.equal(res.body.bindings.graph_token, false);
   assert.equal(res.body.graph_api, "/graph/health");
-  assert.equal(res.body.version, "1.6.0");
+  assert.equal(res.body.version, "1.6.1");
   assertNoSecrets(res.text, "/health");
 
   const configured = await graph("/health", { token: null });
   assert.equal(configured.body.bindings.graph_api, true, "with NEO4J_* set, /health reports the graph API available");
   assert.equal(configured.body.bindings.graph_token, true);
   assertNoGraphSecrets(configured.text, "/health with graph secrets");
+});
+
+// --- G13. CORS: one origin per answer, and only an allowed one --------------
+await check("CORS answers per request, and only for origins the operator allowed", async () => {
+  const list = "https://console.example, https://mirror.example";
+
+  // The wildcard deployment, which is what the shipped console runs against.
+  const star = await graph("/graph/health", { envOverrides: { ALLOWED_ORIGINS: "*" } });
+  assert.equal(star.headers.get("access-control-allow-origin"), "*");
+  assert.equal(star.headers.get("vary"), "Origin", "an answer that varies must say so to caches");
+  assert.equal(star.headers.get("x-content-type-options"), "nosniff",
+    "routes echo paths and messages, so nothing may be MIME-sniffed");
+
+  // Two allowed origins: the header has to echo the caller's own, because
+  // Access-Control-Allow-Origin takes exactly one origin. The joined list this
+  // used to send is rejected by every browser, so a deployment that allowed two
+  // origins served neither.
+  for (const origin of ["https://console.example", "https://mirror.example"]) {
+    const res = await graph("/graph/overview?limit=5", {
+      envOverrides: { ALLOWED_ORIGINS: list }, headers: { origin },
+    });
+    assert.equal(res.status, 200, res.text.slice(0, 200));
+    assert.equal(res.headers.get("access-control-allow-origin"), origin, `${origin} must be echoed back`);
+    assert.ok(!String(res.headers.get("access-control-allow-origin")).includes(","),
+      "Access-Control-Allow-Origin may never contain a list");
+  }
+
+  // An origin nobody allowed gets no header at all — the browser blocks the
+  // response, which is the refusal.
+  const stranger = await graph("/graph/health", {
+    envOverrides: { ALLOWED_ORIGINS: list }, headers: { origin: "https://evil.example" },
+  });
+  assert.equal(stranger.headers.get("access-control-allow-origin"), null,
+    "an unlisted origin must not be granted access");
+  assert.equal(stranger.headers.get("vary"), "Origin");
+
+  // Preflight is answered without a token, under the same origin rules.
+  const preflight = await graph("/graph/overview", {
+    method: "OPTIONS", token: null,
+    envOverrides: { ALLOWED_ORIGINS: list },
+    headers: { origin: "https://mirror.example", "access-control-request-method": "GET" },
+  });
+  assert.equal(preflight.status, 204, "a preflight answers 204 and needs no bearer token");
+  assert.equal(preflight.headers.get("access-control-allow-origin"), "https://mirror.example");
+  assert.ok(String(preflight.headers.get("access-control-allow-methods")).includes("GET"));
+  assert.ok(String(preflight.headers.get("access-control-allow-headers")).includes("Authorization"),
+    "the console sends a bearer token, so the preflight must allow that header");
+
+  // A single allowed origin still answers callers that send no Origin at all
+  // (curl, an uptime probe, the queue consumer).
+  const single = await graph("/graph/health", { envOverrides: { ALLOWED_ORIGINS: "https://console.example" } });
+  assert.equal(single.headers.get("access-control-allow-origin"), "https://console.example");
+
+  // Errors carry the same headers. Without them a browser reports a CORS failure
+  // instead of the real 401, and the analyst debugs the wrong thing.
+  const denied = await graph("/graph/overview", {
+    token: "wrong-token", envOverrides: { ALLOWED_ORIGINS: list },
+    headers: { origin: "https://console.example" },
+  });
+  assert.equal(denied.status, 401);
+  assert.equal(denied.headers.get("access-control-allow-origin"), "https://console.example",
+    "an error response needs the same CORS headers as a success");
+
+  assertReadOnlyAndParameterised("CORS");
 });
 
 console.log(`\nworker.js smoke test: ${checks} checks passed`);

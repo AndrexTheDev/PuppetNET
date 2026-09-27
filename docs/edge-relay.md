@@ -8,10 +8,12 @@ never gets a source blocked. The **graph read API** answers the analyst console
 so the database credentials never reach a browser.
 
 * Source: [`worker.js`](../worker.js) · config: [`wrangler.toml`](../wrangler.toml)
-* Runtime: Workers (V8 isolate), `nodejs_compat`, CPU limit 30 ms/request budget
+* Runtime: Workers (V8 isolate), `nodejs_compat`, free-tier CPU budget (10 ms per
+  request; the relay spends its CPU on string work and JSON shaping and waits on I/O —
+  fetch, KV, the Neo4j round trip — which Cloudflare does not count as CPU)
 * All bindings optional — without KV/Queues the relay degrades to a stateless forwarder
   with per-isolate rate limiting.
-* Version `1.6.0`. The graph API is `graph/1`; every response says so.
+* Version `1.6.1`. The graph API is `graph/1`; every response says so.
 
 ---
 
@@ -41,7 +43,7 @@ every authenticated route is rejected, because an unauthenticated relay is an op
 {
   "ok": true,
   "worker": "puppetnet-edge-relay",
-  "version": "1.6.0",
+  "version": "1.6.1",
   "time": "2026-09-27T04:00:00.000Z",
   "bindings": {"rate_limit_kv": true, "result_kv": true, "queue": true, "auth_configured": true},
   "limits": {"global_rpm": 900, "host_rate_per_sec": 0.5, "host_burst": 4,
@@ -68,7 +70,7 @@ without its KV namespaces is caught before a scheduled run.
 ```json
 {
   "ok": true,
-  "version": "1.6.0",
+  "version": "1.6.1",
   "global": {"minute": 1790000000, "count": 42, "rpm_limit": 900},
   "local_buckets": [{"host": "example.test", "tokens": 2.413, "age_ms": 1820}],
   "bindings": {"rate_limit_kv": true, "result_kv": true, "queue": true}
@@ -308,6 +310,26 @@ clauses, with the detector self-tested so the assertion cannot pass vacuously.
 
 ---
 
+## CORS
+
+`Access-Control-Allow-Origin` names exactly **one** origin, or `*`; a
+comma-separated list is rejected by every browser. So the answer is resolved per
+request rather than stored:
+
+* an `Origin` that `ALLOWED_ORIGINS` lists is echoed back verbatim;
+* an origin that is not on the list receives **no** `Access-Control-Allow-Origin`
+  at all — which *is* the refusal, since the browser then hides the response;
+* a deployment whose `ALLOWED_ORIGINS` is `*` answers `*`;
+* a caller that sends no `Origin` (curl, an uptime probe, the queue consumer) is
+  answered with the single allowed origin when there is exactly one.
+
+`Vary: Origin` rides on every response, because the answer depends on the request,
+and `X-Content-Type-Options: nosniff` rides with it, because route names and error
+messages are echoed back as JSON. `OPTIONS` preflights are answered `204` under the
+same rules and without a bearer token — a preflight never carries `Authorization`.
+Errors carry the CORS headers too: without them a browser reports a CORS failure
+instead of the real `401`, and the analyst debugs the wrong thing.
+
 ## Politeness mechanics
 
 **Fingerprint rotation.** A pool of coherent desktop fingerprints (UA ↔ `sec-ch-ua` ↔
@@ -437,8 +459,15 @@ wrangler secret put NEO4J_USERNAME
 wrangler secret put NEO4J_PASSWORD
 wrangler secret put GRAPH_API_TOKEN       # openssl rand -hex 16
 wrangler deploy                           # or: wrangler deploy --env production
-curl -s https://<worker>.workers.dev/health | jq
-curl -s https://<worker>.workers.dev/graph/health | jq '.graph.counts'
+
+# The shipped configuration sets workers_dev = false, so the Worker has no
+# workers.dev address: it answers on the routes you publish (see `routes` in
+# wrangler.toml) and, locally, wherever `wrangler dev` says. If the account has
+# no domain to route yet, set workers_dev = true and use the <worker>.workers.dev
+# hostname wrangler prints instead.
+export WORKER_HOST=puppetnet-relay.example.com
+curl -s https://$WORKER_HOST/health | jq
+curl -s https://$WORKER_HOST/graph/health | jq '.graph.counts'
 ```
 
 Local development needs no bindings at all:
@@ -450,7 +479,7 @@ wrangler dev --local      # stateless relay with per-isolate rate limiting
 Then point the harvester at it:
 
 ```bash
-export PROXY_WORKER_URL=https://<worker>.workers.dev
+export PROXY_WORKER_URL=https://$WORKER_HOST   # the host you routed above
 export PROXY_AUTH_TOKEN=<the secret you just set>
 python ingest.py --doctor        # probes /health and reports the bindings
 ```
@@ -479,6 +508,14 @@ python ingest.py --doctor        # probes /health and reports the bindings
 | `GRAPH_MAX_NODES` / `GRAPH_MAX_DEPTH` / `GRAPH_MAX_HOPS` | `1200` / `4` / `12` | Ceilings the Worker enforces on caller overrides |
 | `GRAPH_MAX_RESPONSE_BYTES` | `6291456` | Serialised payload ceiling; over it, `502 response_too_large` |
 | `GRAPH_PATH_ALTERNATIVES` | `true` | Return up to 3 alternative routes with a handshake |
+
+Every statement stays inside Cypher 5 as originally released: `ORDER BY`, `SKIP`
+and `LIMIT` appear only as subclauses of the `WITH` or `RETURN` they belong to,
+never as standalone clauses, which only parse from Neo4j **5.24** onward. A free
+Aura instance is provisioned with whichever 5.x is current, so the floor here is
+5.0 rather than "whatever the neighbour has". `scripts/audit.mjs` enforces the rule
+statically (`cypher/standaloneOrderBy`) and the worker smoke test asserts it on
+every statement the handlers emit.
 | `NEO4J_DATABASE` | `neo4j` | Database in the transactional URL path |
 
 The `[env.production]` overlay tightens `GLOBAL_RPM` to 600, `HOST_RATE_PER_SEC` to 0.34

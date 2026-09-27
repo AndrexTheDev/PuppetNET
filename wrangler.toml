@@ -175,13 +175,28 @@ max_batch_timeout = 5
 max_retries = 3
 retry_delay = "fixed"
 
-# Free-tier friendly execution limits
-[limits]
-cpu_ms = 30000
+# -----------------------------------------------------------------------------
+# Execution limits
+# -----------------------------------------------------------------------------
+# No [limits] block, on purpose. `limits.cpu_ms` is the Workers *Paid* knob:
+# Cloudflare documents raising the CPU ceiling as a paid-plan action ("On the
+# Workers Paid plan, you can raise the limit from the default 30 seconds"), while
+# the free plan gives every request a hard 10 ms. This Worker spends its CPU on
+# string handling and JSON shaping and waits on I/O — fetch, KV, the Neo4j round
+# trip — which is not counted as CPU, so 10 ms is not a constraint here. A paid
+# deployment that wants the headroom can restore:
+#   [limits]
+#   cpu_ms = 30000
 
 # -----------------------------------------------------------------------------
 # Production environment overrides (stricter politeness for hostile origins)
 # -----------------------------------------------------------------------------
+# Reminder about environments: a `[env.production.vars]` table does not inherit
+# the top-level `[vars]` — wrangler keeps the two separate. The three values below
+# are the whole production overlay; every other knob falls back to the default
+# baked into worker.js, which mirrors what this file sets for the default
+# environment. Put a variable here when production needs a *different* value, not
+# merely to repeat one.
 [env.production.vars]
 GLOBAL_RPM = "600"
 HOST_RATE_PER_SEC = "0.34"
