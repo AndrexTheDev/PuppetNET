@@ -999,8 +999,14 @@ function auditCostAndSupplyChain() {
   // 2. Inventory every external host so the free-tier budget stays explicit.
   const inventory = new Map();
   for (const file of codeFiles) {
-    scan(file, /https?:\/\/([a-z0-9.-]+)(?::\d+)?/gi, (match, where) => {
-      const host = match[1].toLowerCase();
+    scan(file, /https?:\/\/([a-z0-9.:\[\]-]+)(?::\d+)?/gi, (match, where) => {
+      // Two normalisations, for the same reason the worker does them: a trailing
+      // dot is the DNS root and names the same host (`https://localhost./` is
+      // `localhost`), and a bare IP literal is not a service with a free-tier
+      // budget — it is an address, and the ones a test writes down are the ones
+      // the SSRF guard refuses.
+      const host = match[1].toLowerCase().replace(/\.+$/, "").replace(/^\[|\]$/g, "");
+      if (/^\d+\.\d+\.\d+\.\d+$/.test(host) || host.indexOf(":") >= 0) return;
       if (!inventory.has(host)) inventory.set(host, []);
       if (inventory.get(host).length < 3) inventory.get(host).push(where);
     });

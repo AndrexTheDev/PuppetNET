@@ -121,7 +121,7 @@ function makeCtx() {
   return { waitUntil: () => {}, passThroughOnException: () => {} };
 }
 
-async function relay(path, payload, token = SECRETS.PROXY_AUTH_TOKEN) {
+async function relay(path, payload, token = SECRETS.PROXY_AUTH_TOKEN, env = makeEnv()) {
   const request = new Request(`https://relay.example.invalid${path}`, {
     method: payload === undefined ? "GET" : "POST",
     headers: {
@@ -130,7 +130,7 @@ async function relay(path, payload, token = SECRETS.PROXY_AUTH_TOKEN) {
     },
     body: payload === undefined ? null : JSON.stringify(payload),
   });
-  const response = await worker.fetch(request, makeEnv(), makeCtx());
+  const response = await worker.fetch(request, env, makeCtx());
   const text = await response.text();
   let body;
   try {
@@ -1041,7 +1041,7 @@ await check("/health advertises the graph API without exposing it", async () => 
   assert.equal(res.body.bindings.graph_api, false, "the relay env has no NEO4J_* secrets, so the graph API is off");
   assert.equal(res.body.bindings.graph_token, false);
   assert.equal(res.body.graph_api, "/graph/health");
-  assert.equal(res.body.version, "1.6.1");
+  assert.equal(res.body.version, "1.6.2");
   assertNoSecrets(res.text, "/health");
 
   const configured = await graph("/health", { token: null });
@@ -1112,6 +1112,158 @@ await check("CORS answers per request, and only for origins the operator allowed
     "an error response needs the same CORS headers as a success");
 
   assertReadOnlyAndParameterised("CORS");
+});
+
+// --- G14. The SSRF guard: loopback in every notation ------------------------
+await check("the SSRF guard refuses loopback in every notation it can be written", async () => {
+  // Every case is https on purpose. Under the default ENFORCE_HTTPS a plaintext
+  // URL is refused for being plaintext, which would make this suite pass whether
+  // or not the address guard works at all — the mutation that deleted the
+  // trailing-dot normalisation proved it, walking through an http:// list.
+  const refused = [
+    ["https://localhost/", "the plain loopback name", /Private\/reserved hostname/],
+    ["https://localhost./", "trailing dot — the DNS root changes nothing about where it points", /Private\/reserved hostname/],
+    ["https://something.localhost/", "a name under localhost", /Private\/reserved hostname/],
+    ["https://127.0.0.1/", "dotted quad", /IPv4 range/],
+    ["https://2130706433/", "integer IPv4 (WHATWG normalises it to 127.0.0.1)", /IPv4 range/],
+    ["https://0x7f.1/", "hex IPv4", /IPv4 range/],
+    ["https://0177.0.0.1/", "octal IPv4", /IPv4 range/],
+    ["https://①②⑦.0.0.1/", "unicode digits", /IPv4 range/],
+    ["https://0.0.0.0/", "the unspecified address", /IPv4 range/],
+    ["https://10.0.0.1/", "RFC1918", /IPv4 range/],
+    ["https://172.20.5.5/", "RFC1918, upper half", /IPv4 range/],
+    ["https://192.168.1.1/", "RFC1918, the usual router", /IPv4 range/],
+    ["https://169.254.169.254/latest/meta-data/", "the cloud metadata service", /IPv4 range/],
+    ["https://100.64.0.1/", "carrier-grade NAT, which cloud internals use", /IPv4 range/],
+    ["https://198.18.0.1/", "the benchmarking range", /IPv4 range/],
+    ["https://224.0.0.1/", "multicast", /IPv4 range/],
+    ["https://[::1]/", "IPv6 loopback", /IPv6 range/],
+    ["https://[::ffff:127.0.0.1]/", "IPv4-mapped IPv6", /IPv6 range/],
+    ["https://[::ffff:10.0.0.1]/", "private IPv4 through the mapped form", /IPv6 range/],
+    ["https://[fd00::1]/", "IPv6 unique local — the half a startsWith('fc') test misses", /IPv6 range/],
+    ["https://[feb0::1]/", "IPv6 link local above fe80", /IPv6 range/],
+    ["https://[ff02::1]/", "IPv6 multicast", /IPv6 range/],
+    ["https://127.0.0.1.nip.io/", "a wildcard DNS service that encodes the address in the name", /nip\.io/],
+    ["https://localhost.nip.io/", "the same service spelled with a name", /nip\.io/],
+    ["https://10-0-0-1.sslip.io/", "…and its dash-flavoured sibling", /sslip\.io/],
+    ["https://anything.lvh.me/", "a service that answers 127.0.0.1 for any subdomain", /lvh\.me/],
+  ];
+  for (const [url, why, reason] of refused) {
+    const res = await relay("/fetch", { url });
+    assert.equal(res.status, 400, `${url} (${why}) must be refused, got ${res.status}: ${res.text.slice(0, 160)}`);
+    const body = res.body || {};
+    assert.equal((body.error || {}).code, "invalid_target", `${url} (${why})`);
+    assert.match(String((body.error || {}).message), reason,
+      `${url} (${why}) must be refused for the right reason`);
+  }
+
+  // Plaintext is its own rule, and it stays on.
+  const plaintext = await relay("/fetch", { url: "http://127.0.0.1/" });
+  assert.match(String(plaintext.body.error.message), /Plaintext HTTP/,
+    "ENFORCE_HTTPS refuses http:// before the address guard is reached");
+
+  // A hostname that merely *looks* like an IPv6 prefix is not one: an earlier
+  // `startsWith("fc")` test refused every name beginning with those two letters.
+  const lookalike = await relay("/fetch", { url: "https://fcbank.example/page" });
+  assert.equal(lookalike.status, 200,
+    `a name beginning with fc is not a unique-local address — got ${lookalike.status}: ${lookalike.text.slice(0, 160)}`);
+  const feHost = await relay("/fetch", { url: "https://fe80-reports.example/page" });
+  assert.equal(feHost.status, 200, "nor is one beginning with fe80");
+
+  // Operator policy works on the same normalised host, so a trailing dot cannot
+  // smuggle a blocked name past it.
+  const suffixEnv = { ...makeEnv(), BLOCKED_HOST_SUFFIXES: "example.org" };
+  const post = (url) => worker.fetch(new Request("https://relay.example.invalid/fetch", {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${SECRETS.PROXY_AUTH_TOKEN}` },
+    body: JSON.stringify({ url }),
+  }), suffixEnv, makeCtx());
+  assert.equal((await (await post("https://www.example.org/page")).json()).error.code, "invalid_target",
+    "the suffix list blocks the name");
+  assert.equal((await (await post("https://www.example.org./page")).json()).error.code, "invalid_target",
+    "and a trailing dot does not smuggle it through");
+
+  // Private networks can be reached on purpose — that is what the escape hatch is
+  // for, and it must not be silently ignored.
+  const dev = await worker.fetch(new Request("https://relay.example.invalid/fetch", {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${SECRETS.PROXY_AUTH_TOKEN}` },
+    body: JSON.stringify({ url: "https://127.0.0.1:8080/status" }),
+  }), { ...makeEnv(), ALLOW_PRIVATE_NETWORKS: "true" }, makeCtx());
+  assert.equal(dev.status, 200, "ALLOW_PRIVATE_NETWORKS=true is an explicit opt-in for local work");
+});
+
+// --- G15. robots.txt: the rules decide, not the longest line ----------------
+async function sha256Hex(input) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
+  return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * Ask the relay about one path, with the host's robots.txt served from a stubbed
+ * KV cache so the test stays offline. `respect_robots` is what the harvester sets.
+ */
+async function robotsVerdict(host, robotsText, path) {
+  const key = `robots:${await sha256Hex(`https://${host}/robots.txt`)}`;
+  const env = {
+    ...makeEnv(),
+    // Generous, so this check measures the robots verdict and not the host bucket:
+    // the relay refusing a burst with 429 is correct, and one case per host would
+    // otherwise be decided by the limiter instead of by robots.txt.
+    HOST_RATE_PER_SEC: "50",
+    HOST_BURST: "50",
+    RATE_LIMIT_KV: {
+      get: async (requested) => (requested === key ? robotsText : null),
+      put: async () => {},
+    },
+  };
+  return relay("/fetch", { url: `https://${host}${path}`, respect_robots: true }, SECRETS.PROXY_AUTH_TOKEN, env);
+}
+
+await check("the robots evaluator honours the rules, not the longest line of the file", async () => {
+  // This is the case that used to fail: `Disallow: /private` matched `/public`,
+  // because the regex built for a pattern without a trailing `$` ended in an
+  // alternative that matches any non-empty path. With longest-match precedence,
+  // the longest rule in the file then decided every URL on the host.
+  const rules = "User-agent: *\nDisallow: /private\nAllow: /private/public\n";
+
+  const disallowed = await robotsVerdict("robots.example", rules, "/private/x");
+  assert.equal(disallowed.status, 403, `a disallowed path must not be fetched: ${disallowed.text.slice(0, 160)}`);
+  assert.equal((disallowed.body.error || {}).code, "robots_disallowed");
+  assert.equal(disallowed.body.error.robots.allowed, false, "the verdict travels with the refusal");
+
+  const allowed = await robotsVerdict("robots.example", rules, "/public/page");
+  assert.equal(allowed.status, 200,
+    "a path no rule mentions must be fetched — the old matcher refused every path as soon as any pattern existed");
+
+  const longer = await robotsVerdict("robots.example", rules, "/private/public/x");
+  assert.equal(longer.status, 200, "the longer Allow wins over the shorter Disallow, as the spec says");
+
+  const sibling = await robotsVerdict("robots.example", rules, "/privateer/x");
+  assert.equal(sibling.status, 403, "matching is a prefix match, so /private also covers /privateer");
+
+  const anchored = await robotsVerdict("robots.example", "User-agent: *\nDisallow: /*.json$\n", "/data.json");
+  assert.equal(anchored.status, 403, "`*` spans directories and `$` anchors the end");
+  const withQuery = await robotsVerdict("robots.example", "User-agent: *\nDisallow: /*.json$\n", "/data.json?v=2");
+  assert.equal(withQuery.status, 200, "and the anchor is the end of the path, which a query is not");
+  const suffix = await robotsVerdict("robots.example", "User-agent: *\nDisallow: /*.json$\n", "/data.jsonp");
+  assert.equal(suffix.status, 200, "an anchored pattern must not match by prefix");
+
+  const everything = await robotsVerdict("robots.example", "User-agent: *\nDisallow: /\n", "/anything");
+  assert.equal(everything.status, 403, "Disallow: / means exactly that");
+
+  const otherCrawler = await robotsVerdict("robots.example",
+    "User-agent: Googlebot\nDisallow: /\n\nUser-agent: *\nAllow: /\n", "/page");
+  assert.equal(otherCrawler.status, 200, "a group written for another crawler does not apply to ours");
+
+  // The switch is respected in both directions: without respect_robots the Worker
+  // must not spend a request on robots.txt at all.
+  const before = upstreamCalls.length;
+  const off = await relay("/fetch", { url: "https://robots.example/page" }, SECRETS.PROXY_AUTH_TOKEN,
+    { ...makeEnv(), HOST_RATE_PER_SEC: "50", HOST_BURST: "50" });
+  assert.equal(off.status, 200);
+  const robotsFetches = upstreamCalls.slice(before).filter((call) => call.url.includes("robots.txt"));
+  assert.equal(robotsFetches.length, 0, "with respect_robots off there is no robots request");
 });
 
 console.log(`\nworker.js smoke test: ${checks} checks passed`);

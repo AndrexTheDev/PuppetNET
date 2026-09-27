@@ -13,7 +13,7 @@ so the database credentials never reach a browser.
   fetch, KV, the Neo4j round trip — which Cloudflare does not count as CPU)
 * All bindings optional — without KV/Queues the relay degrades to a stateless forwarder
   with per-isolate rate limiting.
-* Version `1.6.1`. The graph API is `graph/1`; every response says so.
+* Version `1.6.2`. The graph API is `graph/1`; every response says so.
 
 ---
 
@@ -43,7 +43,7 @@ every authenticated route is rejected, because an unauthenticated relay is an op
 {
   "ok": true,
   "worker": "puppetnet-edge-relay",
-  "version": "1.6.1",
+  "version": "1.6.2",
   "time": "2026-09-27T04:00:00.000Z",
   "bindings": {"rate_limit_kv": true, "result_kv": true, "queue": true, "auth_configured": true},
   "limits": {"global_rpm": 900, "host_rate_per_sec": 0.5, "host_burst": 4,
@@ -70,7 +70,7 @@ without its KV namespaces is caught before a scheduled run.
 ```json
 {
   "ok": true,
-  "version": "1.6.1",
+  "version": "1.6.2",
   "global": {"minute": 1790000000, "count": 42, "rpm_limit": 900},
   "local_buckets": [{"host": "example.test", "tokens": 2.413, "age_ms": 1820}],
   "bindings": {"rate_limit_kv": true, "result_kv": true, "queue": true}
@@ -330,6 +330,32 @@ same rules and without a bearer token — a preflight never carries `Authorizati
 Errors carry the CORS headers too: without them a browser reports a CORS failure
 instead of the real `401`, and the analyst debugs the wrong thing.
 
+## The SSRF guard
+
+The relay fetches URLs a caller supplies, so the address policy is enforced before any
+egress, on a **normalised** host:
+
+* a trailing dot is the DNS root and names the same host, so `localhost.` is `localhost`
+  and `www.example.org.` is still `www.example.org` (the same normalisation applies to
+  `BLOCKED_HOST_SUFFIXES`);
+* IPv4 in any other notation — integer (`2130706433`), hex (`0x7f.1`), octal, unicode
+  digits — never reaches the check, because the WHATWG URL parser has already canonicalised
+  it to `127.0.0.1`. The smoke test pins that down, since the guard relies on it;
+* IPv6 is decided by leading hextet: `::` (loopback, unspecified, every IPv4-mapped form),
+  `fc00::/7` unique local, `fe80::/10` link local, `fec0::/10` site local, `ff00::/8`
+  multicast — a hostname that merely *begins* with those letters is not an address;
+* IPv4 ranges: this-network `0/8`, RFC1918 `10/8` `172.16/12` `192.168/16`, loopback
+  `127/8`, link-local `169.254/16` (the cloud metadata service), carrier-grade NAT
+  `100.64/10` (which cloud internals use), IETF assignments `192.0.0/24`, benchmarking
+  `198.18/15`, and everything from `224/4` up;
+* wildcard-DNS services are refused by **name** (`nip.io`, `sslip.io`, `xip.io`,
+  `localtest.me`, `lvh.me`, `traefik.me`, `vcap.me`, `lacolhost.com`): they answer with the
+  address encoded in the name, so no literal-IP test can ever see one, and an edge Worker
+  has no resolver to ask.
+
+`ENFORCE_HTTPS=false` and `ALLOW_PRIVATE_NETWORKS=true` are the two deliberate ways to
+relax this, and nothing else relaxes it.
+
 ## Politeness mechanics
 
 **Fingerprint rotation.** A pool of coherent desktop fingerprints (UA ↔ `sec-ch-ua` ↔
@@ -352,6 +378,13 @@ free-tier CPU and KV quotas across all hosts.
 **robots.txt.** Fetched and cached in `RATE_LIMIT_KV` for `ROBOTS_TTL_SECONDS` (6 h) per
 host + user-agent. `Crawl-delay` tightens the host bucket. A disallowed path is refused
 with `403 robots_disallowed` *before* any egress.
+
+The evaluator follows the specification's own vocabulary: group selection is by
+user-agent substring (a group written for another crawler does not apply, and `*` is the
+fallback), `*` matches any run of characters, a trailing `$` anchors the end of the path,
+and matching is a **prefix** match — `/fish` covers `/fish/chips` and `/fishheads`. The
+longest matching pattern wins, `Allow` breaks a tie against `Disallow` of the same length,
+and a `401`/`403` on robots.txt itself is read as "everything disallowed".
 
 **Retries.** `max_attempts` (default 3) with jittered exponential backoff
 (`BACKOFF_BASE_MS` 700 → `BACKOFF_CAP_MS` 12 s), honouring `Retry-After`. Every attempt is

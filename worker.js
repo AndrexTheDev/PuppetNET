@@ -49,7 +49,7 @@
  */
 
 const WORKER_NAME = "puppetnet-edge-relay";
-const WORKER_VERSION = "1.6.1";
+const WORKER_VERSION = "1.6.2";
 
 /* -------------------------------------------------------------------------- */
 /*  Tunables (env-overridable)                                                */
@@ -164,6 +164,30 @@ const BLOCKED_REQUEST_HEADERS = Object.freeze(
     "keep-alive",
   ])
 );
+
+/**
+ * Wildcard-DNS services that answer with whatever address the *name* encodes
+ * (`127.0.0.1.nip.io`, `10-0-0-1.sslip.io`, `anything.lvh.me`). The literal-IP
+ * test in validateTargetUrl never sees an address for those, and an edge Worker
+ * has no resolver to ask, so the service itself has to be refused by name.
+ */
+const IP_ECHO_HOSTS = Object.freeze([
+  "nip.io", "sslip.io", "xip.io", "localtest.me", "lvh.me", "traefik.me", "vcap.me", "lacolhost.com",
+]);
+
+/** Private, reserved and loopback IPv6, decided by the leading hextet. */
+function isPrivateIpv6Host(host) {
+  if (host.indexOf(":") < 0) return false;
+  // `::` covers the unspecified address, the loopback `::1` and every IPv4-mapped
+  // form (`::ffff:7f00:1`).
+  if (host.startsWith("::")) return true;
+  const first = parseInt(host.split(":")[0], 16);
+  if (!Number.isFinite(first)) return false;
+  return (first >= 0xfc00 && first <= 0xfdff)   // fc00::/7  unique local
+    || (first >= 0xfe80 && first <= 0xfebf)     // fe80::/10 link local
+    || (first >= 0xfec0 && first <= 0xfeff)     // fec0::/10 site local (deprecated)
+    || first >= 0xff00;                          // ff00::/8  multicast
+}
 
 const TEXT_CONTENT_TYPES = Object.freeze([
   "text/",
@@ -870,14 +894,29 @@ function parseRobots(text) {
 }
 
 function robotPathMatches(pattern, path) {
+  // One character at a time, so the two wildcards survive: `*` matches any run of
+  // characters, and a `$` anchors only when it ends the pattern — anywhere else it
+  // is a literal (which is why it is escaped along with the rest).
+  //
+  // What this replaced appended `(?:$|[?#])|(?=.)` to every pattern that did not
+  // end in `$`. The alternation binds at the top level, so the regex was
+  // `^pattern(?:$|[?#])` OR `(?=.)` — and `(?=.)` succeeds at position zero of any
+  // non-empty path. Every pattern therefore matched every path, and with
+  // longest-match precedence the *longest line of the file* decided the fate of
+  // every URL on that host: the relay either refused pages it was welcome to read,
+  // or read pages whose rules it was breaking. The shipped fixture serves
+  // `Allow: /`, which matched everything both before and after, so nothing caught
+  // it — and respect_robots is on by default in the harvester's task model.
+  //
+  // Matching is a prefix match, exactly as the specification defines it: `/fish`
+  // covers `/fish/chips` and also `/fishheads`.
   let regex = "";
   for (let i = 0; i < pattern.length; i += 1) {
     const ch = pattern[i];
     if (ch === "*") regex += ".*";
     else if (ch === "$" && i === pattern.length - 1) regex += "$";
-    else regex += ch.replace(/[.+?^{}()|[\]\\]/g, "\\$&");
+    else regex += ch.replace(/[.+?^{}()|[\]\\$]/g, "\\$&");
   }
-  if (!regex.endsWith("$")) regex += "(?:$|[?#])|(?=.)";
   try {
     return new RegExp(`^${regex}`).test(path);
   } catch (_) {
@@ -974,7 +1013,18 @@ function validateTargetUrl(rawUrl, cfg) {
   if (cfg.enforceHttps && parsed.protocol !== "https:") {
     return { error: "Plaintext HTTP is disabled by policy (set ENFORCE_HTTPS=false to override)" };
   }
-  const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  // Two normalisations before any comparison, because the URL parser hands out
+  // names that look different and resolve identically:
+  //   - a trailing dot is the DNS root and changes nothing about where the name
+  //     points (`localhost.` reaches loopback exactly like `localhost`), yet it
+  //     made both the `host === "localhost"` test and the dotted-quad test fail,
+  //     so `http://localhost./` walked straight past the guard — and past the
+  //     operator's BLOCKED_HOST_SUFFIXES too;
+  //   - IPv6 arrives in brackets.
+  // IPv4 in other notations is already canonical by the time it gets here —
+  // `new URL("http://2130706433/").hostname` is "127.0.0.1" — so that part of the
+  // guard belongs to WHATWG, and the test asserts it stays that way.
+  const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.+$/, "");
   if (!host) return { error: "Empty host" };
 
   for (const suffix of cfg.blockedHostSuffixes) {
@@ -985,13 +1035,30 @@ function validateTargetUrl(rawUrl, cfg) {
     if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local") || host.endsWith(".internal")) {
       return { error: "Private/reserved hostname blocked" };
     }
+    for (const service of IP_ECHO_HOSTS) {
+      if (host === service || host.endsWith(`.${service}`)) {
+        return { error: `Host name encodes an address through ${service}` };
+      }
+    }
     if (/^\d+\.\d+\.\d+\.\d+$/.test(host)) {
-      const [a, b] = host.split(".").map(Number);
-      if (a === 10 || a === 127 || a === 0 || (a === 192 && b === 168) || (a === 172 && b >= 16 && b <= 31) || (a === 169 && b === 254)) {
+      const [a, b, c] = host.split(".").map(Number);
+      if (
+        a === 0 || a === 10 || a === 127                              // this-network, RFC1918, loopback
+        || (a === 100 && b >= 64 && b <= 127)                        // RFC6598 carrier-grade NAT (cloud internals)
+        || (a === 169 && b === 254)                                  // link local — the metadata service
+        || (a === 172 && b >= 16 && b <= 31)                         // RFC1918
+        || (a === 192 && b === 168)                                  // RFC1918
+        || (a === 192 && b === 0 && c === 0)                         // IETF protocol assignments
+        || (a === 198 && (b === 18 || b === 19))                     // benchmarking
+        || a >= 224                                                   // multicast and reserved
+      ) {
         return { error: "Private/reserved IPv4 range blocked" };
       }
     }
-    if (host.startsWith("::") || host === "::1" || host.toLowerCase().startsWith("fc") || host.toLowerCase().startsWith("fe80")) {
+    // Was `startsWith("fc") || startsWith("fe80")`, which refused every hostname
+    // beginning with those letters (`fcbank.example`) and still missed fd00::/8,
+    // the other half of RFC 4193's unique-local range.
+    if (isPrivateIpv6Host(host)) {
       return { error: "Private/reserved IPv6 range blocked" };
     }
   }
