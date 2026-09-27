@@ -1173,7 +1173,15 @@ await check("deep links round-trip through the URL hash", async () => {
   // carries state that differs from the defaults, which keeps shared links short.
   // What matters is that the link's mode was honoured.
   assert.equal(scratch.api.config.mode, "demo", "the link's provider mode was applied");
-  assert.equal(parsed.mode, undefined, "and a default is not echoed back into the URL");
+  // saveHash is debounced by 220 ms, so the URL is rewritten a moment after boot
+  // completes — waiting for that is the contract under test ("only state that
+  // differs from the defaults is carried"), not a way to paper over a race. Every
+  // other key in the link survives normalisation (v, q, depth 3 ≠ 1, metric
+  // degree ≠ betweenness, layout cose ≠ fcose), which is why only `mode` needed
+  // the wait — and why this check failed on the runner and never locally.
+  await until(() => scratch.api.parseHash().mode === undefined,
+    "the URL to drop the default provider mode", 3000);
+  assert.equal(scratch.api.parseHash().mode, undefined, "and a default is not echoed back into the URL");
 
   // Parsing is only half of it: opening the link has to land the analyst there.
   assert.equal(scratch.api.state.view, "table", "the link's view wins over the search it also runs");
@@ -1203,7 +1211,9 @@ await check("deep links round-trip through the URL hash", async () => {
   // Nothing may throw, the view/metric must be ignored, and depth must be clamped
   // to the 1-4 the traversal layer supports.
   scratch.win.location.hash = "#/v=spreadsheet&depth=99&metric=bogus&layout=not-a-layout";
-  await sleep(250);
+  // applyHash runs on the hashchange event and awaits the work it triggers, so a
+  // fixed sleep guesses at it. Wait for the one thing it must do.
+  await until(() => Number(scratch.api.state.depth) === 4, "the out-of-range depth to be clamped", 4000);
   assert.equal(scratch.api.state.view, viewBefore, "an unknown view name is ignored");
   assert.equal(scratch.api.state.render.sizeMetric, metricBefore, "as is an unknown size metric");
   assert.equal(Number(scratch.api.state.depth), 4, "and an out-of-range depth is clamped, not trusted");
@@ -1217,7 +1227,13 @@ await check("deep links round-trip through the URL hash", async () => {
   c.api.state.render.sizeMetric = "degree";
   c.api.actions.setActive(target.key);
   c.api.actions.saveHash();
-  await sleep(450);
+  // saveHash is debounced (220 ms), so the write lands after the call; a fixed
+  // sleep only guesses at it and a busy runner is the one that guesses wrong —
+  // which is how this check went red on a runner and never locally. Wait for the
+  // state the assertions below are about.
+  const wanted = ["v=table", "depth=2", "metric=degree", "focus="];
+  await until(() => wanted.every((part) => String(c.win.location.hash || "").includes(part)),
+    "the debounced URL write to land", 4000);
 
   const hash = String(c.win.location.hash || "");
   assert.ok(hash.startsWith("#/"), `the hash is written as #/params (got ${hash})`);
@@ -1238,8 +1254,12 @@ await check("deep links round-trip through the URL hash", async () => {
     "a deep link still loads a graph — restoring view state must not leave an empty canvas");
   assert.equal(restored.api.state.activeKey, target.key,
     "the focused entity survives the round trip (and is fetched if it was outside the loaded page)");
-  assert.ok(String(restored.win.location.hash).includes("focus="),
-    "and the focus is not erased from the URL by the next autosave");
+  // "Not erased" is an absence, and an absence is only provable after the write
+  // that could have erased it. Rather than sleep and hope, force that write: a
+  // save must keep the focus, which is the property the comment is about.
+  restored.api.actions.saveHash();
+  await until(() => String(restored.win.location.hash || "").includes("focus="),
+    "the restored console's autosave to keep the focus", 4000);
 });
 
 await check("without Cytoscape the console still boots and says why", async () => {
@@ -1391,7 +1411,11 @@ await check("an unreachable Worker falls back to demo data and says so", async (
   c.api.config.base = RELAY_ORIGIN;
   c.api.config.token = GRAPH_TOKEN;
   await c.api.actions.switchProvider(true);
-  await sleep(300);
+  // The reactivation path is asynchronous (a failed request, a fallback, a toast),
+  // so waiting for the outcome beats sleeping and hoping: the timeout names what
+  // went wrong when it does.
+  await until(() => c.api.state.providerName === "demo" || c.api.state.nodes.size > 0,
+    "the console to fall back to the demo dataset", 5000);
 
   // The console must not present an empty canvas as a finding: either it falls
   // back to the demo dataset or it tells the analyst the API is down.
