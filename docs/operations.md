@@ -10,8 +10,47 @@ Related: [configuration](configuration.md) · [graph schema](graph-schema.md) ·
 
 ## 1. Automation
 
-Five workflows live in [`.github/workflows/`](../.github/workflows): the three below, plus
+Seven workflows live in [`.github/workflows/`](../.github/workflows): `ci.yml`,
+`hourly_ingest.yml`, `daily_ingest.yml`, `weekly_ingest.yml`, `graph_maintenance.yml`,
 `pages_deploy.yml` (documented with the console) and `screenshots.yml` (below).
+
+### The tiered cadence
+
+One cron cannot serve every source. A news wire publishes continuously and its articles are
+corroboration while they are news; a company register says the same thing on Monday and on
+Friday. Reading the register every hour buys nothing and burns the free tier's request
+budget, while reading the wire once a day loses the day. So the registry assigns every
+source a **cadence** and each workflow harvests exactly one tier:
+
+| Tier | Cron (UTC) | Sources | Documents / runtime |
+| --- | --- | --- | --- |
+| `hourly` | `5 * * * *` | ADS-B Exchange, OCCRP, ICIJ stories, Global Witness, Transparency International, world news feeds, aviation news | 40 per source, 400 total, 15 min |
+| `daily` | `13 4 * * *` | ICIJ leaks, OpenCorporates, Wikidata, FAA registry, flight logs, Companies House, register files | 150 / 1500, 35 min |
+| `weekly` | `13 2 * * 0` | every source — the deep run | 400 / 4000, 55 min |
+
+Implementation notes that matter when changing any of it:
+
+* `Cadence` (in [`puppetnet/models.py`](../puppetnet/models.py)) is the vocabulary and
+  `SourceSpec.cadence` the assignment; `specs_for_tier(tier)` in
+  [`puppetnet/sources/registry.py`](../puppetnet/sources/registry.py) resolves it. The tiers
+  are additive: `weekly` is the full registry, not `daily + weekly`.
+* An unknown tier is a `ValueError`, never "all". A typo in a workflow must fail the run,
+  not silently harvest the whole registry 24 times a day.
+* `--tier` is an **outer bound**: `--sources` narrows a tier, it cannot widen it. Naming a
+  daily source in an hourly run harvests nothing and logs
+  `not harvested by the hourly tier — use --tier all`.
+* The daily workflow resolves its tier from a dispatch input whose scheduled default is
+  `daily`, so `workflow_dispatch` can widen a manual run to `all`; the hourly and weekly
+  workflows hard-code theirs.
+* All three ingest workflows share `concurrency: puppetnet-ingest-${{ github.ref }}` with
+  `cancel-in-progress: false`. The 04:13 run therefore waits for a :05 run that is still
+  going instead of overlapping it, and a queued run is never cancelled mid-batch.
+* The crons deliberately do not chain (`workflow_run`): chaining hourly → daily would run
+  the slow tier 24 times a day, which is the cost the tiers exist to avoid. The weekly run
+  needs no chain either — the daily run starts two hours later and Graph Maintenance
+  follows the daily run, so a weekly batch is maintained the same morning.
+* `tests/test_schedule.py` pins this contract: the crons, the tiers each workflow passes,
+  the shared lock, and that Graph Maintenance still follows the workflow it names.
 
 ### `ci.yml` — every push and pull request
 
@@ -24,17 +63,33 @@ Five workflows live in [`.github/workflows/`](../.github/workflows): the three b
 CI needs no secrets and writes nothing: the smoke tests run with `DRY_RUN=true`, which is
 why `load_settings()` accepts that flag as an alternative to Neo4j credentials.
 
-### `daily_ingest.yml` — cron `0 4 * * *` (04:00 UTC)
+### `hourly_ingest.yml` — cron `5 * * * *`
+
+The fast tier: news wires, the investigative-news feeds and the live telemetry sources. It
+starts five past the hour rather than on it, because the top of the hour is when GitHub's
+scheduler and every other project's cron fire at once, and a delayed hourly run is a missed
+news cycle.
+
+It installs `en_core_web_sm` **first** — the opposite order from Daily Ingest — because a
+15-minute window must not be spent waiting for a 500 MB transformer. `DEDUPE_WINDOW_DAYS`
+is 7 here: anything older than a week that the hourly tier has not seen is the daily tier's
+business. Artefacts are retained 7 days (24 runs a day would otherwise fill the storage).
+
+### `daily_ingest.yml` — cron `13 4 * * *` (04:13 UTC)
+
+The slow tier: registers, leak databases, Wikidata and the cross-referencing sources.
 
 Off-peak for GitHub runners and for most origin sites. The Worker's own janitor cron runs
 at 04:30 UTC ([`wrangler.toml`](../wrangler.toml) `[triggers] crons`); it prunes buckets
-idle for more than 6 h and zeroes the global RPM window, so it does not disturb a run that
-started at 04:00 and is still harvesting.
+idle for more than 6 h and zeroes the global RPM window. It touches no graph state and no
+live bucket of a run that started at 04:13, so the overlap is harmless — a harvest keeps
+its own in-memory token bucket for the rest of the run.
 
 Safeguards built into the job:
 
-* `concurrency: daily-ingest-${{ github.ref }}`, `cancel-in-progress: false` — two writers
-  racing the same MERGE keys produce duplicates and burn minutes;
+* `concurrency: puppetnet-ingest-${{ github.ref }}`, `cancel-in-progress: false` — two
+  writers racing the same MERGE keys produce duplicates and burn minutes; the group is
+  shared with the hourly and weekly runs, which is what keeps 04:13 and :05 apart;
 * `permissions: contents: read` — the job needs no write scope;
 * `timeout-minutes: 90` against a 35-minute in-process harvest budget
   (`MAX_RUNTIME_SECONDS=2100`) plus install and model-download overhead;
@@ -69,12 +124,24 @@ is skipped rather than trusted. If nothing loads, the job emits
 **Artefacts** — `ingest-report-${{ github.run_id }}` containing `reports/`, `ingest.log`
 and `.state/`, retained 14 days, uploaded with `if: always()`.
 
-### `graph_maintenance.yml` — after the ingest, plus cron `30 6 * * *`
+### `weekly_ingest.yml` — cron `13 2 * * 0` (Sunday 02:13 UTC)
+
+The deep run: `--tier weekly`, i.e. the whole registry, with the largest budgets and a
+90-day dedupe window. It exists next to Daily Ingest because the daily run is bounded on
+purpose — a day on which a register publishes a 4000-row delta must still finish — so the
+deep run is where those deltas are read in full, and where the accurate (`_trf`
+transformer) spaCy model is worth its install time.
+
+Starting two hours before the daily run is deliberate: the 04:13 run hands the weekly graph
+to Graph Maintenance at 06:35 the same morning. A partial failure (exit 3) is fatal here —
+unlike the hourly runs, the next deep run is seven days away.
+
+### `graph_maintenance.yml` — after the ingest, plus cron `35 6 * * *`
 
 | Trigger | Why |
 | --- | --- |
 | `workflow_run` on **Daily Ingest** `completed` | Maintenance must see today's nodes. This is the primary trigger. |
-| `schedule` 06:30 UTC | `workflow_run` only fires for workflows on the default branch, so a fork or a feature branch needs the safety net. The concurrency group absorbs the overlap. |
+| `schedule` 06:35 UTC | `workflow_run` only fires for workflows on the default branch, so a fork or a feature branch needs the safety net. The concurrency group absorbs the overlap. |
 | `workflow_dispatch` | `passes` (all/dedupe/prune/centrality/bridges/capacity), `dry_run`, `send_alerts`, `force_alerts`, `threshold`, `max_merges`, `engine`, `log_level` |
 
 `concurrency: graph-maintenance-${{ github.ref }}` with `cancel-in-progress: false` — two

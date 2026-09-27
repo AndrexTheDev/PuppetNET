@@ -55,7 +55,7 @@ from .net.proxy_client import FetchClient
 from .net.token_bucket import DelayQueue
 from .parsing.nlp_engine import NLPEngine, ParseResult
 from .sources import AdapterContext, AdapterError, create_adapter
-from .sources.registry import SOURCE_REGISTRY
+from .sources.registry import SOURCE_REGISTRY, specs_for_tier
 
 __all__ = ["IngestPipeline", "PipelineOptions", "run_pipeline", "RunReport"]
 
@@ -67,6 +67,11 @@ class PipelineOptions:
     """CLI-level knobs (override ``Settings`` for a single invocation)."""
 
     sources: list[str] = field(default_factory=list)
+    #: Scheduled tier to harvest (``hourly`` / ``daily`` / ``weekly`` / ``all``).
+    #: An explicit ``sources`` list wins: naming a source is the more specific
+    #: instruction, and a workflow that lists sources on a tiered schedule means
+    #: those sources, not the tier's set.
+    tier: str = ""
     limit_per_source: int | None = None
     dry_run: bool | None = None
     skip_nlp: bool = False
@@ -268,13 +273,34 @@ class IngestPipeline:
 
     def _resolve_specs(self) -> list[SourceSpec]:
         requested = self.options.sources or self.settings.enabled_sources
-        registry: Iterable[SourceSpec] = SOURCE_REGISTRY
+        # The tier is the outer bound; an explicit source list (CLI or
+        # ENABLED_SOURCES) narrows it *within* the tier. Deliberately the strict
+        # direction: a scheduled hourly run that names a register by accident must
+        # come up empty and say so, not quietly harvest the register 24 times a
+        # day. `--tier all` (the default) is how you reach a source that belongs to
+        # another tier.
+        registry: tuple[SourceSpec, ...] = specs_for_tier(self.options.tier or None, SOURCE_REGISTRY)
+        if self.options.tier:
+            self.logger.info(
+                "tier %s: %d source(s) — %s",
+                self.options.tier, len(registry), ", ".join(spec.id for spec in registry),
+            )
         if requested:
             wanted = {item.strip().lower() for item in requested}
-            registry = tuple(spec for spec in SOURCE_REGISTRY if spec.id in wanted or spec.adapter in wanted)
-            missing = wanted - {spec.id for spec in registry} - {spec.adapter for spec in registry}
-            if missing:
-                self.logger.warning("unknown source id(s) requested: %s", ", ".join(sorted(missing)))
+            everything = tuple(SOURCE_REGISTRY)
+            registry = tuple(spec for spec in registry if spec.id in wanted or spec.adapter in wanted)
+            matched = {spec.id for spec in registry} | {spec.adapter for spec in registry}
+            missing = wanted - matched
+            outside = {item for item in missing if item in {spec.id for spec in everything}
+                       or item in {spec.adapter for spec in everything}}
+            unknown = missing - outside
+            if outside and self.options.tier:
+                self.logger.warning(
+                    "source(s) %s are not harvested by the %s tier — use --tier all for a manual run",
+                    ", ".join(sorted(outside)), self.options.tier,
+                )
+            if unknown:
+                self.logger.warning("unknown source id(s) requested: %s", ", ".join(sorted(unknown)))
         specs = resolve_source_specs(self.settings, registry)
 
         # Apply environment-level source configuration (RSS_FEEDS, dataset URLs…).

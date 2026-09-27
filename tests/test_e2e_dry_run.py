@@ -234,9 +234,23 @@ def run_e2e(env, monkeypatch, routes: dict[str, Any] | None = None, **options: A
 
 
 def rows_for(captured: list[dict[str, Any]], fragment: str) -> list[dict[str, Any]]:
+    """Collect the rows of every batch that writes ``fragment``.
+
+    ``fragment`` is a label (``documents``, ``relations:OWNS``) or a label clause
+    from the statement (``:Organization``). Comments are stripped before the
+    match, because the query is otherwise prose as well as code: a Cypher comment
+    that happens to contain the word "documents" — one explaining why repeated
+    observations must not inflate confidence, say — made every relation batch count
+    as a document batch, and ``assert len(documents) == 3`` read 13. A test
+    selector must match the statement, not the commentary around it.
+    """
+    def without_comments(query: str) -> str:
+        return "\n".join(line.split("//", 1)[0] for line in str(query).splitlines())
+
     rows: list[dict[str, Any]] = []
     for batch in captured:
-        if fragment in batch["query"] or fragment in batch["label"]:
+        query = without_comments(batch["query"])
+        if fragment in query or fragment == batch["label"]:
             rows.extend(batch["rows"])
     return rows
 

@@ -18,10 +18,10 @@ is interpolated into Cypher.
 | `name` | string | Longest surface form seen. |
 | `entity_type` | string | `Person` / `Organization` / `Location` / `Craft` / `Unknown`. |
 | `aliases` | string[] | Every surface form observed, capped at 64. |
-| `mention_count` | int | Accumulates across runs. |
-| `confidence` | float | Noisy-OR of the best extraction confidences. |
+| `mention_count` | int | How many mentions this entity has, counted **once per document** — a re-read of a known document never increments it. |
+| `confidence` | float | Noisy-OR of the best extraction confidences, merged only for documents the node has not counted yet. |
 | `source_ids` | string[] | Which sources asserted this entity (≤ 32). |
-| `doc_ids` | string[] | Most recent documents (≤ 64). |
+| `doc_ids` | string[] | The documents that carry this entity (≤ 64), kept as a union so a re-read cannot evict real provenance. |
 | `first_seen` / `last_seen` | ISO-8601 | |
 | *flattened extras* | scalar / list | Nested maps are flattened (`registry.country` → `registry_country`) because Neo4j rejects map-valued properties. |
 
@@ -130,13 +130,14 @@ Edge properties:
 | Property | Notes |
 | --- | --- |
 | `weight` | **How much this kind of relationship matters**, from `DOMAIN_EDGE_WEIGHTS` — `CONTROLS` 1.0, `TRUSTEE_OF` 0.9, `SHARES_ADDRESS`/`PASSENGER_ON` 0.8, `DONATED_TO`/`LOCATED_IN` 0.7, `TRAVELED_WITH` 0.6, `MENTIONED_WITH` 0.4, `ASSOCIATED_WITH` 0.3. Adapters never set it by hand (`Relation.weight` falls back to the table, so the vocabulary cannot drift per source); only the analytics pass overrides it with a computed score. |
-| `confidence` | **How sure we are** — noisy-OR across observations: `1 − (1 − a)(1 − b)`. |
+| `confidence` | **How sure we are** — noisy-OR across *independent observations*: `1 − (1 − a)(1 − b)`. Merged only when the observation is new evidence — see below. |
 | `source_weight` | Highest weight seen (a structured sighting upgrades a news edge). |
 | `method` | `structured` / `dependency` / `pattern` / `gazetteer` / `cooccurrence`. `dependency` wins over `cooccurrence` on merge. |
 | `evidence` | string[] — the last five supporting snippets. |
 | `evidence_scores` | float[] — parallel to `evidence`. |
 | `verb`, `rule` | The surface verb and the rule that fired (`verb:owns`, `noun:director`, `structured:wikidata`). |
-| `observations` | How many independent sightings merged into this edge. |
+| `observations` | How many independent sightings merged into this edge — one per new document, never one per re-read. |
+| `doc_ids` | string[] | The documents that asserted this edge (≤ 20). This is the evidence ledger the merge consults. |
 | `negated`, `hedged`, `passive` | Clause flags carried from the parse. |
 | `source_id`, `doc_id`, `run_id` | Provenance. |
 | `first_seen`, `last_seen` | ISO-8601. |
@@ -144,6 +145,35 @@ Edge properties:
 Two numbers, two questions: `weight` asks *how much does this kind of tie matter*, and
 `confidence` asks *how sure are we about this particular tie*. Sorting by one and
 filtering by the other is the normal way to query the graph.
+
+#### New evidence vs. a re-read
+
+`confidence` may only rise when a *new document* asserts the edge. The reasoning is the
+whole point of the ledger:
+
+* `noisy_or` is a sound merge for independent observations, and a document is the unit of
+  independence. Two articles naming the same two people is corroboration.
+* The same article read twice is not. The dedupe window (30 days daily, 7 hourly, 90
+  weekly) is a *time* window, so it cannot stop this: the third read of a three-month-old
+  article is outside it and would count as fresh corroboration. Left alone, a feed that
+  republishes an archive crawls a single document's edge towards certainty.
+* Cypher is order-sensitive, and Cypher does not document the evaluation order of the items
+  in one `SET` — so a statement must never merge a number while reading a property a
+  sibling item is writing. The verdict is therefore computed in Python
+  (`models.relation_evidence_is_new`, fed by `graph/writer.py`, which reads the existing
+  `doc_ids` per batch) and travels into the statement as the parameter `row.is_new`.
+
+| `row.is_new` | What the upsert does |
+| --- | --- |
+| `true` | `confidence` merges by noisy-OR, `observations` increments, `doc_ids` gains the document (bounded at 20). |
+| `false` | `doc_ids` is refreshed, everything else is left exactly as it was. |
+
+A missing verdict defaults to `true` — a writer that cannot read the ledger must not be able
+to silently stop counting evidence; it logs a warning instead, and `:IngestRun` records the
+degradation. Entity nodes and `MENTIONS` carry the same contract: entity counters and
+confidence merge only for an uncounted document (checked against the row's `doc_ids`), and a
+mention row is idempotent (`count` is assigned, `confidence` takes the maximum, surface forms
+union) so one document can be re-read indefinitely without inflating anything.
 
 ### Calculated — `PUPPET_MASTER_OF`
 

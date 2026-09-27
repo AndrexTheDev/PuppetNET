@@ -35,9 +35,9 @@ on:
     types: [completed]
 
   schedule:
-    # 06:30 UTC — after the 04:00 ingest and its 90-minute budget. Skipped by
+    # 06:35 UTC — after the 04:13 ingest and its 90-minute budget. Skipped by
     # the concurrency group when a workflow_run execution is still going.
-    - cron: "30 6 * * *"
+    - cron: "35 6 * * *"
 
   workflow_dispatch:
     inputs:

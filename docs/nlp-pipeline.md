@@ -167,6 +167,13 @@ reaches Neo4j.
   spans).
 * **Corroboration** — the same claim from an *independent* sentence merges with noisy-OR
   (`1 − (1 − a)(1 − b)`), raising confidence without ever reaching certainty.
+* **Evidence novelty** — independence is counted per *document*, not per parse. The graph
+  writer compares each row's document against the edge's `doc_ids` ledger
+  (`models.relation_evidence_is_new`) and marks the row `is_new`; only a row that is new
+  evidence may raise `confidence` or `observations`. Without that guard a feed that
+  republishes an archive — or a dedupe window that has simply moved past a document —
+  would let one article's edge climb towards 1.0 on its own. See
+  [graph schema → New evidence vs. a re-read](graph-schema.md#new-evidence-vs-a-re-read).
 
 ---
 

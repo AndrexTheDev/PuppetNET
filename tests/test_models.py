@@ -8,8 +8,10 @@ import pytest
 
 from puppetnet.models import (
     COOCCURRENCE_PENALTY,
+    EDGE_DOC_ID_CAP,
     STRUCTURED_SOURCE_WEIGHT,
     UNSTRUCTURED_SOURCE_WEIGHT,
+    Cadence,
     Document,
     Entity,
     EntityType,
@@ -24,6 +26,8 @@ from puppetnet.models import (
     document_id,
     is_safe_relationship_type,
     noisy_or,
+    relation_evidence_is_new,
+    remember_edge_doc_id,
 )
 
 logging.disable(logging.CRITICAL)
@@ -164,6 +168,37 @@ def test_document_id_is_deterministic():
 # --------------------------------------------------------------------------- #
 # Merge arithmetic
 # --------------------------------------------------------------------------- #
+def test_cadence_parses_and_refuses_junk():
+    """A tier is a schedule decision, so a typo must not silently mean 'all'."""
+    assert Cadence.coerce("HOURLY") is Cadence.HOURLY
+    assert Cadence.coerce(Cadence.WEEKLY) is Cadence.WEEKLY
+    assert Cadence.coerce("") is None and Cadence.coerce(None) is None
+    assert Cadence.coerce("houry") is None, "junk is refused, not defaulted"
+    assert Cadence.coerce(None, default=Cadence.ALL) is Cadence.ALL
+
+
+def test_a_reread_document_is_not_new_evidence():
+    """The guard on the noisy-OR: same document, no second corroboration."""
+    assert relation_evidence_is_new(["doc-1", "doc-2"], "doc-1") is False
+    assert relation_evidence_is_new(["doc-1"], "doc-2") is True
+    assert relation_evidence_is_new([], "doc-1") is True, "no history means the edge is new"
+    assert relation_evidence_is_new(None, "doc-1") is True
+    assert relation_evidence_is_new(["doc-1"], "") is True, (
+        "a source that attributes no document cannot be checked, and refusing it would "
+        "silently drop structured sources' edges"
+    )
+
+
+def test_remembering_a_document_is_a_deduplicated_bounded_list():
+    kept = remember_edge_doc_id(["a", "b"], "b")
+    assert kept == ["a", "b"], "the same document is not listed twice"
+    kept = remember_edge_doc_id(["a"], "b")
+    assert kept == ["a", "b"], "newest last"
+    grown = remember_edge_doc_id([f"doc-{i}" for i in range(EDGE_DOC_ID_CAP + 5)], "newest")
+    assert len(grown) == EDGE_DOC_ID_CAP, "the list is bounded"
+    assert grown[-1] == "newest", "and keeps the newest entries"
+
+
 def test_noisy_or_is_monotonic_and_bounded():
     merged = noisy_or(0.4, 0.4)
     assert merged == pytest.approx(1 - (0.6 * 0.6))

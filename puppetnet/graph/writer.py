@@ -26,6 +26,7 @@ from ..models import (
     SourceSpec,
     is_safe_relationship_type,
     iso,
+    relation_evidence_is_new,
     utcnow,
 )
 from . import schema
@@ -297,6 +298,36 @@ class GraphWriter:
         )
         return existing + admitted
 
+    def _mark_new_entity_evidence(self, rows: list[dict[str, Any]]) -> None:
+        """Set ``row["is_new"]`` per entity row from what the graph already holds.
+
+        ``True`` means the row carries at least one document the entity's
+        ``doc_ids`` does not list yet, so counting this row's mentions is not
+        counting evidence the graph already has. A read failure leaves every row
+        ``is_new`` (the pre-existing behaviour) rather than freezing the counters:
+        an unreachable index must not silently stop the counters from ever moving.
+        """
+        keys = [row["canonical_key"] for row in rows if row.get("canonical_key")]
+        if not keys:
+            return
+        try:
+            known = {
+                record["canonical_key"]: record.get("doc_ids") or []
+                for record in self.client.read(schema.ENTITY_DOC_IDS, {"keys": keys})
+            }
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("could not read entity provenance (%s) — counting every row as new", exc)
+            return
+        for row in rows:
+            known_docs = known.get(row["canonical_key"]) or []
+            # An entity row carries *documents*, not a document — and the guard
+            # asks about one — so the row is new evidence when any of its documents
+            # is one the node has not counted yet. (Reading the row's ``doc_id``
+            # here instead was the first version of this method: entity rows do not
+            # have that key, so every row looked new and the guard did nothing.)
+            documents = [str(item) for item in (row.get("doc_ids") or []) if str(item)]
+            row["is_new"] = any(relation_evidence_is_new(known_docs, document) for document in documents)
+
     def write_entities(self, entities: Sequence[Entity]) -> tuple[int, list[Entity]]:
         """Resolve, group by type and upsert entities. Returns (rows, resolved)."""
         if not entities:
@@ -323,6 +354,7 @@ class GraphWriter:
         for (entity_type, labels, stale), rows in by_shape.items():
             label = entity_type.value if entity_type is not EntityType.UNKNOWN else "Unknown"
             query = schema.build_entity_upsert(label, labels=labels, remove=stale)
+            self._mark_new_entity_evidence(rows)
             written = self.client.execute_batches(query, rows, label=f"entities:{label}")
             total += written
             self.summary.entities_by_type[label] = self.summary.entities_by_type.get(label, 0) + written
@@ -338,6 +370,38 @@ class GraphWriter:
         # so overwriting here reported only the last source's rows.
         self.stats.entities_written += total
         return total, resolved
+
+    def _mark_new_relation_evidence(self, rel_type: str, rows: list[dict[str, Any]]) -> None:
+        """Set ``row["is_new"]`` per relation row from the edge's recorded documents.
+
+        Same rule as the entity version, per edge: ``r.doc_ids`` holds the
+        documents whose observation has already been folded into this edge's
+        confidence, so a row from a document that is already in that list must not
+        fold it in again. Failure to read is not failure to write — the batch goes
+        out with every row new, which is what the writer did before this existed.
+        """
+        pairs = [
+            {"subject_key": row["subject_key"], "object_key": row["object_key"]}
+            for row in rows
+            if row.get("subject_key") and row.get("object_key")
+        ]
+        if not pairs:
+            return
+        try:
+            records = self.client.read(schema.build_relation_doc_ids(rel_type), {"keys": pairs})
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "could not read existing %s evidence (%s) — counting every observation as new",
+                rel_type, exc,
+            )
+            return
+        known = {
+            (record["subject_key"], record["object_key"]): record.get("doc_ids") or []
+            for record in records
+        }
+        for row in rows:
+            existing = known.get((row.get("subject_key"), row.get("object_key")))
+            row["is_new"] = relation_evidence_is_new(existing, row.get("doc_id", ""))
 
     def write_mentions(self, entities: Sequence[Entity]) -> int:
         rows = schema.properties_for_mention_rows(entities)
@@ -385,6 +449,7 @@ class GraphWriter:
         total = 0
         for rel_type, rows in sorted(grouped.items(), key=lambda item: -len(item[1])):
             query = schema.build_relation_upsert(rel_type)
+            self._mark_new_relation_evidence(rel_type, rows)
             written = self.client.execute_batches(query, rows, label=f"relations:{rel_type}")
             total += written
             self.summary.relations_by_type[rel_type] = self.summary.relations_by_type.get(rel_type, 0) + written

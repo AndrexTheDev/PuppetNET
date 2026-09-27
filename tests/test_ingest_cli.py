@@ -161,6 +161,30 @@ def test_parser_accepts_every_documented_flag():
     assert parsed.no_report is True
 
 
+def test_parser_defaults_to_no_tier_filter():
+    """An unqualified run (every documented command in README) harvests all."""
+    assert ingest.build_parser().parse_args([]).tier == ""
+
+
+@pytest.mark.parametrize("tier", ["hourly", "daily", "weekly", "all"])
+def test_parser_accepts_every_scheduled_tier(tier):
+    """The four tiers the workflows pass — the CLI must know each one, or the
+    04:00 run dies on an unrecognised argument."""
+    assert ingest.build_parser().parse_args(["--tier", tier]).tier == tier
+
+
+def test_parser_rejects_an_unknown_tier():
+    """A typo in a workflow must fail loudly instead of silently harvesting
+    everything: argparse exits 2, which the workflow reports as a config error."""
+    with pytest.raises(SystemExit):
+        ingest.build_parser().parse_args(["--tier", "houry"])
+
+
+def test_options_from_args_carries_the_tier():
+    assert ingest.options_from_args(args(tier="hourly")).tier == "hourly"
+    assert ingest.options_from_args(args()).tier == ""
+
+
 def test_parser_rejects_a_non_integer_limit():
     with pytest.raises(SystemExit):
         ingest.build_parser().parse_args(["--limit", "many"])

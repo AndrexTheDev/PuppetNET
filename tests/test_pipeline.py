@@ -19,6 +19,7 @@ from puppetnet import pipeline as pipeline_module
 from puppetnet.graph.neo4j_client import Neo4jClient, Neo4jUnavailable
 from puppetnet.graph.schema import ensure_schema_statements
 from puppetnet.models import (
+    Cadence,
     Document,
     Entity,
     EntityType,
@@ -240,13 +241,26 @@ def test_run_harvests_parses_and_records_writes(env, use_registry, tmp_path):
 
     # Dry-run recorder proves the write ordering actually happened: schema DDL,
     # the run node (open, summary, per-source rows), entity/relation batches and
-    # the two index reads (dedupe window + entity aliases).
+    # the index reads — the dedupe window and the alias index, plus one provenance
+    # read per batch (entity doc_ids, relation doc_ids) that tells the writer which
+    # observations are new evidence instead of a re-read.
     recorded = pipeline.neo4j.recorder.summary()
     assert recorded["statements"] > 0
     assert recorded["by_kind"]["schema"] == len(ensure_schema_statements())
     assert recorded["by_kind"]["run"] == 3, "open + summary + per-source rows"
     assert recorded["by_kind"]["write"] > 0
-    assert recorded["by_kind"]["read"] == 2
+    # The two index reads are still the only reads the pipeline itself needs; the
+    # provenance reads happen one per batch (see below), so the assertion is a
+    # lower bound plus the semantic check that the provenance reads are the ones
+    # that happened — a bare count here would only be brittle.
+    assert recorded["by_kind"]["read"] >= 2, recorded["by_kind"]
+    provenance_reads = [
+        entry for entry in pipeline.neo4j.recorder.statements
+        if entry["kind"] == "read"
+        and "doc_ids" in entry["query_preview"]
+        and entry["params_keys"] == ["keys"]
+    ]
+    assert provenance_reads, "the writer must read which documents an edge/node has already counted"
     assert pipeline.stats.entities_written >= 3
 
 
@@ -876,3 +890,67 @@ def test_the_analytics_section_is_serialised_into_the_report(env, use_registry, 
     assert payload["analytics"]["status"] == "completed"
     assert payload["analytics"]["persons_scored"] >= 1
     assert payload["analytics"]["top_persons"][0]["targets"], "edges carry the evidence chain that justified them"
+
+
+# --------------------------------------------------------------------------- #
+# Scheduled tiers
+# --------------------------------------------------------------------------- #
+
+
+def test_every_source_belongs_to_a_scheduled_tier(use_registry):
+    """A source needs an explicit cadence, and the tiers must cover the registry.
+
+    A source that is in neither the hourly nor the daily set is only reachable by a
+    manual run, which means it is effectively never harvested: the weekly deep run
+    would find it, seven days after it should have been seen. The default cadence is
+    DAILY precisely so a new source lands in a run that happens, but this asserts the
+    property instead of trusting the default.
+    """
+    from puppetnet.sources.registry import specs_for_tier
+
+    hourly = {spec.id for spec in specs_for_tier("hourly")}
+    daily = {spec.id for spec in specs_for_tier("daily")}
+    everything = {spec.id for spec in specs_for_tier("all")}
+
+    assert hourly, "the hourly tier cannot be empty"
+    assert daily, "the daily tier cannot be empty"
+    assert hourly & daily == set(), "a source belongs to one tier, not two"
+    assert hourly | daily == everything, f"unreachable source(s): {sorted(everything - (hourly | daily))}"
+    assert specs_for_tier("weekly") == specs_for_tier("all"), (
+        "the weekly deep run revisits every source — that is what makes it deep"
+    )
+
+
+def test_a_tier_selects_its_sources_and_refuses_an_unknown_one(use_registry):
+    from puppetnet.sources.registry import specs_for_tier
+
+    with pytest.raises(ValueError):
+        specs_for_tier("houry")
+
+
+def test_the_pipeline_harvests_only_the_tier_it_was_given(env, use_registry):
+    hourly = dataclasses.replace(stub_spec("news_world"), cadence=Cadence.HOURLY)
+    daily = dataclasses.replace(stub_spec("icij", SourceType.STRUCTURED), cadence=Cadence.DAILY)
+    use_registry(hourly, daily)
+
+    tiered = make_pipeline(env, PipelineOptions(tier="hourly"))
+    assert [spec.id for spec in tiered._resolve_specs()] == ["news_world"]
+
+    deep = make_pipeline(env, PipelineOptions(tier="weekly"))
+    assert [spec.id for spec in deep._resolve_specs()] == ["icij", "news_world"]
+
+
+def test_naming_a_source_outside_the_tier_does_not_widen_the_run(env, use_registry):
+    """The tier is the outer bound: naming a register in an hourly run harvests nothing."""
+    hourly = dataclasses.replace(stub_spec("news_world"), cadence=Cadence.HOURLY)
+    daily = dataclasses.replace(stub_spec("icij", SourceType.STRUCTURED), cadence=Cadence.DAILY)
+    use_registry(hourly, daily)
+
+    pipeline = make_pipeline(env, PipelineOptions(tier="hourly", sources=["icij"]))
+    assert pipeline._resolve_specs() == [], (
+        "an hourly run that names a daily source must come up empty and say so, "
+        "not quietly harvest the register 24 times a day"
+    )
+
+    manual = make_pipeline(env, PipelineOptions(sources=["icij"]))
+    assert [spec.id for spec in manual._resolve_specs()] == ["icij"], "--tier all reaches it"

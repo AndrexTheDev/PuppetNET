@@ -93,6 +93,13 @@ as a warning so one flaky feed cannot fail a daily run.
    `reports/<run_id>.json` + `.md`, publish `GITHUB_STEP_SUMMARY` / `GITHUB_OUTPUT`,
    release every resource.
 
+**A re-read document is not new evidence.** The writer keeps a per-edge `doc_ids` ledger
+and a per-entity document list, and merges `confidence`/`observations` (edges) and
+`confidence`/`mention_count` (entities) only for a document the node has not counted. The
+verdict is computed in Python and travels into Cypher as `row.is_new`, because the
+evaluation order of items inside one Cypher `SET` is undocumented — see
+[graph schema → new evidence vs. a re-read](graph-schema.md#new-evidence-vs-a-re-read).
+
 **A failing source never aborts the run.** Adapter exceptions are caught, counted,
 logged and reported per source; only an unreachable database or `--fail-on-error`
 changes the exit status. That is the behaviour an unattended cron job needs.
@@ -124,6 +131,14 @@ host cannot starve the others; failures escalate a host's backoff
 caps, content-hash dedupe, provenance stamping (`source_id`, `source_weight`,
 `doc_id`, `published_at`), per-source statistics and error accounting. A new source is
 a `harvest()` generator plus a registry entry — nothing else.
+
+The registry entry also declares a **cadence** (`hourly`, `daily` or `weekly`), and
+`specs_for_tier(tier)` turns that into the set a scheduled run may harvest. The tier is the
+outer bound: `--sources` narrows it and cannot widen it, an unknown tier raises instead of
+falling back to "all", and `tests/test_schedule.py` pins both the registry and the
+workflows that call it. See
+[operations → the tiered cadence](operations.md#the-tiered-cadence) for the rationale and the
+per-tier budgets.
 
 Structured adapters (ICIJ, OpenCorporates, Wikidata, registers, FAA registry, ADS-B,
 flight logs) attach resolved `Entity`/`Relation` objects to their documents; unstructured

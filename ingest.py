@@ -465,6 +465,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--sources", default="", help="Comma-separated source ids or adapter names (default: all enabled).")
     parser.add_argument("--limit", type=int, default=None, help="Maximum documents per source for this run.")
+    parser.add_argument(
+        "--tier",
+        default="",
+        choices=["hourly", "daily", "weekly", "all"],
+        help=(
+            "Scheduled tier: hourly (wire feeds + live telemetry), daily (registers, "
+            "leak databases, cross-referencing sources), weekly (every source — the deep "
+            "run), all (default: no filtering). An explicit --sources wins over the tier."
+        ),
+    )
     parser.add_argument("--dry-run", action="store_true", help="Harvest + parse but write nothing to Neo4j.")
     parser.add_argument("--skip-nlp", action="store_true", help="Skip spaCy entirely (structured sources only).")
     parser.add_argument(
@@ -498,6 +508,7 @@ def options_from_args(args: argparse.Namespace) -> PipelineOptions:
     sources = [item.strip().lower() for item in args.sources.replace(";", ",").split(",") if item.strip()]
     return PipelineOptions(
         sources=sources,
+        tier=args.tier or "",
         limit_per_source=args.limit,
         dry_run=True if args.dry_run else None,
         skip_nlp=args.skip_nlp,

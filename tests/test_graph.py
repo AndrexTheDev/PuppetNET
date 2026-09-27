@@ -1369,3 +1369,148 @@ def test_ensure_schema_emits_ddl_when_enabled(writer):
     statements = [entry["query_preview"] for entry in recorded(writer.client)]
     assert len(statements) == len(ensure_schema_statements())
     assert all(entry["kind"] == "schema" for entry in recorded(writer.client))
+
+# --------------------------------------------------------------------------- #
+# Evidence novelty — the guard that keeps a re-read from looking like a source
+# --------------------------------------------------------------------------- #
+#
+# The noisy-OR in the upsert is right for independent corroboration and wrong for
+# the same document arriving twice, and the same document does arrive twice: the
+# dedupe window is 30 days while the harvest runs hourly and daily for good. These
+# tests cover the plumbing — that the writer asks the graph which documents an edge
+# or node has already counted, and hands the verdict to the statement. The rule
+# itself is tested in test_models.py.
+
+
+class RowCapturingClient(ScriptedGraphClient):
+    """Scripted client that also keeps the rows of every write."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.writes: list[dict] = []
+
+    def write(self, query, params=None, *, rows: int = 0, kind: str = "write"):
+        self.writes.append({"query": query, "rows": list((params or {}).get("rows") or [])})
+        return super().write(query, params, rows=rows, kind=kind)
+
+
+def rows_of(client: RowCapturingClient, needle: str) -> list[dict]:
+    """Rows from the last batch whose statement contains ``needle``."""
+    for entry in reversed(client.writes):
+        if needle in entry["query"] and entry["rows"]:
+            return entry["rows"]
+    return []
+
+
+def provenance_writer(live_settings, *, entity_docs=None, relation_docs=None, reads_fail=False):
+    """A writer whose provenance reads are scripted, so batches can be inspected."""
+    reads: dict[str, list] = {}
+    if entity_docs is not None:
+        reads["coalesce(e.doc_ids, [])"] = list(entity_docs)
+    if relation_docs is not None:
+        reads["coalesce(r.doc_ids, [])"] = list(relation_docs)
+    client = RowCapturingClient(live_settings, reads=reads, sleeper=RecordingSleeper())
+    if reads_fail:
+        def boom(query, params=None):
+            raise RuntimeError("index unavailable")
+
+        client.read = boom  # type: ignore[method-assign]
+    settings = dataclasses.replace(live_settings, neo4j_batch_size=50)
+    return GraphWriter(client, settings, stats=IngestStats(run_id=settings.run_id)), client
+
+
+def test_a_document_the_edge_already_counted_is_not_new_evidence(live_settings):
+    """Re-ingesting a document must not fold its confidence in a second time."""
+    subject, obj = entity("Gazprom"), entity("Rosneft")
+    edge = relation(subject, obj)
+    edge.doc_id = "news-article-1"
+    graph, client = provenance_writer(
+        live_settings,
+        relation_docs=[{
+            "subject_key": subject.canonical_key,
+            "object_key": obj.canonical_key,
+            "doc_ids": ["news-article-1"],
+        }],
+    )
+    graph.write_relations([edge])
+
+    rows = rows_of(client, "[r:OWNS]->")
+    assert rows, "the edge should have been written"
+    assert rows[0]["doc_id"] == "news-article-1"
+    assert rows[0]["is_new"] is False, "the graph already counted this document for this edge"
+
+
+def test_a_document_the_edge_never_saw_is_new_evidence(live_settings):
+    subject, obj = entity("Gazprom"), entity("Rosneft")
+    graph, client = provenance_writer(
+        live_settings,
+        relation_docs=[{
+            "subject_key": subject.canonical_key,
+            "object_key": obj.canonical_key,
+            "doc_ids": ["wire-1"],
+        }],
+    )
+    second = relation(subject, obj)
+    second.doc_id = "wire-2"
+    graph.write_relations([second])
+    rows = rows_of(client, "[r:OWNS]->")
+    assert rows[0]["is_new"] is True, "a second document is genuine corroboration"
+
+
+def test_an_unknown_edge_is_new_evidence(live_settings):
+    """No row from the register means the edge does not exist yet."""
+    graph, client = provenance_writer(live_settings, relation_docs=[])
+    graph.write_relations([relation(entity("A"), entity("B"))])
+    rows = rows_of(client, "[r:OWNS]->")
+    assert rows[0]["is_new"] is True
+
+
+def test_a_failed_provenance_read_still_writes_the_batch(live_settings):
+    """A read failure must not stop the harvest; it falls back to the old behaviour."""
+    graph, client = provenance_writer(live_settings, reads_fail=True)
+    graph.write_relations([relation(entity("A"), entity("B"))])
+    rows = rows_of(client, "[r:OWNS]->")
+    assert rows, "the batch must go out even when the provenance index is unreachable"
+    assert rows[0]["is_new"] is True, "without the index every observation counts as new, as before"
+
+
+def test_entity_counters_only_count_a_document_once(live_settings):
+    """``mention_count`` is evidence; a re-read must not inflate it."""
+    seen = entity("Gazprom", doc_ids={"doc-1"}, mentions=[
+        EntityMention(text="Gazprom", entity_type=EntityType.ORGANIZATION, start_char=0, confidence=0.9),
+        EntityMention(text="Gazprom", entity_type=EntityType.ORGANIZATION, start_char=40, confidence=0.9),
+        EntityMention(text="Gazprom", entity_type=EntityType.ORGANIZATION, start_char=90, confidence=0.9),
+    ])
+    assert seen.mention_count == 3, "three mentions in one document"
+    graph, client = provenance_writer(
+        live_settings,
+        entity_docs=[{"canonical_key": seen.canonical_key, "doc_ids": ["doc-1"]}],
+    )
+    graph.write_entities([seen])
+    rows = rows_of(client, "MERGE (e:Entity:Organization")
+    assert rows, "the entity should have been written"
+    assert rows[0]["is_new"] is False, "the graph already counted this document for this entity"
+
+    fresh = entity("Rosneft", doc_ids={"doc-9"})
+    graph2, client2 = provenance_writer(
+        live_settings,
+        entity_docs=[{"canonical_key": fresh.canonical_key, "doc_ids": ["doc-1"]}],
+    )
+    graph2.write_entities([fresh])
+    rows2 = rows_of(client2, "MERGE (e:Entity:Organization")
+    assert rows2[0]["is_new"] is True, "a document the entity's list does not hold is new evidence"
+
+
+def test_the_upserts_carry_the_guard():
+    """The verdict is useless unless the statements read it."""
+    relation_cypher = schema.build_relation_upsert("OWNS")
+    assert "coalesce(row.is_new, true)" in relation_cypher
+    assert "r.doc_ids" in relation_cypher, "the edge has to remember which documents it counted"
+    entity_cypher = schema.build_entity_upsert("Organization")
+    assert "coalesce(row.is_new, true)" in entity_cypher
+    assert "reduce(acc = coalesce(e.doc_ids, []), d IN row.doc_ids" in entity_cypher, (
+        "entity provenance is a union, not an append: appending on every re-read evicts the real documents"
+    )
+    # Mentions are idempotent by construction instead: the count is a property of
+    # the document, so re-reading the text converges on it rather than adding to it.
+    assert "m.count = row.count" in schema.MENTION_UPSERT

@@ -1,10 +1,11 @@
 # PuppetNET — serverless OSINT harvest & NLP graph engine
 
-PuppetNET is a **serverless OSINT network-analysis application**: a daily pipeline that
-harvests corporate-registry, offshore-leaks and news sources, extracts **people,
-organisations, locations and craft (aircraft / vessels / vehicles)** with spaCy, resolves
-them into **weighted relationships**, writes an idempotent property graph into **Neo4j
-AuraDB**, keeps that graph true — and then lets an analyst read it in a browser.
+PuppetNET is a **serverless OSINT network-analysis application**: an around-the-clock
+pipeline that harvests corporate-registry, offshore-leaks, news and live-flight sources,
+extracts **people, organisations, locations and craft (aircraft / vessels / vehicles)**
+with spaCy, resolves them into **weighted relationships**, writes an idempotent property
+graph into **Neo4j AuraDB**, keeps that graph true — and then lets an analyst read it in a
+browser. It costs nothing to run: every moving part sits inside a permanently free tier.
 
 There is no server to run. Six moving parts:
 
@@ -15,10 +16,12 @@ There is no server to run. Six moving parts:
 | Graph maintenance (entity resolution, pruning, centrality, anomaly scoring) | [`graph_analytics.py`](graph_analytics.py) | GitHub Actions, after the ingest |
 | Alerting (cluster-bridge push, daily digest) | [`telegram_bot.py`](telegram_bot.py) | GitHub Actions, after maintenance |
 | **Analyst console** (search, graph canvas, handshake, evidence table) | [`web/`](web) | Cloudflare Pages — static, no build step |
-| Daily schedule | [`.github/workflows/daily_ingest.yml`](.github/workflows/daily_ingest.yml) | GitHub Actions cron (`0 4 * * *`) |
+| Hourly harvest — news wires, live ADS-B | [`.github/workflows/hourly_ingest.yml`](.github/workflows/hourly_ingest.yml) | GitHub Actions cron (`5 * * * *`) |
+| Daily harvest — registers, leak databases, Wikidata | [`.github/workflows/daily_ingest.yml`](.github/workflows/daily_ingest.yml) | GitHub Actions cron (`13 4 * * *`) |
+| Weekly deep harvest — every source, deep budgets | [`.github/workflows/weekly_ingest.yml`](.github/workflows/weekly_ingest.yml) | GitHub Actions cron (`13 2 * * 0`) |
 
 ```
-                    ┌─────────────────────────── GitHub Actions (cron 04:00 UTC) ───────────────────────────┐
+                    ┌────────────────────────── GitHub Actions (cron :05 hourly, 04:13 daily) ──────────────────────────┐
                     │                                                                                       │
   sources.yaml ───► │  ingest.py ─► IngestPipeline                                                          │
   .env / secrets    │      │            │                                                                   │
@@ -115,9 +118,27 @@ OPENCORPORATES_API_TOKEN  COMPANIES_HOUSE_API_KEY   (optional)
 WIKIDATA_USER_AGENT  ICIJ_QUERY_TERMS  RSS_FEEDS    (optional)
 ```
 
-`Daily Ingest` can also be triggered by hand (`workflow_dispatch`) with inputs for
-sources, limit, dry run, log level, skip-NLP and fail-on-error. Each run uploads its
-report as an artefact and appends a summary to the job log.
+Three crons share the work, because a source's value decays at its own speed: a news
+article is corroboration while it is news, while a company register says the same thing on
+Monday and on Friday.
+
+| Workflow | Cron | Tier it harvests | Budget |
+| --- | --- | --- | --- |
+| `Hourly Ingest` | `5 * * * *` | `hourly` — the wire feeds and the live ADS-B/telemetry sources | 400 documents, 15 min |
+| `Daily Ingest` | `13 4 * * *` | `daily` — registers, leak databases, Wikidata and the cross-referencing sources | 1500 documents, 35 min |
+| `Weekly Ingest` | `13 2 * * 0` | `weekly` — every source, the accurate spaCy model, 90-day dedupe window | 4000 documents, 55 min |
+
+`--tier` is the switch (`ingest.py --tier hourly`), and it is an outer bound: naming a
+source that belongs to another tier harvests nothing and says so. Add `--tier all` for an
+unfiltered manual run. Each tier is a set in
+[`puppetnet/sources/registry.py`](puppetnet/sources/registry.py) (`specs_for_tier`), and the
+three workflows share one concurrency group, so two writers never touch the same MERGE keys
+at the same time.
+
+Every workflow can also be triggered by hand (`workflow_dispatch`) with inputs for sources,
+tier, limit, dry run, log level, skip-NLP and fail-on-error. Each run uploads its report as
+an artefact and appends a summary to the job log. Graph Maintenance follows Daily Ingest,
+so the weekly deep run's nodes are deduplicated and scored by the same pass.
 
 ### 6. Open the console
 
@@ -601,7 +622,9 @@ scripts/emit-seo-files.mjs    writes sitemap.xml + the robots.txt Sitemap line a
 scripts/screenshots.mjs       Playwright matrix: 4 viewports x 16 states, each asserted
 package.json                  dev tooling only: jsdom, tailwindcss, terser
 .github/workflows/
-  daily_ingest.yml            cron 04:00 UTC + manual dispatch
+  hourly_ingest.yml           cron :05 hourly + manual dispatch
+  daily_ingest.yml            cron 04:13 UTC + manual dispatch
+  weekly_ingest.yml           cron 02:13 Sunday + manual dispatch
   graph_maintenance.yml       after the ingest: dedupe/prune/centrality + alerts
   ci.yml                      python, worker and web jobs on push/PR
   pages_deploy.yml            verify, emit SEO files, upload web/ to Cloudflare Pages

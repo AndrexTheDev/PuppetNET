@@ -1,50 +1,55 @@
 # =============================================================================
-#  PuppetNET — daily harvest & graph ingestion
+#  PuppetNET — hourly harvest of time-sensitive sources
 # =============================================================================
-#  Runs once a day at 04:13 UTC and harvests the slow tier: the company and
-#  aircraft registers, the leak databases and Wikidata (see
-#  `specs_for_tier("daily")` in puppetnet/sources/registry.py). The news wires and
-#  the live ADS-B feeds are the hourly tier, harvested by Hourly Ingest — running
-#  them once a day would read the same articles twice and miss the day's news in
-#  between.
+#  Runs at five past every hour and harvests only the sources whose value decays
+#  within hours: the news wires, the live ADS-B feeds and the investigative-news
+#  feeds (see `specs_for_tier("hourly")` in puppetnet/sources/registry.py).
 #
-#  Harvests structured + unstructured sources through the Cloudflare Worker edge
-#  relay, extracts entities/relations with spaCy, applies source confidence
-#  weights, and writes to Neo4j AuraDB. A manual dispatch can widen the run to
-#  every source with the `tier` input (`all`).
+#  Why hourly, and why only those sources:
+#      * A news article is corroboration for an ownership edge while it is news;
+#        a day later the same article is the same evidence, re-read. The graph's
+#        `noisy_or` merge counts *new documents*, so harvesting the wires every
+#        hour adds observations, while harvesting a company register every hour
+#        would only re-read the same rows.
+#      * Registers, leak databases and Wikidata change on the order of days, so
+#        they stay in Daily Ingest. This workflow never touches them.
+#
+#  This workflow is the first link of the scheduled chain:
+#      Hourly Ingest  →  Daily Ingest  →  Graph Maintenance
+#  The three ingest workflows are deliberately *not* chained to one another:
+#  linking them would make the slow tier run 24 times a day, which is exactly
+#  the cost the tiers exist to avoid. Each tier keeps its own cron —
+#      Hourly Ingest  5 * * * *      fast tier
+#      Daily Ingest   13 4 * * *     slow tier   →  Graph Maintenance
+#      Weekly Ingest  13 2 * * 0     every source, deep budgets
+#  and the three share one concurrency group, so two writers never touch Neo4j
+#  at the same time.
 #
 #  Required repository secrets (Settings → Secrets and variables → Actions):
 #      NEO4J_URI, NEO4J_USERNAME, NEO4J_PASSWORD
 #      PROXY_WORKER_URL, PROXY_AUTH_TOKEN
 #  Optional:
-#      OPENCORPORATES_API_TOKEN, COMPANIES_HOUSE_API_KEY,
-#      WIKIDATA_USER_AGENT, ICIJ_QUERY_TERMS, RSS_FEEDS
+#      WIKIDATA_USER_AGENT, ICIJ_QUERY_TERMS, RSS_FEEDS, REGISTER_FILES,
+#      OPENCORPORATES_API_TOKEN, COMPANIES_HOUSE_API_KEY
 #
-#  Without Neo4j credentials the run still completes: `--doctor` reports the
-#  gap and the pipeline falls back to a dry run, so a fork of this repo never
-#  fails its first scheduled execution.
+#  Without Neo4j credentials the run still completes: `--doctor` reports the gap
+#  and the pipeline falls back to a dry run, so a fork of this repo never fails
+#  its first scheduled execution.
 # =============================================================================
 
-name: Daily Ingest
+name: Hourly Ingest
 
 on:
   schedule:
-    # 04:13 UTC daily, deliberately off the hour: GitHub load-shifts every cron
-    # that fires on a round hour, and a delayed daily run delays Graph
-    # Maintenance with it. Off-peak for both the runners and the origin sites,
-    # and it keeps a >24 h gap from most feeds' publish windows.
-    - cron: "13 4 * * *"
+    # Five past the hour. Off the top-of-the-hour mark, when GitHub's scheduler
+    # and every other project's cron fire at once — that congestion is what
+    # delays scheduled runs, and a delayed hourly run is a missed news cycle.
+    - cron: "5 * * * *"
 
   workflow_dispatch:
     inputs:
-      tier:
-        description: "Which scheduled tier to harvest (scheduled runs use 'daily')"
-        required: false
-        default: "daily"
-        type: choice
-        options: [daily, hourly, weekly, all]
       sources:
-        description: "Source ids or adapter names inside the tier (comma-separated). Empty = the tier."
+        description: "Hourly source ids or adapter names (comma-separated). Empty = the hourly tier."
         required: false
         default: ""
         type: string
@@ -77,9 +82,7 @@ on:
 
 # An ingest must never overlap another ingest: two writers racing on the same
 # MERGE keys produce duplicate nodes and burn Actions minutes. The group name is
-# shared with Hourly and Weekly Ingest, which is what keeps this 04:13 run from
-# colliding with the :05 hourly run; `cancel-in-progress: false` means the second
-# one waits instead of killing a half-written graph batch.
+# shared with Daily and Weekly Ingest on purpose — see the header.
 concurrency:
   group: puppetnet-ingest-${{ github.ref }}
   cancel-in-progress: false
@@ -98,10 +101,10 @@ env:
 
 jobs:
   ingest:
-    name: Harvest → NLP → Neo4j
+    name: Hourly harvest → NLP → Neo4j
     runs-on: ubuntu-latest
-    # Harvest budget is MAX_RUNTIME_SECONDS (35 min) + install/model overhead.
-    timeout-minutes: 90
+    # Harvest budget is MAX_RUNTIME_SECONDS (15 min) + install/model overhead.
+    timeout-minutes: 45
 
     steps:
       - name: Checkout
@@ -123,17 +126,18 @@ jobs:
           pip install -r requirements.txt
 
       # ---------------------------------------------------------------------
-      # NLP model. Tried most-accurate → fastest so a partial CDN outage or a
-      # runner with less RAM still yields a working pipeline. ingest.py falls
-      # back to a blank spaCy pipeline + gazetteer if *nothing* loads, and the
-      # engine prices those edges at the co-occurrence rate (0.2 penalty).
+      # NLP model. The small model is installed first here, the opposite order
+      # from Daily Ingest: an hourly run has a 15-minute budget and the small
+      # model installs in seconds, so a slow CDN must not eat the harvest window.
+      # ingest.py falls back to a blank spaCy pipeline + gazetteer if nothing
+      # loads, and the engine prices those edges at the co-occurrence rate.
       # ---------------------------------------------------------------------
       - name: Download spaCy model
         id: spacy_model
         continue-on-error: true
         run: |
           set -o pipefail
-          models="${SPACY_MODELS:-en_core_web_trf en_core_web_lg en_core_web_md en_core_web_sm}"
+          models="en_core_web_sm en_core_web_md en_core_web_lg"
           installed=""
           for model in $models; do
             echo "::group::trying $model"
@@ -153,15 +157,10 @@ jobs:
             echo "Using spaCy model: $installed"
           else
             echo "model=" >> "$GITHUB_OUTPUT"
-            {
-              echo "::warning title=NLP degraded::No spaCy model could be installed."
-              echo "Entity/relation extraction falls back to the lexical + gazetteer"
-              echo "pipeline; edges are priced at the co-occurrence rate (0.2 penalty)."
-            } > /dev/null
             echo "::warning title=NLP degraded::No spaCy model installed — using the lexical fallback pipeline."
           fi
         env:
-          SPACY_MODELS: "en_core_web_trf en_core_web_lg en_core_web_md en_core_web_sm"
+          SPACY_MODELS: "en_core_web_sm en_core_web_md en_core_web_lg"
 
       # ---------------------------------------------------------------------
       # Fail fast on misconfiguration, but never on a missing model or an
@@ -184,8 +183,10 @@ jobs:
           PROXY_AUTH_TOKEN: ${{ secrets.PROXY_AUTH_TOKEN }}
 
       # Document hashes seen in recent runs, so an unchanged feed costs nothing.
-      # Neo4j is the authoritative dedupe source; this is a warm cache for
-      # dry runs and for the window before the graph write completes.
+      # Neo4j is the authoritative dedupe source; this is a warm cache for dry
+      # runs and for the window before the graph write completes. restore-keys
+      # picks up the newest state left by any previous tier, which is what makes
+      # the hourly heat map shared rather than per-workflow.
       - name: Restore harvest state
         uses: actions/cache@v6
         with:
@@ -200,7 +201,6 @@ jobs:
           # Inputs reach the shell through `env`, never by interpolation into
           # the script body — a dispatch input containing `$(…)` must not be
           # able to execute in the runner.
-          IN_TIER: ${{ inputs.tier }}
           IN_SOURCES: ${{ inputs.sources }}
           IN_LIMIT: ${{ inputs.limit }}
           IN_LOG_LEVEL: ${{ inputs.log_level }}
@@ -208,24 +208,16 @@ jobs:
           IN_SKIP_NLP: ${{ inputs.skip_nlp }}
           IN_FAIL_ON_ERROR: ${{ inputs.fail_on_error }}
         run: |
-          # A scheduled run has no inputs, so the tier falls back to daily — the
-          # tier this workflow owns. The input exists to widen a manual run to
-          # `all`, never to change what the schedule harvests.
-          tier="$IN_TIER"
-          [ -z "$tier" ] && tier="daily"
-          case "$tier" in
-            hourly|daily|weekly|all ) ;;
-            *) echo "::error title=Invalid tier::$tier"; exit 1 ;;
-          esac
-          args="--tier $tier"
+          # The tier is not an input: this workflow *is* the hourly tier. A
+          # manual dispatch can narrow it with --sources, but it can never widen
+          # it into the daily or weekly sources.
+          args="--tier hourly"
           if [ -n "$IN_SOURCES" ]; then
             case "$IN_SOURCES" in
               *[\ \;\|\&\$\`\']* )
                 echo "::error title=Invalid --sources::Use comma-separated source ids or adapter names only."
                 exit 1 ;;
             esac
-            # The tier is the outer bound: naming a source from another tier
-            # harvests nothing, and the run warns about it.
             args="$args --sources $IN_SOURCES"
           fi
           case "$IN_LIMIT" in
@@ -248,7 +240,7 @@ jobs:
           echo "args=$args" >> "$GITHUB_OUTPUT"
           echo "resolved: ingest.py $args"
 
-      - name: Run daily ingest
+      - name: Run hourly ingest
         id: ingest
         env:
           INGEST_ARGS: ${{ steps.args.outputs.args }}
@@ -264,9 +256,13 @@ jobs:
           PROXY_QUEUE_ON_LIMIT: "true"
           DIRECT_FALLBACK_ENABLED: "true"
           # --- Harvest limits -----------------------------------------------
-          MAX_DOCUMENTS_PER_SOURCE: "150"
-          MAX_DOCUMENTS_TOTAL: "1500"
-          MAX_RUNTIME_SECONDS: "2100"
+          # Sized for a 15-minute window: the hourly tier is feeds, and a feed
+          # that publishes 40 items since the last run has already been read.
+          MAX_DOCUMENTS_PER_SOURCE: "40"
+          MAX_DOCUMENTS_TOTAL: "400"
+          MAX_RUNTIME_SECONDS: "900"
+          # One request every 2.5 s with a burst of 3 — 24 runs a day against the
+          # same feeds must stay firmly inside polite-crawling territory.
           TOKEN_BUCKET_RATE_PER_SEC: "0.4"
           TOKEN_BUCKET_BURST: "3"
           # --- Source credentials -------------------------------------------
@@ -281,7 +277,9 @@ jobs:
           LOG_JSON: "true"
           SOURCES_FILE: "config/sources.yaml"
           ONLY_NEW_DOCUMENTS: "true"
-          DEDUPE_WINDOW_DAYS: "30"
+          # Short window: anything older than a week that the hourly tier has not
+          # already seen is the daily tier's business, not a news cycle's.
+          DEDUPE_WINDOW_DAYS: "7"
         run: |
           # The runner uses `bash -e`, so capture the status explicitly and let
           # the reporting steps run before deciding whether the job failed.
@@ -301,13 +299,13 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: ingest-report-${{ github.run_id }}
+          name: hourly-ingest-report-${{ github.run_id }}
           path: |
             reports/
             ingest.log
             .state/
           if-no-files-found: warn
-          retention-days: 14
+          retention-days: 7
 
       - name: Annotate failures
         if: always()
@@ -325,8 +323,9 @@ jobs:
           esac
 
       # Exit 3 (partial) is deliberately non-fatal for the schedule: a single
-      # flaky feed should not mark the whole run failed. Escalate by enabling
-      # the fail_on_error input on a manual dispatch.
+      # flaky feed should not mark the whole run failed — with 24 runs a day,
+      # failing on one dead RSS endpoint would paint the whole day red. Escalate
+      # by enabling the fail_on_error input on a manual dispatch.
       - name: Fail on hard errors
         if: always()
         env:

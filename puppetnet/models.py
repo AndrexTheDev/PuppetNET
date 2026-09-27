@@ -64,6 +64,10 @@ __all__ = [
     "content_hash",
     "compose_confidence",
     "noisy_or",
+    "Cadence",
+    "EDGE_DOC_ID_CAP",
+    "relation_evidence_is_new",
+    "remember_edge_doc_id",
     "utcnow",
     "is_safe_relationship_type",
     "has_organizational_marker",
@@ -99,6 +103,51 @@ class SourceType(str, Enum):
     @property
     def confidence(self) -> float:
         return STRUCTURED_SOURCE_WEIGHT if self is SourceType.STRUCTURED else UNSTRUCTURED_SOURCE_WEIGHT
+
+
+class Cadence(str, Enum):
+    """How often a source is worth harvesting.
+
+    The cadence is a property of the *source*, not of the run: a wire feed
+    publishes every minute and a company register changes on the order of months,
+    so re-checking both on the same schedule wastes the free tiers the whole
+    system runs on (Neo4j Aura's monthly operation cap, Cloudflare's daily
+    request and KV-op budgets, the origins' own patience).
+
+    A run names a tier and gets the sources that belong to it:
+
+    * ``hourly``  — wire feeds and live telemetry: everything that is superseded
+      within the hour.
+    * ``daily``   — registers, leak databases and cross-referencing sources: the
+      ones that cost a request per query and change slowly.
+    * ``weekly``  — the deep run. Every source again, plus the maintenance pass,
+      because a weekly re-check is what catches the source that was down on the
+      day its daily run should have seen the change.
+
+    ``all`` is what a manual run gets: no filtering at all.
+    """
+
+    HOURLY = "hourly"
+    DAILY = "daily"
+    WEEKLY = "weekly"
+    ALL = "all"
+
+    @classmethod
+    def coerce(cls, value: Cadence | str | None, default: Cadence | None = None) -> Cadence | None:
+        """Parse a tier name defensively: an unknown one is a configuration error.
+
+        Returning ``None`` (rather than silently falling back to "all", which
+        reads as "harvest everything right now" and is the expensive answer) lets
+        the CLI refuse the run.
+        """
+        if value is None or value == "":
+            return default
+        if isinstance(value, cls):
+            return value
+        try:
+            return cls(str(value).strip().lower())
+        except ValueError:
+            return None
 
 
 class EntityType(str, Enum):
@@ -497,6 +546,53 @@ def compose_confidence(
     return max(0.0, min(1.0, round(value, 6)))
 
 
+#: How many document ids an edge remembers. The list exists so a *re-read* of the
+#: same document cannot pose as a new corroboration; 20 is far beyond the number
+#: of independent documents that ever support one edge, and the list is bounded so
+#: a thrice-rewritten article cannot grow the property without limit.
+EDGE_DOC_ID_CAP: int = 20
+
+
+def relation_evidence_is_new(existing_doc_ids: Iterable[str] | None, doc_id: str) -> bool:
+    """Is this document new evidence for an edge we already hold?
+
+    This is the guard on the noisy-OR. ``ON MATCH SET r.confidence =
+    1 - (1 - r.confidence) * (1 - row.confidence)`` is right for *independent*
+    corroboration: three feeds saying the same thing should climb. It is wrong
+    for the same document arriving twice, and the same document does arrive twice
+    — the dedupe index only remembers ``DEDUPE_WINDOW_DAYS`` (30) of content
+    hashes, while an hourly harvest keeps re-reading a feed window and a daily one
+    keeps re-reading a register. Over a system that runs for months, a single
+    blog post at 0.32 would drift towards certainty one window at a time without
+    a single new source behind it.
+
+    An empty ``doc_id`` means the source did not attribute the claim to a
+    document; those count as new, because there is nothing to compare against and
+    refusing them would silently drop structured sources' edges.
+
+    Deliberately decided in Python rather than in the Cypher that writes the edge:
+    the write statement sets several properties that would each have to read a
+    value another one sets, and Cypher does not document the order in which the
+    items of one ``SET`` are applied. A rule that depends on that order is a rule
+    nobody can verify. Here it is a function with a test.
+    """
+    doc = str(doc_id or "").strip()
+    if not doc:
+        return True
+    if not existing_doc_ids:
+        return True
+    return doc not in {str(item) for item in existing_doc_ids}
+
+
+def remember_edge_doc_id(existing_doc_ids: Iterable[str] | None, doc_id: str) -> list[str]:
+    """Append ``doc_id`` to an edge's bounded document list (newest last)."""
+    kept = [str(item) for item in (existing_doc_ids or []) if str(item)]
+    doc = str(doc_id or "").strip()
+    if doc and doc not in kept:
+        kept.append(doc)
+    return kept[-EDGE_DOC_ID_CAP:]
+
+
 def noisy_or(existing: float, incoming: float) -> float:
     """Probabilistic merge for repeated observations of the same edge.
 
@@ -531,6 +627,11 @@ class SourceSpec:
     cache_ttl_seconds: int = 0
     timeout_ms: int = 25_000
     max_documents: int = 200
+    #: Which scheduled tier harvests this source. ``DAILY`` is the default because
+    #: it is the middle of the three: a source nobody classified lands in a run
+    #: that happens every day, instead of being harvested 24 times a day or, worse,
+    #: never — a weekly-only default would hide a new source for seven days.
+    cadence: Cadence = Cadence.DAILY
     enabled: bool = True
     options: Mapping[str, Any] = field(default_factory=dict)
     #: Per-source edge confidence weight. ``None`` derives it from ``kind``
@@ -559,6 +660,7 @@ class SourceSpec:
             "cache_ttl_seconds": self.cache_ttl_seconds,
             "timeout_ms": self.timeout_ms,
             "max_documents": self.max_documents,
+            "cadence": self.cadence,
             "enabled": self.enabled,
             "options": dict(self.options),
             "confidence_override": self.confidence_override,

@@ -24,10 +24,14 @@ from typing import Any
 
 from ..models import SourceSpec, SourceType
 
-__all__ = ["SOURCE_REGISTRY", "get_spec", "adapter_names", "ALL_SOURCE_IDS"]
+__all__ = ["SOURCE_REGISTRY", "get_spec", "adapter_names", "ALL_SOURCE_IDS", "specs_for_tier"]
+
+from ..models import Cadence  # noqa: E402  (import placed with the table it annotates)
 
 _STRUCTURED = SourceType.STRUCTURED
 _UNSTRUCTURED = SourceType.UNSTRUCTURED
+_HOURLY = Cadence.HOURLY
+_DAILY = Cadence.DAILY
 
 SOURCE_REGISTRY: tuple[SourceSpec, ...] = (
     # ------------------------------------------------------------------ #
@@ -35,6 +39,7 @@ SOURCE_REGISTRY: tuple[SourceSpec, ...] = (
     # ------------------------------------------------------------------ #
     SourceSpec(
         id="icij_leaks",
+        cadence=_DAILY,
         name="ICIJ Offshore Leaks",
         kind=_STRUCTURED,
         adapter="icij",
@@ -63,6 +68,7 @@ SOURCE_REGISTRY: tuple[SourceSpec, ...] = (
     ),
     SourceSpec(
         id="opencorporates",
+        cadence=_DAILY,
         name="OpenCorporates",
         kind=_STRUCTURED,
         adapter="opencorporates",
@@ -86,6 +92,7 @@ SOURCE_REGISTRY: tuple[SourceSpec, ...] = (
     ),
     SourceSpec(
         id="wikidata",
+        cadence=_DAILY,
         name="Wikidata",
         kind=_STRUCTURED,
         adapter="wikidata",
@@ -127,6 +134,7 @@ SOURCE_REGISTRY: tuple[SourceSpec, ...] = (
     # ------------------------------------------------------------------ #
     SourceSpec(
         id="faa_registry",
+        cadence=_DAILY,
         name="FAA Aircraft Registry",
         kind=_STRUCTURED,
         adapter="faa_registry",
@@ -161,6 +169,7 @@ SOURCE_REGISTRY: tuple[SourceSpec, ...] = (
     ),
     SourceSpec(
         id="adsb_exchange",
+        cadence=_HOURLY,
         name="ADS-B Exchange / adsbdb",
         kind=_STRUCTURED,
         adapter="adsb",
@@ -187,6 +196,7 @@ SOURCE_REGISTRY: tuple[SourceSpec, ...] = (
     ),
     SourceSpec(
         id="flight_logs",
+        cadence=_DAILY,
         name="Flight logs & passenger manifests",
         kind=_STRUCTURED,
         adapter="flight_logs",
@@ -214,6 +224,7 @@ SOURCE_REGISTRY: tuple[SourceSpec, ...] = (
     ),
     SourceSpec(
         id="companies_house",
+        cadence=_DAILY,
         name="UK Companies House",
         kind=_STRUCTURED,
         adapter="companies_house",
@@ -229,6 +240,7 @@ SOURCE_REGISTRY: tuple[SourceSpec, ...] = (
     ),
     SourceSpec(
         id="register_files",
+        cadence=_DAILY,
         name="Official Register Files",
         kind=_STRUCTURED,
         adapter="register_files",
@@ -251,6 +263,7 @@ SOURCE_REGISTRY: tuple[SourceSpec, ...] = (
     # ------------------------------------------------------------------ #
     SourceSpec(
         id="occrp_rss",
+        cadence=_HOURLY,
         name="OCCRP investigations",
         kind=_UNSTRUCTURED,
         adapter="rss",
@@ -264,6 +277,7 @@ SOURCE_REGISTRY: tuple[SourceSpec, ...] = (
     ),
     SourceSpec(
         id="icij_stories",
+        cadence=_HOURLY,
         name="ICIJ stories",
         kind=_UNSTRUCTURED,
         adapter="rss",
@@ -277,6 +291,7 @@ SOURCE_REGISTRY: tuple[SourceSpec, ...] = (
     ),
     SourceSpec(
         id="global_witness",
+        cadence=_HOURLY,
         name="Global Witness",
         kind=_UNSTRUCTURED,
         adapter="rss",
@@ -290,6 +305,7 @@ SOURCE_REGISTRY: tuple[SourceSpec, ...] = (
     ),
     SourceSpec(
         id="transparency_intl",
+        cadence=_HOURLY,
         name="Transparency International",
         kind=_UNSTRUCTURED,
         adapter="rss",
@@ -303,6 +319,7 @@ SOURCE_REGISTRY: tuple[SourceSpec, ...] = (
     ),
     SourceSpec(
         id="news_world",
+        cadence=_HOURLY,
         name="World news (wire/press RSS)",
         kind=_UNSTRUCTURED,
         adapter="rss",
@@ -329,6 +346,7 @@ SOURCE_REGISTRY: tuple[SourceSpec, ...] = (
     ),
     SourceSpec(
         id="aviation_news",
+        cadence=_HOURLY,
         name="Aviation & maritime news",
         kind=_UNSTRUCTURED,
         adapter="rss",
@@ -383,6 +401,43 @@ def iter_specs(only: Iterable[str] | None = None) -> Iterable[SourceSpec]:
             yield spec
 
 
+def specs_for_tier(
+    tier: Any,
+    registry: Iterable[SourceSpec] | None = None,
+) -> tuple[SourceSpec, ...]:
+    """Select the sources a scheduled tier should harvest.
+
+    The tiers are *additive*, which is what makes the whole schedule make sense:
+
+    * ``hourly`` returns only the wire feeds and live telemetry — the sources
+      whose content is superseded within the hour;
+    * ``daily`` returns only the registers, leak databases and cross-referencing
+      sources — the expensive, slow-moving ones. It does **not** repeat the hourly
+      tier: a feed is not worth 24 requests a day *plus* another one at dawn;
+    * ``weekly`` returns **every** source. That is the point of a deep run: the
+      daily register harvest has 7 chances to miss a change, and this is the pass
+      that catches it, together with the maintenance work that runs beside it;
+    * ``all`` (and ``None``, for a plain manual run) returns everything, which is
+      the behaviour every existing invocation keeps.
+
+    An unrecognised tier raises instead of falling back to ``all``. The fallback
+    would be silent *and* expensive: a workflow that passes ``--tier houry`` would
+    quietly harvest every source once an hour, which is exactly the traffic the
+    tiering exists to avoid — and on a system whose whole budget is free tiers,
+    that is the failure nobody notices until an origin blocks the relay.
+    """
+    cadence = Cadence.coerce(tier, default=Cadence.ALL)
+    if cadence is None:
+        raise ValueError(
+            f"unknown tier {tier!r} — expected one of "
+            + ", ".join(item.value for item in Cadence)
+        )
+    specs = tuple(registry) if registry is not None else SOURCE_REGISTRY
+    if cadence in (Cadence.ALL, Cadence.WEEKLY, None):
+        return specs
+    return tuple(spec for spec in specs if spec.cadence is cadence)
+
+
 def describe_registry() -> list[dict[str, Any]]:
     """Serialisable view of the registry (used by ``ingest.py --list-sources``)."""
     return [
@@ -394,6 +449,7 @@ def describe_registry() -> list[dict[str, Any]]:
             "confidence": spec.confidence,
             "base_url": spec.base_url,
             "max_documents": spec.max_documents,
+            "cadence": spec.cadence.value,
             "rate_per_sec": spec.rate_per_sec,
             "options": {k: v for k, v in spec.options.items()},
         }

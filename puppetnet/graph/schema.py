@@ -36,8 +36,21 @@ Design notes
   (:class:`~puppetnet.models.RelationType`). Types are interpolated into Cypher
   after allowlist validation, which is what keeps a dynamic-type writer safe
   without APOC (not available on AuraDB Free).
-* Repeated observations of the same edge merge with a noisy-OR on
-  ``confidence`` and keep the five most recent evidence strings.
+* Repeated observations of the same edge merge with a noisy-OR on ``confidence``
+  and keep the five most recent evidence strings — but only when the observation
+  comes from a document the edge has not already counted. ``row.is_new`` carries
+  that verdict, decided in Python by
+  :func:`~puppetnet.models.relation_evidence_is_new` before the batch is sent:
+  the alternative, reading a property in the same ``SET`` that another item
+  writes, would depend on an order Cypher does not document.
+
+  The same rule governs the counters below. An ingest is not a source: a feed
+  re-read after the dedupe window, or a register page that has not changed, is the
+  *same* evidence, and letting it add to ``mention_count``/``observations``/
+  ``confidence`` a second time means the graph's certainty is a function of the
+  schedule rather than of the evidence. Documents carry ``ingest_count`` precisely
+  so that a re-read stays visible — as a counter that describes the ingest, not as
+  evidence.
 """
 
 from __future__ import annotations
@@ -191,9 +204,18 @@ ON CREATE SET
     m.first_seen = row.seen_at,
     m.last_seen = row.seen_at
 ON MATCH SET
-    m.count = coalesce(m.count, 0) + row.count,
-    m.confidence = 1 - (1 - coalesce(m.confidence, 0)) * (1 - row.confidence),
-    m.surface_forms = (coalesce(m.surface_forms, []) + row.surface_forms)[-8..],
+    // A mention is a property of *this document*, not an accumulation over
+    // ingests: `row.count` is how many times the entity appears in the text, so
+    // re-reading the text must converge on that number rather than add it again.
+    // (One row per (document, entity) — the caller groups them that way — so
+    // assigning cannot lose a second row's contribution.)
+    m.count = row.count,
+    m.confidence = CASE WHEN row.confidence > coalesce(m.confidence, 0)
+                        THEN row.confidence ELSE coalesce(m.confidence, 0) END,
+    // Same union rule as entity aliases: re-reading a document must not append a
+    // duplicate of a surface form that is already known.
+    m.surface_forms = reduce(acc = coalesce(m.surface_forms, []), f IN row.surface_forms |
+                            CASE WHEN f IN acc THEN acc ELSE acc + f END)[-8..],
     m.last_seen = row.seen_at
 RETURN count(m) AS mentions
 """
@@ -220,18 +242,28 @@ ON MATCH SET
     e.name = CASE WHEN size(coalesce(row.name, '')) > size(coalesce(e.name, '')) THEN row.name ELSE e.name END,
     e.aliases = reduce(acc = coalesce(e.aliases, []), a IN row.aliases |
                        CASE WHEN a IN acc THEN acc ELSE acc + a END)[0..64],
-    e.mention_count = coalesce(e.mention_count, 0) + row.mention_count,
-    e.confidence = 1 - (1 - coalesce(e.confidence, 0)) * (1 - row.confidence),
+    e.mention_count = CASE WHEN coalesce(row.is_new, true)
+                           THEN coalesce(e.mention_count, 0) + row.mention_count
+                           ELSE coalesce(e.mention_count, 0) END,
+    e.confidence = CASE WHEN coalesce(row.is_new, true)
+                        THEN 1 - (1 - coalesce(e.confidence, 0)) * (1 - row.confidence)
+                        ELSE coalesce(e.confidence, 0) END,
     e.source_ids = reduce(acc = coalesce(e.source_ids, []), s IN row.source_ids |
                           CASE WHEN s IN acc THEN acc ELSE acc + s END)[0..32],
-    e.doc_ids = (coalesce(e.doc_ids, []) + row.doc_ids)[-64..],
+    // Union rather than append: a document this entity was already seen in must
+    // not consume one of the 64 slots again. Appending on every re-read evicted
+    // the entity's real provenance — its document list would end up holding the
+    // same few re-ingested pages over and over.
+    e.doc_ids = reduce(acc = coalesce(e.doc_ids, []), d IN row.doc_ids |
+                       CASE WHEN d IN acc THEN acc ELSE acc + d END)[-64..],
     e.last_seen = row.last_seen,
     e += row.properties
 WITH e{label_clauses}
 RETURN count(e) AS entities
 """
 
-#: ``{rel_type}`` is substituted with a whitelisted relationship type.
+#: ``{rel_type}`` and ``{doc_id_cap}`` are substituted (a whitelisted type and
+#: ``models.EDGE_DOC_ID_CAP``).
 RELATION_UPSERT_TEMPLATE = """
 UNWIND $rows AS row
 MATCH (a:Entity {{canonical_key: row.subject_key}})
@@ -239,6 +271,7 @@ MATCH (b:Entity {{canonical_key: row.object_key}})
 MERGE (a)-[r:{rel_type}]->(b)
 ON CREATE SET
     r.confidence = row.confidence,
+    r.doc_ids = CASE WHEN row.doc_id = '' THEN [] ELSE [row.doc_id] END,
     r.weight = row.weight,
     r.source_weight = row.source_weight,
     r.method = row.method,
@@ -256,9 +289,25 @@ ON CREATE SET
     r.first_seen = row.first_seen,
     r.last_seen = row.last_seen
 ON MATCH SET
-    r.confidence = 1 - (1 - coalesce(r.confidence, 0)) * (1 - row.confidence),
+    // Corroboration is only corroboration when it is new evidence. A feed re-read
+    // after the dedupe window (30 days), or a register whose page has not changed,
+    // would otherwise push a single document's confidence towards 1.0 one window at
+    // a time — `observations` would count writes rather than documents, and what the
+    // graph calls certainty would be an artefact of the schedule.
+    // `coalesce(row.is_new, true)` keeps rows from older callers behaving as they
+    // always did.
+    r.confidence = CASE WHEN coalesce(row.is_new, true)
+                        THEN 1 - (1 - coalesce(r.confidence, 0)) * (1 - row.confidence)
+                        ELSE coalesce(r.confidence, 0) END,
     r.weight = CASE WHEN row.weight > coalesce(r.weight, 0) THEN row.weight ELSE r.weight END,
-    r.observations = coalesce(r.observations, 1) + 1,
+    r.observations = CASE WHEN coalesce(row.is_new, true)
+                          THEN coalesce(r.observations, 1) + 1
+                          ELSE coalesce(r.observations, 1) END,
+    // The list the guard above reads. Appended here, and read by nothing else in
+    // this clause, so the two are independent of SET item order.
+    r.doc_ids = CASE WHEN row.doc_id = '' OR row.doc_id IN coalesce(r.doc_ids, [])
+                     THEN coalesce(r.doc_ids, [])
+                     ELSE (coalesce(r.doc_ids, []) + [row.doc_id])[-{doc_id_cap}..] END,
     r.source_weight = CASE WHEN row.source_weight > coalesce(r.source_weight, 0)
                            THEN row.source_weight ELSE r.source_weight END,
     r.method = CASE WHEN row.method = 'dependency' OR coalesce(r.method, '') = 'dependency'
@@ -271,6 +320,24 @@ ON MATCH SET
     r.run_id = row.run_id,
     r.last_seen = row.last_seen
 RETURN count(r) AS relations
+"""
+
+#: Existing document ids per entity, so the writer can tell whether a row carries
+#: a document the graph has already counted towards ``mention_count``.
+ENTITY_DOC_IDS = """
+UNWIND $keys AS key
+MATCH (e:Entity {canonical_key: key})
+RETURN key AS canonical_key, coalesce(e.doc_ids, []) AS doc_ids
+"""
+
+#: Existing document ids per relationship, so the writer can tell a new document
+#: from a re-read one before it builds the batch. ``{rel_type}`` is substituted.
+RELATION_DOC_IDS_TEMPLATE = """
+UNWIND $keys AS key
+MATCH (a:Entity {{canonical_key: key.subject_key}})-[r:{rel_type}]->(b:Entity {{canonical_key: key.object_key}})
+RETURN key.subject_key AS subject_key,
+       key.object_key AS object_key,
+       coalesce(r.doc_ids, []) AS doc_ids
 """
 
 RUN_SUMMARY = """
@@ -451,12 +518,21 @@ def build_entity_upsert(
     return ENTITY_UPSERT_TEMPLATE.format(label=label, label_clauses=body)
 
 
+def build_relation_doc_ids(rel_type: RelationType | str) -> str:
+    """Cypher that reads the document ids an edge has already counted."""
+    predicate = RelationType.coerce(rel_type) if not isinstance(rel_type, RelationType) else rel_type
+    if not is_safe_relationship_type(predicate.value):
+        raise ValueError(f"Refusing to build Cypher for relationship type {rel_type!r}")
+    return RELATION_DOC_IDS_TEMPLATE.format(rel_type=predicate.value)
+
+
 def build_relation_upsert(rel_type: RelationType | str) -> str:
     """Relationship upsert Cypher for one whitelisted predicate."""
     predicate = RelationType.coerce(rel_type) if not isinstance(rel_type, RelationType) else rel_type
     if not is_safe_relationship_type(predicate.value):
         raise ValueError(f"Refusing to build Cypher for relationship type {rel_type!r}")
-    return RELATION_UPSERT_TEMPLATE.format(rel_type=predicate.value)
+    from ..models import EDGE_DOC_ID_CAP
+    return RELATION_UPSERT_TEMPLATE.format(rel_type=predicate.value, doc_id_cap=EDGE_DOC_ID_CAP)
 
 
 def ensure_schema_statements() -> list[str]:
@@ -530,6 +606,10 @@ def properties_for_relation_row(relation: Any, *, run_id: str = "") -> dict[str,
         "verb": props["verb"] or "",
         "source_id": props["source_id"],
         "doc_id": props["doc_id"],
+        # Whether this document is new evidence for the edge. The writer decides it
+        # (it can read the graph) and the upsert's guard consumes it — see
+        # models.relation_evidence_is_new for why it is not decided in Cypher.
+        "is_new": bool(extra.get("is_new", True)),
         "run_id": props["run_id"] or run_id,
         "negated": bool(props["negated"]),
         "hedged": bool(extra.get("hedged", False)),
