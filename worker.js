@@ -49,7 +49,7 @@
  */
 
 const WORKER_NAME = "puppetnet-edge-relay";
-const WORKER_VERSION = "1.5.0";
+const WORKER_VERSION = "1.6.0";
 
 /* -------------------------------------------------------------------------- */
 /*  Tunables (env-overridable)                                                */
@@ -1531,7 +1531,13 @@ function handleHealth(request, env, cfg) {
         result_kv: Boolean(env.RESULT_KV),
         queue: Boolean(env.FETCH_QUEUE),
         auth_configured: Boolean(env.PROXY_AUTH_TOKEN || env.PROXY_AUTH_TOKENS),
+        // Booleans only: /health is unauthenticated. The URI host is reported by
+        // /graph/health, never here.
+        graph_api: readGraphConfig(env).enabled && graphConfigured(env),
+        graph_token: Boolean(env.GRAPH_API_TOKEN || env.GRAPH_API_TOKENS),
+        graph_public_read: String(env.GRAPH_PUBLIC_READ || "false").toLowerCase() === "true",
       },
+      graph_api: "/graph/health",
       host_profiles: Object.values(HOST_PROFILES).map((profile) => ({
         label: profile.label,
         api_mode: Boolean(profile.api),
@@ -1575,6 +1581,1142 @@ function handleStats(env, cfg) {
 }
 
 /* -------------------------------------------------------------------------- */
+/*  Graph read API (Neo4j → browser console)                                  */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Why this exists
+ * ---------------
+ * `web/` is a static SPA on Cloudflare Pages. It cannot hold AuraDB credentials:
+ * anything shipped to a browser is public. So the console talks to these
+ * endpoints and the Worker holds the secrets — the same split the relay already
+ * uses for API tokens.
+ *
+ * Rules this section holds itself to
+ * ----------------------------------
+ *  1. **Read-only.** Every statement starts with MATCH/CALL/UNWIND/RETURN. There
+ *     is no endpoint that accepts Cypher, and no code path that interpolates a
+ *     user string into a statement: values are always parameters. The only
+ *     interpolated text is (a) a property name from `GRAPH_SORTABLE` and (b) an
+ *     integer hop/depth count that has been clamped and re-parsed as a number.
+ *  2. **Bounded.** Every query has LIMIT, every traversal has a hop ceiling, and
+ *     the response is capped by size. A dashboard must not be able to ask a
+ *     free-tier database for 200k nodes.
+ *  3. **Polite.** Graph queries share the per-host token-bucket machinery with
+ *     the relay (bucket key `graph:neo4j`) and the Worker-wide RPM guard, and
+ *     responses are cached in RESULT_KV, so a page refresh costs one query.
+ *  4. **Quiet.** Credentials never appear in a response, an error message or a
+ *     log line; the Neo4j URI is reduced to its host before it is reported.
+ */
+
+const GRAPH_RATE_HOST = "graph:neo4j";
+
+const GRAPH_LIMITS = Object.freeze({
+  DEFAULT_NODES: 250,
+  MAX_NODES: 1200,
+  DEFAULT_DEPTH: 1,
+  MAX_DEPTH: 4,
+  DEFAULT_HOPS: 6,
+  MAX_HOPS: 12,
+  MAX_HOPS_WEIGHTED: 4,
+  DEFAULT_TABLE_ROWS: 500,
+  MAX_TABLE_ROWS: 2000,
+  MAX_QUERY_CHARS: 400,
+  MAX_EVIDENCE: 8,
+  MAX_CITATIONS: 40,
+  MAX_ALIASES: 64,
+  PATH_ENUMERATION_CAP: 20000,
+});
+
+/**
+ * Property names that may appear in an ORDER BY. A property name cannot be a
+ * query parameter in Cypher, so anything reaching a statement as text has to come
+ * off a list a caller cannot extend.
+ */
+const GRAPH_SORTABLE = Object.freeze([
+  "anomaly_score", "betweenness", "degree_spike", "offshore_cluster_ratio",
+  "confidence", "mention_count", "risk_score", "name", "canonical_key",
+  "last_seen", "first_seen", "metrics_at", "weight", "observations",
+]);
+
+/** Labels the console may filter on — mirrors `puppetnet.domain.DOMAIN_LABELS`. */
+const GRAPH_LABELS = Object.freeze([
+  "Entity", "Person", "Organization", "Location", "Craft", "Company", "ShellCompany",
+  "Foundation", "Offshore", "Aircraft", "Vessel", "Vehicle",
+]);
+
+/** Relationship types the console may filter on — mirrors `RelationType`. */
+const GRAPH_REL_TYPES = Object.freeze([
+  "OWNS", "OWNED_BY", "CONTROLS", "SUBSIDIARY_OF", "PARENT_OF", "ACQUIRED",
+  "SHAREHOLDER_OF", "INTERMEDIARY_FOR", "NOMINEE_OF", "BENEFICIARY_OF", "TRUSTEE_OF",
+  "DIRECTOR_OF", "OFFICER_OF", "EMPLOYED_BY", "EMPLOYS", "MEMBER_OF", "FOUNDED",
+  "APPOINTED_BY", "DONATED_TO", "FUNDED", "FUNDED_BY", "INVESTED_IN", "PAID_TO",
+  "CONTRACTED_WITH", "TRANSFERRED_TO", "LOCATED_IN", "REGISTERED_IN", "NATIONAL_OF",
+  "OPERATES_IN", "TRAVELED_WITH", "TRAVELED_TO", "OPERATES", "REGISTERED_TO",
+  "ARRIVED_FROM", "PASSENGER_ON", "MET_WITH", "FAMILY_OF", "AFFILIATED_WITH",
+  "SANCTIONED_BY", "INVESTIGATED_BY", "ACCUSED_OF", "LINKED_OFFSHORE",
+  "SHARES_ADDRESS", "MENTIONED_WITH", "PUPPET_MASTER_OF",
+]);
+
+const GRAPH_DIRECTIONS = Object.freeze(["undirected", "outgoing", "incoming"]);
+const GRAPH_COSTS = Object.freeze(["hops", "inverse-weight", "inverse-confidence"]);
+
+/** Entity projection shared by every node-returning statement. */
+const GRAPH_NODE_FIELDS = [
+  "e.canonical_key AS key", "e.name AS name", "e.entity_type AS entity_type",
+  "labels(e) AS labels", "e.jurisdiction AS jurisdiction", "e.confidence AS confidence",
+  "e.mention_count AS mention_count", "e.betweenness AS betweenness",
+  "e.anomaly_score AS anomaly_score", "e.anomaly_degree_spike AS anomaly_degree_spike",
+  "e.anomaly_offshore_cluster_ratio AS anomaly_offshore_cluster_ratio",
+  "e.degree_spike AS degree_spike", "e.offshore_cluster_ratio AS offshore_cluster_ratio",
+  "e.cluster_id AS cluster_id", "e.risk_score AS risk_score",
+  "e.first_seen AS first_seen", "e.last_seen AS last_seen", "e.metrics_at AS metrics_at",
+  "e.aliases AS aliases", "e.source_ids AS source_ids", "e.doc_ids AS doc_ids",
+  "e.reg_number AS reg_number", "e.company_number AS company_number", "e.lei AS lei",
+  "e.imo AS imo", "e.mmsi AS mmsi", "e.tail_number AS tail_number",
+  "e.transponder AS transponder", "e.icao24 AS icao24", "e.wikidata_id AS wikidata_id",
+  "e.wikipedia_id AS wikipedia_id", "e.opencorporates_url AS opencorporates_url",
+  "e.address_key AS address_key", "e.shell_risk AS shell_risk", "e.flag AS flag",
+  "e.nationality AS nationality", "e.merged_from AS merged_from",
+].join(", ");
+
+/** Relationship projection: a map, so one statement can return edges inline. */
+const GRAPH_EDGE_MAP = [
+  "id: id(r)", "source: startNode(r).canonical_key", "target: endNode(r).canonical_key",
+  "type: type(r)", "weight: r.weight", "confidence: r.confidence",
+  "source_weight: r.source_weight", "method: r.method", "observations: r.observations",
+  "evidence: r.evidence", "evidence_scores: r.evidence_scores", "verb: r.verb",
+  "rule: r.rule", "source_id: r.source_id", "doc_id: r.doc_id", "run_id: r.run_id",
+  "negated: r.negated", "hedged: r.hedged", "passive: r.passive",
+  "first_seen: r.first_seen", "last_seen: r.last_seen",
+].join(", ");
+
+const GRAPH_DOC_FIELDS = [
+  "d.doc_id AS doc_id", "d.title AS title", "d.url AS url", "d.source_id AS source_id",
+  "d.published_at AS published_at", "d.fetched_at AS fetched_at",
+  "d.content_hash AS content_hash", "d.entity_count AS entity_count",
+  "s.name AS source_name", "s.kind AS source_kind", "s.confidence AS source_weight",
+].join(", ");
+
+/** Full-text index created by `puppetnet/graph/schema.py`. */
+const GRAPH_FULLTEXT_INDEX = "puppetnet_entity_search";
+
+function readGraphConfig(env) {
+  return {
+    enabled: String(env.GRAPH_API_ENABLED ?? "true").toLowerCase() !== "false",
+    publicRead: String(env.GRAPH_PUBLIC_READ ?? "false").toLowerCase() === "true",
+    database: String(env.NEO4J_DATABASE || "neo4j").trim() || "neo4j",
+    ratePerSec: num(env.GRAPH_RATE_PER_SEC, 4, 0.05, 200),
+    burst: num(env.GRAPH_BURST, 8, 1, 200),
+    cacheTtlSeconds: num(env.GRAPH_CACHE_TTL_SECONDS, 60, 0, 86400),
+    timeoutMs: num(env.GRAPH_TIMEOUT_MS, 20000, 1000, 60000),
+    maxNodes: num(env.GRAPH_MAX_NODES, GRAPH_LIMITS.MAX_NODES, 1, 5000),
+    maxDepth: num(env.GRAPH_MAX_DEPTH, GRAPH_LIMITS.MAX_DEPTH, 1, 4),
+    maxHops: num(env.GRAPH_MAX_HOPS, GRAPH_LIMITS.MAX_HOPS, 1, 12),
+    maxResponseBytes: num(env.GRAPH_MAX_RESPONSE_BYTES, 6 * 1024 * 1024, 1024, 25 * 1024 * 1024),
+    alternatives: String(env.GRAPH_PATH_ALTERNATIVES ?? "true").toLowerCase() !== "false",
+  };
+}
+
+/**
+ * AuraDB publishes a bolt URI (`neo4j+s://<id>.databases.neo4j.io:7687`); the
+ * transactional HTTP endpoint is the same host over TLS. Accept either shape, and
+ * accept an explicit override for a self-hosted database behind a proxy.
+ */
+function neo4jHttpBase(env) {
+  const explicit = String(env.NEO4J_HTTP_URI || env.NEO4J_HTTP_URL || "").trim();
+  const raw = explicit || String(env.NEO4J_URI || "").trim();
+  if (!raw) return "";
+  const match = /^(neo4j(\+s|\+ssc)?|bolt(\+s|\+ssc)?|https?):\/\/([^/?#]+)/i.exec(raw);
+  const scheme = match ? match[1].toLowerCase() : "";
+  let authority = match ? match[4] : raw.replace(/^\/+/, "").split(/[/?#]/)[0];
+  if (!authority) return "";
+
+  const isLocal = /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i.test(authority);
+  // Plaintext is refused for any remote host, whichever variable it came from:
+  // Basic auth over http:// puts the database password on the wire. Local
+  // development is the one exception, and it keeps its port — point
+  // NEO4J_HTTP_URI at http://localhost:7474 and the bolt port is left alone.
+  const wantsPlain = /^http:\/\//i.test(explicit || raw);
+  if (wantsPlain && !isLocal) return "";
+  if (!explicit && /^(neo4j|bolt)/.test(scheme)) {
+    // A bolt port says nothing about where the HTTP endpoint listens: AuraDB
+    // serves it on 443 at the same host. Drop the port unless the operator gave
+    // an explicit NEO4J_HTTP_URI, in which case it is used verbatim above.
+    authority = authority.replace(/:\d+$/, "");
+  }
+  return `${wantsPlain ? "http" : "https"}://${authority}`;
+}
+
+function neo4jPublicHost(env) {
+  const base = neo4jHttpBase(env);
+  if (!base) return "";
+  try {
+    return new URL(base).hostname;
+  } catch (_) {
+    return "";
+  }
+}
+
+function graphConfigured(env) {
+  return Boolean(neo4jHttpBase(env) && String(env.NEO4J_PASSWORD || "").trim());
+}
+
+function graphError(code, message, status, extra) {
+  const error = new Error(message);
+  error.graphError = true;
+  error.code = code;
+  error.status = status || 500;
+  if (extra) Object.assign(error, extra);
+  return error;
+}
+
+/**
+ * Graph endpoints are gated separately from the relay.
+ *
+ * A public dashboard is a legitimate deployment (read-only graph, no secrets in
+ * the browser) so `GRAPH_PUBLIC_READ=true` is supported — but it is opt-in, and
+ * the default is to require a token. `GRAPH_API_TOKEN` lets the console use a
+ * different secret from the harvester, so rotating the dashboard token does not
+ * touch the pipeline.
+ */
+function graphAuthorised(request, env, gcfg) {
+  if (gcfg.publicRead) return { ok: true, mode: "public" };
+  const graphTokens = [env.GRAPH_API_TOKEN, env.GRAPH_API_TOKENS]
+    .flatMap((raw) => String(raw || "").split(","))
+    .map((token) => token.trim())
+    .filter(Boolean);
+
+  const header = request.headers.get("authorization") || "";
+  const match = /^Bearer\s+(.+)$/i.exec(header);
+  const presented = (match ? match[1] : request.headers.get("x-graph-token") || request.headers.get("x-proxy-token") || "").trim();
+
+  if (graphTokens.length) {
+    if (!presented) return { ok: false, reason: "Missing bearer token for the graph API" };
+    for (const token of graphTokens) {
+      if (constantTimeEqual(presented, token)) return { ok: true, mode: "graph-token" };
+    }
+    // Fall through: a deployment that only set PROXY_AUTH_TOKEN still works.
+  }
+  const relay = authorised(request, env);
+  if (relay.ok) return { ok: true, mode: "relay-token" };
+  return { ok: false, reason: graphTokens.length ? "Invalid graph token" : relay.reason };
+}
+
+/** Turn Neo4j's column/row envelope into plain objects. */
+function rowsOf(result) {
+  if (!result) return [];
+  const columns = result.columns || [];
+  return (result.data || []).map((item) => {
+    const row = {};
+    columns.forEach((name, index) => {
+      row[name] = item.row ? item.row[index] : undefined;
+    });
+    return row;
+  });
+}
+
+/**
+ * Run statements against the Neo4j transactional HTTP endpoint.
+ *
+ * One `tx/commit` round trip for the whole batch: an auto-commit HTTP request per
+ * statement would triple the latency of every panel the console renders.
+ */
+async function neo4jQuery(env, gcfg, statements, ctx) {
+  const base = neo4jHttpBase(env);
+  if (!base) {
+    throw graphError("neo4j_unconfigured", "NEO4J_URI is not set on this Worker (or is a plaintext URI to a non-local host)", 503);
+  }
+  const password = String(env.NEO4J_PASSWORD || "");
+  if (!password) throw graphError("neo4j_unconfigured", "NEO4J_PASSWORD is not set on this Worker", 503);
+  const user = String(env.NEO4J_USERNAME || env.NEO4J_USER || "neo4j");
+
+  const url = `${base}/db/${encodeURIComponent(gcfg.database)}/tx/commit`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), gcfg.timeoutMs);
+  const started = nowMs();
+
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      signal: controller.signal,
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json",
+        // Credentials are built here and go nowhere else: not into a cache key,
+        // not into a log line, not into an error message.
+        authorization: `Basic ${toBase64(encoder.encode(`${user}:${password}`))}`,
+      },
+      body: JSON.stringify({ statements }),
+    });
+
+    const text = await response.text();
+    let body = null;
+    try {
+      body = text ? JSON.parse(text) : null;
+    } catch (_) {
+      throw graphError("bad_gateway", `Neo4j returned a non-JSON response (HTTP ${response.status})`, 502);
+    }
+
+    if (body && Array.isArray(body.errors) && body.errors.length) {
+      const first = body.errors[0];
+      const status = first.code === "Neo.ClientError.Security.Unauthorized" ? 503 : 502;
+      throw graphError(
+        "neo4j_error",
+        String(first.message || "Neo4j reported an error").slice(0, 400),
+        status,
+        { neo4j_code: first.code || null }
+      );
+    }
+    if (!response.ok) throw graphError("bad_gateway", `Neo4j HTTP ${response.status}`, 502);
+    return { results: (body && body.results) || [], elapsed_ms: nowMs() - started };
+  } catch (err) {
+    if (err && err.graphError) throw err;
+    if (err && err.name === "AbortError") {
+      throw graphError("gateway_timeout", `Neo4j did not answer within ${gcfg.timeoutMs} ms`, 504);
+    }
+    // The message can contain the URL; strip any userinfo just in case.
+    const detail = String((err && err.message) || err).replace(/\/\/[^@/\s]+@/, "//***@").slice(0, 200);
+    throw graphError("bad_gateway", `Could not reach Neo4j: ${detail}`, 502);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/* ---- parameter shaping --------------------------------------------------- */
+
+function intParam(value, fallback, min, max) {
+  const parsed = parseInt(value, 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, parsed));
+}
+
+function stringParam(value, max) {
+  return String(value === null || value === undefined ? "" : value).trim().slice(0, max || GRAPH_LIMITS.MAX_QUERY_CHARS);
+}
+
+function listParam(value, allowlist) {
+  if (!value) return [];
+  return String(value)
+    .split(",")
+    .map((item) => item.trim())
+    .filter((item) => allowlist.indexOf(item) >= 0)
+    .slice(0, allowlist.length);
+}
+
+function sortable(value, fallback) {
+  const name = stringParam(value, 40);
+  return GRAPH_SORTABLE.indexOf(name) >= 0 ? name : fallback;
+}
+
+/**
+ * Clamp an integer that is about to be interpolated into a traversal bound.
+ * Cypher cannot parameterise `[*1..n]`, so the value is parsed, clamped, and
+ * re-serialised — the string a caller sent is never used.
+ */
+function boundParam(value, fallback, max) {
+  const parsed = intParam(value, fallback, 1, max);
+  return String(parsed);
+}
+
+/* ---- response shaping ---------------------------------------------------- */
+
+/** Coerce a Neo4j row into the node shape the console expects. */
+function shapeNode(row) {
+  if (!row || !row.key) return null;
+  const aliases = Array.isArray(row.aliases) ? row.aliases.slice(0, GRAPH_LIMITS.MAX_ALIASES) : [];
+  const props = {};
+  ["reg_number", "company_number", "lei", "imo", "mmsi", "tail_number", "transponder", "icao24",
+    "wikidata_id", "wikipedia_id", "opencorporates_url", "address_key", "shell_risk", "flag",
+    "nationality", "jurisdiction", "anomaly_degree_spike", "anomaly_offshore_cluster_ratio",
+    "anomaly_betweenness", "degree", "degree_prev"].forEach((name) => {
+    if (row[name] !== null && row[name] !== undefined && row[name] !== "") props[name] = row[name];
+  });
+  return {
+    key: String(row.key),
+    name: String(row.name || row.key),
+    entity_type: row.entity_type || inferType(row.labels) || "Unknown",
+    labels: Array.isArray(row.labels) ? row.labels : [],
+    jurisdiction: row.jurisdiction || props.jurisdiction || "",
+    confidence: toFloat(row.confidence),
+    mention_count: toFloat(row.mention_count, 0),
+    degree: toFloat(row.degree, 0),
+    betweenness: toFloat(row.betweenness),
+    anomaly_score: toFloat(row.anomaly_score),
+    degree_spike: toFloat(row.degree_spike),
+    offshore_cluster_ratio: toFloat(row.offshore_cluster_ratio),
+    cluster_id: row.cluster_id === null || row.cluster_id === undefined ? "" : String(row.cluster_id),
+    risk_score: toFloat(row.risk_score),
+    first_seen: row.first_seen || "",
+    last_seen: row.last_seen || "",
+    metrics_at: row.metrics_at || "",
+    aliases: aliases,
+    source_ids: Array.isArray(row.source_ids) ? row.source_ids : [],
+    doc_ids: Array.isArray(row.doc_ids) ? row.doc_ids : [],
+    merged_from: Array.isArray(row.merged_from) ? row.merged_from : [],
+    match_score: toFloat(row.match_score, 0),
+    props: props,
+  };
+}
+
+function toFloat(value, fallback) {
+  if (value === null || value === undefined || value === "") return fallback === undefined ? null : fallback;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : (fallback === undefined ? null : fallback);
+}
+
+function inferType(labels) {
+  const order = ["Person", "Organization", "Location", "Craft", "Company"];
+  const set = Array.isArray(labels) ? labels : [];
+  for (const label of order) if (set.indexOf(label) >= 0) return label;
+  return "";
+}
+
+function shapeEdge(raw) {
+  if (!raw) return null;
+  const source = raw.source === null || raw.source === undefined ? "" : String(raw.source);
+  const target = raw.target === null || raw.target === undefined ? "" : String(raw.target);
+  if (!source || !target) return null;
+  const evidence = Array.isArray(raw.evidence) ? raw.evidence.slice(0, GRAPH_LIMITS.MAX_EVIDENCE).map(String) : [];
+  return {
+    id: String(raw.id === null || raw.id === undefined ? `${source}:${raw.type}:${target}` : raw.id),
+    source: source,
+    target: target,
+    type: String(raw.type || "RELATED_TO").toUpperCase(),
+    weight: toFloat(raw.weight, 0),
+    confidence: toFloat(raw.confidence, 0),
+    source_weight: toFloat(raw.source_weight),
+    method: raw.method || "",
+    observations: toFloat(raw.observations, 1),
+    evidence: evidence,
+    evidence_scores: Array.isArray(raw.evidence_scores) ? raw.evidence_scores.map((v) => toFloat(v, 0)) : [],
+    verb: raw.verb || "",
+    rule: raw.rule || "",
+    source_id: raw.source_id || "",
+    doc_id: raw.doc_id || "",
+    run_id: raw.run_id || "",
+    negated: Boolean(raw.negated),
+    hedged: Boolean(raw.hedged),
+    passive: Boolean(raw.passive),
+    first_seen: raw.first_seen || "",
+    last_seen: raw.last_seen || "",
+  };
+}
+
+function shapeDoc(row) {
+  if (!row || !row.doc_id) return null;
+  return {
+    doc_id: String(row.doc_id),
+    title: row.title || "(untitled document)",
+    url: row.url || "",
+    source_id: row.source_id || "",
+    source_name: row.source_name || row.source_id || "",
+    source_kind: row.source_kind || "",
+    source_weight: toFloat(row.source_weight),
+    published_at: row.published_at || "",
+    fetched_at: row.fetched_at || "",
+    content_hash: row.content_hash || "",
+    entity_count: toFloat(row.entity_count),
+    count: toFloat(row.count),
+    confidence: toFloat(row.confidence),
+    surface_forms: Array.isArray(row.surface_forms) ? row.surface_forms.slice(0, 8).map(String) : [],
+  };
+}
+
+/** Strip anything that is not a plain value before it goes back to a browser. */
+function trimList(list, max) {
+  return Array.isArray(list) ? list.slice(0, max) : [];
+}
+
+/* ---- handlers ------------------------------------------------------------ */
+
+async function handleGraphHealth(request, env, cfg, gcfg) {
+  const configured = graphConfigured(env);
+  let counts = null;
+  let probeError = null;
+
+  if (configured && request.method === "GET") {
+    try {
+      const res = await neo4jQuery(env, gcfg, [
+        { statement: "MATCH (e:Entity) RETURN count(e) AS nodes" },
+        { statement: "MATCH ()-[r]->() RETURN count(r) AS edges" },
+        { statement: "CALL db.indexes() YIELD name, type, state RETURN name, type, state" },
+      ]);
+      const nodes = rowsOf(res.results[0])[0];
+      const edges = rowsOf(res.results[1])[0];
+      const indexes = rowsOf(res.results[2]);
+      counts = {
+        nodes: nodes ? toFloat(nodes.nodes, 0) : 0,
+        edges: edges ? toFloat(edges.edges, 0) : 0,
+        indexes: indexes.filter((index) => index.state === "ONLINE").length,
+        fulltext: indexes.some((index) => index.name === GRAPH_FULLTEXT_INDEX && index.state === "ONLINE"),
+        elapsed_ms: res.elapsed_ms,
+      };
+    } catch (err) {
+      probeError = err.graphError ? { code: err.code, message: err.message } : { code: "probe_failed", message: String(err.message || err) };
+    }
+  }
+
+  return jsonResponse(
+    {
+      ok: Boolean(configured && !probeError),
+      worker: WORKER_NAME,
+      version: WORKER_VERSION,
+      time: new Date().toISOString(),
+      graph: {
+        api: "graph/1",
+        configured: configured,
+        // The host only: a URI can carry credentials, and /graph/health is public.
+        host: neo4jPublicHost(env),
+        database: gcfg.database,
+        public_read: gcfg.publicRead,
+        cache_ttl_seconds: gcfg.cacheTtlSeconds,
+        path_alternatives: gcfg.alternatives,
+        limits: {
+          max_nodes: Math.min(gcfg.maxNodes, GRAPH_LIMITS.MAX_NODES),
+          default_nodes: GRAPH_LIMITS.DEFAULT_NODES,
+          max_depth: Math.min(gcfg.maxDepth, GRAPH_LIMITS.MAX_DEPTH),
+          max_hops: Math.min(gcfg.maxHops, GRAPH_LIMITS.MAX_HOPS),
+          max_table_rows: GRAPH_LIMITS.MAX_TABLE_ROWS,
+          rate_per_sec: gcfg.ratePerSec,
+          burst: gcfg.burst,
+        },
+        counts: counts,
+        error: probeError,
+      },
+      endpoints: ["/graph/health", "/graph/overview", "/graph/search", "/graph/node", "/graph/neighbors", "/graph/path", "/graph/table"],
+    },
+    // 200 even when unhealthy: a monitoring probe needs the detail, and the
+    // `ok` flag carries the verdict (same contract as /health).
+    200,
+    {},
+    env
+  );
+}
+
+async function graphOverview(params, env, gcfg) {
+  const limit = intParam(params.get("limit"), GRAPH_LIMITS.DEFAULT_NODES, 1, Math.min(gcfg.maxNodes, GRAPH_LIMITS.MAX_NODES));
+  const metric = sortable(params.get("metric"), "anomaly_score");
+  const labelFilter = listParam(params.get("type"), GRAPH_LABELS);
+  const labelClause = labelFilter.length ? `WHERE any(l IN labels(e) WHERE l IN $labels) ` : "";
+
+  const res = await neo4jQuery(env, gcfg, [
+    {
+      statement:
+        `MATCH (e:Entity) ${labelClause}` +
+        `OPTIONAL MATCH (e)-[r]-() ` +
+        `WITH e, count(r) AS degree ` +
+        `ORDER BY coalesce(e.${metric}, 0) DESC, e.canonical_key ASC LIMIT $limit ` +
+        `RETURN ${GRAPH_NODE_FIELDS}, degree`,
+      parameters: { limit: limit, labels: labelFilter },
+    },
+    {
+      statement:
+        `MATCH (e:Entity) ${labelClause}` +
+        `WITH e ORDER BY coalesce(e.${metric}, 0) DESC, e.canonical_key ASC LIMIT $limit ` +
+        `WITH collect(e) AS keep UNWIND keep AS a ` +
+        `MATCH (a)-[r]->(b) WHERE b IN keep ` +
+        `RETURN {${GRAPH_EDGE_MAP}} AS edge`,
+      parameters: { limit: limit, labels: labelFilter },
+    },
+    { statement: "MATCH (e:Entity) RETURN count(e) AS nodes" },
+    { statement: "MATCH ()-[r]->() RETURN count(r) AS edges" },
+    {
+      statement: "MATCH (e:Entity) WHERE e.metrics_at IS NOT NULL RETURN max(e.metrics_at) AS metrics_at",
+    },
+  ]);
+
+  const nodes = rowsOf(res.results[0]).map(shapeNode).filter(Boolean);
+  const edges = rowsOf(res.results[1]).map((row) => shapeEdge(row.edge)).filter(Boolean);
+  const counts = rowsOf(res.results[2])[0] || {};
+  const edgeCounts = rowsOf(res.results[3])[0] || {};
+  const metrics = rowsOf(res.results[4])[0] || {};
+
+  return {
+    ok: true,
+    subject: "overview",
+    metric: metric,
+    nodes: nodes,
+    edges: edges,
+    truncated: toFloat(counts.nodes, 0) > nodes.length,
+    metrics_at: metrics.metrics_at || "",
+    caps: {
+      node_cap: num(env.AURA_NODE_CAP, 200000, 0, 100000000),
+      edge_cap: num(env.AURA_EDGE_CAP, 400000, 0, 100000000),
+      nodes: toFloat(counts.nodes, 0),
+      edges: toFloat(edgeCounts.edges, 0),
+    },
+  };
+}
+
+/**
+ * Build a Lucene query for the full-text index. Only word characters survive;
+ * everything else is dropped rather than escaped, because a stray `~` or `"` in a
+ * pasted entity name would otherwise be a syntax error in the index query.
+ */
+function fulltextQuery(raw) {
+  const tokens = String(raw || "")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((token) => token.length >= 2)
+    .slice(0, 6);
+  if (!tokens.length) return "";
+  return tokens.map((token) => `${token}*`).join(" OR ");
+}
+
+async function graphSearch(params, env, gcfg) {
+  const q = stringParam(params.get("q"), GRAPH_LIMITS.MAX_QUERY_CHARS);
+  const limit = intParam(params.get("limit"), 12, 1, 200);
+  const labelFilter = listParam(params.get("type"), GRAPH_LABELS);
+  if (!q) return { ok: true, subject: "search", nodes: [], count: 0, query: q, method: "empty" };
+
+  const labelClause = labelFilter.length ? " AND ($labels = [] OR any(l IN labels(e) WHERE l IN $labels))" : "";
+  const lower = q.toLowerCase();
+
+  // 1) Full-text index: ranked and fast, and it is why schema.py creates it.
+  const ftq = fulltextQuery(q);
+  if (ftq) {
+    try {
+      const res = await neo4jQuery(env, gcfg, [
+        {
+          statement:
+            `CALL db.index.fulltext.queryNodes($index, $ftq) YIELD node AS e, score ` +
+            `WHERE e:Entity${labelClause} ` +
+            `OPTIONAL MATCH (e)-[r]-() ` +
+            `WITH e, score, count(r) AS degree ` +
+            `ORDER BY score DESC, coalesce(e.anomaly_score, 0) DESC LIMIT $limit ` +
+            `RETURN ${GRAPH_NODE_FIELDS}, degree, score AS match_score`,
+          parameters: { index: GRAPH_FULLTEXT_INDEX, ftq: ftq, limit: limit, labels: labelFilter },
+        },
+      ]);
+      const nodes = rowsOf(res.results[0]).map(shapeNode).filter(Boolean);
+      if (nodes.length) return { ok: true, subject: "search", nodes: nodes, count: nodes.length, query: q, method: "fulltext" };
+    } catch (err) {
+      // A missing or rebuilding index is not an error worth showing an analyst:
+      // fall through to the deterministic scan.
+      if (!err.graphError || err.code !== "neo4j_error") throw err;
+    }
+  }
+
+  // 2) Deterministic scan: exact identifiers first, then name/alias matching.
+  const res = await neo4jQuery(env, gcfg, [
+    {
+      statement:
+        `MATCH (e:Entity) ` +
+        `WITH e, CASE ` +
+        `  WHEN e.canonical_key = $q THEN 100 ` +
+        `  WHEN e.reg_number = $q OR e.company_number = $q OR e.lei = $q OR e.imo = $q ` +
+        `    OR e.mmsi = $q OR e.tail_number = $q OR e.transponder = $q OR e.icao24 = $q ` +
+        `    OR e.wikidata_id = $q OR e.wikipedia_id = $q OR e.opencorporates_url = $q THEN 95 ` +
+        `  WHEN toLower(e.name) = $lower THEN 90 ` +
+        `  WHEN toLower(e.name) STARTS WITH $lower THEN 70 ` +
+        `  WHEN toLower(e.name) CONTAINS $lower THEN 50 ` +
+        `  WHEN any(a IN coalesce(e.aliases, []) WHERE toLower(a) CONTAINS $lower) THEN 40 ` +
+        `  WHEN toLower(coalesce(e.jurisdiction, '')) = $lower THEN 12 ` +
+        `  ELSE 0 END AS relevance ` +
+        `WHERE relevance > 0${labelClause} ` +
+        `OPTIONAL MATCH (e)-[r]-() ` +
+        `WITH e, relevance, count(r) AS degree ` +
+        `ORDER BY relevance DESC, coalesce(e.anomaly_score, 0) DESC, degree DESC LIMIT $limit ` +
+        `RETURN ${GRAPH_NODE_FIELDS}, degree, relevance AS match_score`,
+      parameters: { q: q, lower: lower, limit: limit, labels: labelFilter },
+    },
+  ]);
+  const nodes = rowsOf(res.results[0]).map(shapeNode).filter(Boolean);
+  return { ok: true, subject: "search", nodes: nodes, count: nodes.length, query: q, method: "scan" };
+}
+
+async function graphNode(params, env, gcfg) {
+  const key = stringParam(params.get("key"), 200);
+  if (!key) throw graphError("bad_request", "`key` is required", 400);
+
+  const res = await neo4jQuery(env, gcfg, [
+    {
+      statement:
+        `MATCH (e:Entity {canonical_key: $key}) ` +
+        `OPTIONAL MATCH (e)-[r]-() ` +
+        `WITH e, count(r) AS degree ` +
+        `RETURN ${GRAPH_NODE_FIELDS}, degree`,
+      parameters: { key: key },
+    },
+    {
+      statement:
+        `MATCH (e:Entity {canonical_key: $key})-[r]-(o:Entity) ` +
+        `WITH e, r, o LIMIT $edgeLimit ` +
+        `RETURN {${GRAPH_EDGE_MAP}} AS edge`,
+      parameters: { key: key, edgeLimit: Math.min(gcfg.maxNodes, GRAPH_LIMITS.MAX_NODES) },
+    },
+    {
+      statement:
+        `MATCH (e:Entity {canonical_key: $key})-[r]-(o:Entity) ` +
+        `WITH DISTINCT o LIMIT $neighbourLimit ` +
+        `OPTIONAL MATCH (o)-[r2]-() ` +
+        `WITH o AS e, count(r2) AS degree ` +
+        `RETURN ${GRAPH_NODE_FIELDS}, degree`,
+      parameters: { key: key, neighbourLimit: Math.min(gcfg.maxNodes, GRAPH_LIMITS.MAX_NODES) },
+    },
+    {
+      statement:
+        `MATCH (d:Document)-[m:MENTIONS]->(e:Entity {canonical_key: $key}) ` +
+        `OPTIONAL MATCH (d)-[:FROM_SOURCE]->(s:Source) ` +
+        `WITH d, s, m ORDER BY m.confidence DESC, d.published_at DESC LIMIT $citationLimit ` +
+        `RETURN ${GRAPH_DOC_FIELDS}, m.count AS count, m.confidence AS confidence, ` +
+        `m.surface_forms AS surface_forms, m.first_offset AS first_offset`,
+      parameters: { key: key, citationLimit: GRAPH_LIMITS.MAX_CITATIONS },
+    },
+  ]);
+
+  const nodeRows = rowsOf(res.results[0]).map(shapeNode).filter(Boolean);
+  if (!nodeRows.length) throw graphError("not_found", `No entity with canonical_key ${key}`, 404);
+
+  return {
+    ok: true,
+    subject: "node",
+    node: nodeRows[0],
+    edges: rowsOf(res.results[1]).map((row) => shapeEdge(row.edge)).filter(Boolean),
+    nodes: rowsOf(res.results[2]).map(shapeNode).filter(Boolean),
+    citations: rowsOf(res.results[3]).map(shapeDoc).filter(Boolean),
+  };
+}
+
+/**
+ * N-degree neighbourhood.
+ *
+ * The obvious Cypher — `MATCH (root)-[*1..n]-(other)` — enumerates *paths*, and
+ * path counts grow exponentially with degree. On a graph with hubs (one registry
+ * address shared by 400 shells) that is how a dashboard takes down a free-tier
+ * database. So the walk is generated level by level: each level collects the
+ * distinct nodes one hop further out, drops what was already seen, and caps the
+ * frontier before expanding again. Cost is O(sum of degrees), not O(paths).
+ *
+ * Two details worth knowing:
+ *   * An empty frontier must not kill the query — `UNWIND []` yields no rows, so
+ *     each level unwraps a sentinel null and guards the match with `IS NOT NULL`.
+ *     Without that a node with no neighbours would 404 instead of returning
+ *     itself.
+ *   * The final selection is ordered by canonical_key, so a neighbourhood that
+ *     fits under the cap is identical across calls (and therefore cacheable).
+ *     When the cap binds, *which* nodes survive is the planner's order, and the
+ *     response admits it with `truncated: true` rather than implying completeness.
+ */
+function buildNeighborhoodCypher(depth, hasTypeFilter, hasWeightFilter) {
+  const levels = [];
+  for (let level = 0; level < depth; level += 1) {
+    const conditions = [`f${level} IS NOT NULL`];
+    if (hasTypeFilter) conditions.push(`type(r${level}) IN $types`);
+    if (hasWeightFilter) conditions.push(`coalesce(r${level}.weight, 0) >= $minWeight`);
+    levels.push(
+      `UNWIND (CASE WHEN size(frontier${level}) = 0 THEN [null] ELSE frontier${level} END) AS f${level} ` +
+      `OPTIONAL MATCH (f${level})-[r${level}]-(n${level}:Entity) ` +
+      `WHERE ${conditions.join(" AND ")} ` +
+      `WITH seen${level}, collect(DISTINCT n${level}) AS cand${level} ` +
+      `WITH seen${level}, [x IN cand${level} WHERE x IS NOT NULL AND NOT x IN seen${level}] AS fresh${level} ` +
+      `WITH seen${level} + fresh${level}[0..$cap] AS seen${level + 1}, ` +
+      `fresh${level}[0..$cap] AS frontier${level + 1}`
+    );
+  }
+
+  // `r` inside the edge map refers to the relationship being projected; the
+  // induced-edge match binds it as r2, so rewrite the tokens for that scope.
+  const inducedEdgeMap = GRAPH_EDGE_MAP.replace(/\br\b/g, "r2");
+
+  return (
+    `MATCH (root:Entity {canonical_key: $key}) ` +
+    `WITH [root] AS seen0, [root] AS frontier0 ` +
+    levels.join(" ") + " " +
+    `WITH seen${depth} AS reached ` +
+    `UNWIND reached AS s ` +
+    `WITH s ORDER BY s.canonical_key ASC ` +
+    `WITH collect(s)[0..$limit] AS keep ` +
+    `UNWIND keep AS e ` +
+    `OPTIONAL MATCH (e)-[rAny]-() ` +
+    `WITH keep, e, count(rAny) AS degree ` +
+    `OPTIONAL MATCH (e)-[r2]-(o) WHERE o IN keep ` +
+    `WITH keep, e, degree, collect(DISTINCT {${inducedEdgeMap}}) AS rels ` +
+    `RETURN ${GRAPH_NODE_FIELDS}, degree, rels`
+  );
+}
+
+async function graphNeighbors(params, env, gcfg) {
+  const key = stringParam(params.get("key"), 200);
+  if (!key) throw graphError("bad_request", "`key` is required", 400);
+  const maxDepth = Math.min(gcfg.maxDepth, GRAPH_LIMITS.MAX_DEPTH);
+  const depth = intParam(params.get("depth"), GRAPH_LIMITS.DEFAULT_DEPTH, 1, maxDepth);
+  const limit = intParam(params.get("limit"), GRAPH_LIMITS.DEFAULT_NODES, 1, Math.min(gcfg.maxNodes, GRAPH_LIMITS.MAX_NODES));
+  const minWeight = Math.min(1, Math.max(0, Number(params.get("min_weight")) || 0));
+  const relTypes = listParam(params.get("types"), GRAPH_REL_TYPES);
+
+  // Relationship filters apply to every hop, so a walk never crosses a tie the
+  // analyst filtered out to reach the far side of it. They govern *traversal*,
+  // not *display*: the induced edge set returned below contains every tie between
+  // in-scope nodes, including weaker ones that were not walked. Hiding those is
+  // the console's own filter panel, and keeping the two independent avoids
+  // double-filtering a graph the analyst then cannot explain.
+  //
+  // Cypher cannot parameterise a traversal bound, so `depth` is interpolated into
+  // the statement — after being parsed as an integer and clamped to [1, maxDepth]
+  // by intParam above. Nothing a caller sent reaches the string.
+  const statement = buildNeighborhoodCypher(depth, relTypes.length > 0, minWeight > 0);
+
+  const res = await neo4jQuery(env, gcfg, [
+    {
+      statement: statement,
+      // `cap` bounds each frontier, `limit` bounds the returned neighbourhood;
+      // they are the same number today but stay separate knobs on purpose.
+      parameters: { key: key, limit: limit, cap: limit, minWeight: minWeight, types: relTypes },
+    },
+  ]);
+
+  const rows = rowsOf(res.results[0]);
+  if (!rows.length) throw graphError("not_found", `No entity with canonical_key ${key}`, 404);
+
+  const nodes = rows.map(shapeNode).filter(Boolean);
+
+  // One statement returns nodes *and* the edges induced by them, so the console
+  // never receives a tie whose endpoint it cannot name. Each edge is collected
+  // once per endpoint, hence the de-duplication.
+  const seen = new Set();
+  const edges = [];
+  rows.forEach((row) => {
+    trimList(row.rels, GRAPH_LIMITS.MAX_TABLE_ROWS).forEach((raw) => {
+      const edge = shapeEdge(raw);
+      if (!edge || seen.has(edge.id)) return;
+      seen.add(edge.id);
+      edges.push(edge);
+    });
+  });
+
+  return {
+    ok: true,
+    subject: "neighbors",
+    root: key,
+    depth: depth,
+    nodes: nodes,
+    edges: edges,
+    truncated: nodes.length >= limit,
+    filters: { min_weight: minWeight, types: relTypes },
+  };
+}
+
+async function graphPath(params, env, gcfg) {
+  const from = stringParam(params.get("from"), 200);
+  const to = stringParam(params.get("to"), 200);
+  if (!from || !to) throw graphError("bad_request", "`from` and `to` are required", 400);
+  if (from === to) throw graphError("bad_request", "`from` and `to` must differ", 400);
+
+  const direction = GRAPH_DIRECTIONS.indexOf(stringParam(params.get("direction"), 20)) >= 0
+    ? stringParam(params.get("direction"), 20) : "undirected";
+  const cost = GRAPH_COSTS.indexOf(stringParam(params.get("cost"), 24)) >= 0
+    ? stringParam(params.get("cost"), 24) : "hops";
+  const maxHops = boundParam(params.get("max_hops"), GRAPH_LIMITS.DEFAULT_HOPS, Math.min(gcfg.maxHops, GRAPH_LIMITS.MAX_HOPS));
+  const left = direction === "incoming" ? "<-" : "-";
+  const right = direction === "outgoing" ? "->" : "-";
+
+  const statements = [
+    {
+      statement:
+        `MATCH (a:Entity {canonical_key: $from}), (b:Entity {canonical_key: $to}) ` +
+        `MATCH p = shortestPath((a)${left}[*1..${maxHops}]${right}(b)) ` +
+        `RETURN [n IN nodes(p) | {key: n.canonical_key, name: n.name, entity_type: n.entity_type, ` +
+        `labels: labels(n), jurisdiction: n.jurisdiction, cluster_id: n.cluster_id, ` +
+        `anomaly_score: n.anomaly_score, betweenness: n.betweenness, confidence: n.confidence, ` +
+        `mention_count: n.mention_count, risk_score: n.risk_score}] AS chain, ` +
+        `[r IN relationships(p) | {${GRAPH_EDGE_MAP}}] AS rels, ` +
+        `length(p) AS hops`,
+      parameters: { from: from, to: to },
+    },
+  ];
+
+  // Weighted costs cannot use `shortestPath`, which counts hops. Enumerating all
+  // paths is exponential, so the weighted mode is bounded twice: fewer hops, and
+  // a hard cap on how many paths the planner may produce before ordering.
+  if (cost !== "hops") {
+    const weightedHops = String(Math.min(parseInt(maxHops, 10), GRAPH_LIMITS.MAX_HOPS_WEIGHTED));
+    const costExpr = cost === "inverse-weight"
+      ? "reduce(c = 0.0, r IN relationships(p) | c + (1.05 - coalesce(r.weight, 0)))"
+      : "reduce(c = 0.0, r IN relationships(p) | c + (1.05 - coalesce(r.confidence, 0)))";
+    statements.push({
+      statement:
+        `MATCH (a:Entity {canonical_key: $from}), (b:Entity {canonical_key: $to}) ` +
+        `MATCH p = (a)${left}[*1..${weightedHops}]${right}(b) ` +
+        `WITH p, ${costExpr} AS cost LIMIT $enumCap ` +
+        `ORDER BY cost ASC LIMIT $alts ` +
+        `RETURN [n IN nodes(p) | {key: n.canonical_key, name: n.name, entity_type: n.entity_type, ` +
+        `labels: labels(n), jurisdiction: n.jurisdiction, cluster_id: n.cluster_id, ` +
+        `anomaly_score: n.anomaly_score}] AS chain, ` +
+        `[r IN relationships(p) | {${GRAPH_EDGE_MAP}}] AS rels, ` +
+        `length(p) AS hops, cost`,
+      parameters: { from: from, to: to, enumCap: GRAPH_LIMITS.PATH_ENUMERATION_CAP, alts: 4 },
+    });
+  } else if (gcfg.alternatives) {
+    const altHops = String(Math.min(parseInt(maxHops, 10), GRAPH_LIMITS.MAX_HOPS_WEIGHTED));
+    statements.push({
+      statement:
+        `MATCH (a:Entity {canonical_key: $from}), (b:Entity {canonical_key: $to}) ` +
+        `MATCH p = (a)${left}[*1..${altHops}]${right}(b) ` +
+        `WITH p, length(p) AS hops LIMIT $enumCap ` +
+        `ORDER BY hops ASC LIMIT $alts ` +
+        `RETURN [n IN nodes(p) | {key: n.canonical_key, name: n.name, entity_type: n.entity_type, ` +
+        `labels: labels(n), jurisdiction: n.jurisdiction, cluster_id: n.cluster_id, ` +
+        `anomaly_score: n.anomaly_score}] AS chain, ` +
+        `[r IN relationships(p) | {${GRAPH_EDGE_MAP}}] AS rels, hops, hops AS cost`,
+      parameters: { from: from, to: to, enumCap: GRAPH_LIMITS.PATH_ENUMERATION_CAP, alts: 4 },
+    });
+  }
+
+  const res = await neo4jQuery(env, gcfg, statements);
+  const primary = rowsOf(res.results[0])[0];
+
+  const shape = (row) => {
+    if (!row || !Array.isArray(row.chain) || !row.chain.length) return null;
+    return {
+      hops: toFloat(row.hops, (row.chain.length || 1) - 1),
+      cost: toFloat(row.cost, toFloat(row.hops, 0)),
+      nodes: row.chain.map((entry) => shapeNode({
+        key: entry.key, name: entry.name, entity_type: entry.entity_type, labels: entry.labels,
+        jurisdiction: entry.jurisdiction, cluster_id: entry.cluster_id, anomaly_score: entry.anomaly_score,
+        betweenness: entry.betweenness, confidence: entry.confidence, mention_count: entry.mention_count,
+        risk_score: entry.risk_score,
+      })).filter(Boolean),
+      edges: (row.rels || []).map(shapeEdge).filter(Boolean),
+    };
+  };
+
+  const found = shape(primary);
+  if (!found) {
+    return {
+      ok: true, subject: "path", found: false, reason: "unreachable",
+      from: from, to: to, max_hops: parseInt(maxHops, 10), direction: direction, cost: cost,
+      hops: 0, nodes: [], edges: [], alternatives: [],
+    };
+  }
+
+  const primarySignature = found.edges.map((edge) => edge.id).sort().join("|");
+  const alternatives = statements.length > 1
+    ? rowsOf(res.results[1]).map(shape).filter(Boolean).filter((candidate) => {
+      const signature = candidate.edges.map((edge) => edge.id).sort().join("|");
+      return signature && signature !== primarySignature;
+    }).slice(0, 3)
+    : [];
+
+  return {
+    ok: true,
+    subject: "path",
+    found: true,
+    from: from,
+    to: to,
+    direction: direction,
+    cost_function: cost,
+    cost: found.cost,
+    hops: found.hops,
+    max_hops: parseInt(maxHops, 10),
+    nodes: found.nodes,
+    nodeKeys: found.nodes.map((node) => node.key),
+    edges: found.edges,
+    minWeight: found.edges.length ? Math.min(...found.edges.map((edge) => edge.weight)) : null,
+    meanWeight: found.edges.length ? found.edges.reduce((sum, edge) => sum + edge.weight, 0) / found.edges.length : null,
+    meanConfidence: found.edges.length ? found.edges.reduce((sum, edge) => sum + edge.confidence, 0) / found.edges.length : null,
+    bounded: cost !== "hops",
+    alternatives: alternatives,
+  };
+}
+
+async function graphTable(params, env, gcfg) {
+  const subject = ["nodes", "edges", "sources"].indexOf(stringParam(params.get("subject"), 12)) >= 0
+    ? stringParam(params.get("subject"), 12) : "nodes";
+  const limit = intParam(params.get("limit"), GRAPH_LIMITS.DEFAULT_TABLE_ROWS, 1, GRAPH_LIMITS.MAX_TABLE_ROWS);
+  const skip = intParam(params.get("skip"), 0, 0, 1000000);
+  const q = stringParam(params.get("q"), GRAPH_LIMITS.MAX_QUERY_CHARS).toLowerCase();
+  const labelFilter = listParam(params.get("type"), GRAPH_LABELS);
+  const relFilter = listParam(params.get("types"), GRAPH_REL_TYPES);
+  const minWeight = Math.min(1, Math.max(0, Number(params.get("min_weight")) || 0));
+  const minConfidence = Math.min(1, Math.max(0, Number(params.get("min_confidence")) || 0));
+  const sort = sortable(params.get("sort"), subject === "edges" ? "weight" : "anomaly_score");
+  const direction = String(params.get("order") || "desc").toLowerCase() === "asc" ? "ASC" : "DESC";
+
+  if (subject === "edges") {
+    const where = [
+      "startNode(r):Entity", "endNode(r):Entity",
+      "coalesce(r.weight, 0) >= $minWeight", "coalesce(r.confidence, 0) >= $minConfidence",
+    ];
+    if (relFilter.length) where.push("type(r) IN $types");
+    if (q) where.push("(toLower(type(r)) CONTAINS $q OR toLower(coalesce(startNode(r).name,'')) CONTAINS $q OR toLower(coalesce(endNode(r).name,'')) CONTAINS $q OR toLower(coalesce(r.source_id,'')) CONTAINS $q)");
+    const whereClause = `WHERE ${where.join(" AND ")}`;
+    const res = await neo4jQuery(env, gcfg, [
+      {
+        statement: `MATCH ()-[r]->() ${whereClause} WITH r ORDER BY coalesce(r.${sort === "name" ? "confidence" : sort}, 0) ${direction}, id(r) ASC SKIP $skip LIMIT $limit RETURN {${GRAPH_EDGE_MAP}} AS edge`,
+        parameters: { minWeight, minConfidence, types: relFilter, q, skip, limit },
+      },
+      {
+        statement: `MATCH ()-[r]->() ${whereClause} RETURN count(r) AS total`,
+        parameters: { minWeight, minConfidence, types: relFilter, q },
+      },
+    ]);
+    const rows = rowsOf(res.results[0]).map((row) => shapeEdge(row.edge)).filter(Boolean);
+    const total = toFloat((rowsOf(res.results[1])[0] || {}).total, rows.length);
+    return { ok: true, subject: "edges", rows: rows, total: total, limit: limit, skip: skip, sort: sort, order: direction };
+  }
+
+  if (subject === "sources") {
+    const where = [];
+    if (q) where.push("(toLower(coalesce(d.title,'')) CONTAINS $q OR toLower(coalesce(d.source_id,'')) CONTAINS $q OR toLower(coalesce(d.doc_id,'')) CONTAINS $q)");
+    const whereClause = where.length ? `WHERE ${where.join(" AND ")} ` : "";
+    const sortKey = GRAPH_SORTABLE.indexOf(sort) >= 0 && ["published_at", "fetched_at", "title", "doc_id"].indexOf(sort) >= 0 ? sort : "published_at";
+    const res = await neo4jQuery(env, gcfg, [
+      {
+        statement:
+          `MATCH (d:Document) ${whereClause} ` +
+          `OPTIONAL MATCH (d)-[:FROM_SOURCE]->(s:Source) ` +
+          `OPTIONAL MATCH (d)-[m:MENTIONS]->(e:Entity) ` +
+          `WITH d, s, count(m) AS entity_count ` +
+          `ORDER BY coalesce(d.${sortKey}, '') ${direction} SKIP $skip LIMIT $limit ` +
+          `RETURN ${GRAPH_DOC_FIELDS}, entity_count`,
+        parameters: { q, skip, limit },
+      },
+      { statement: `MATCH (d:Document) ${whereClause} RETURN count(d) AS total`, parameters: { q } },
+    ]);
+    const rows = rowsOf(res.results[0]).map(shapeDoc).filter(Boolean);
+    const total = toFloat((rowsOf(res.results[1])[0] || {}).total, rows.length);
+    return { ok: true, subject: "sources", rows: rows, total: total, limit: limit, skip: skip, sort: sortKey, order: direction };
+  }
+
+  // `MATCH (e:Entity)` already constrains the label, so `where` starts empty and
+  // a WHERE clause is only emitted when something actually filters.
+  const where = [];
+  if (labelFilter.length) where.push("any(l IN labels(e) WHERE l IN $labels)");
+  if (minConfidence > 0) where.push("coalesce(e.confidence, 0) >= $minConfidence");
+  if (q) {
+    where.push(
+      "(toLower(coalesce(e.name,'')) CONTAINS $q OR toLower(coalesce(e.canonical_key,'')) CONTAINS $q " +
+      "OR any(a IN coalesce(e.aliases, []) WHERE toLower(a) CONTAINS $q) " +
+      "OR toLower(coalesce(e.reg_number,'')) = $q OR toLower(coalesce(e.imo,'')) = $q " +
+      "OR toLower(coalesce(e.mmsi,'')) = $q OR toLower(coalesce(e.tail_number,'')) = $q " +
+      "OR toLower(coalesce(e.transponder,'')) = $q OR toLower(coalesce(e.lei,'')) = $q)"
+    );
+  }
+  const whereClause = where.length ? `WHERE ${where.join(" AND ")} ` : "";
+  const sortKey = sort === "name" ? "name" : sort;
+  const res = await neo4jQuery(env, gcfg, [
+    {
+      statement:
+        `MATCH (e:Entity) ${whereClause} ` +
+        `OPTIONAL MATCH (e)-[r]-() ` +
+        `WITH e, count(r) AS degree ` +
+        `ORDER BY coalesce(e.${sortKey}, ${sortKey === "name" ? "''" : "0"}) ${direction}, e.canonical_key ASC ` +
+        `SKIP $skip LIMIT $limit ` +
+        `RETURN ${GRAPH_NODE_FIELDS}, degree`,
+      parameters: { labels: labelFilter, minConfidence, q, skip, limit },
+    },
+    {
+      statement: `MATCH (e:Entity) ${whereClause} RETURN count(e) AS total`,
+      parameters: { labels: labelFilter, minConfidence, q },
+    },
+  ]);
+  const rows = rowsOf(res.results[0]).map(shapeNode).filter(Boolean);
+  const total = toFloat((rowsOf(res.results[1])[0] || {}).total, rows.length);
+  return { ok: true, subject: "nodes", rows: rows, total: total, limit: limit, skip: skip, sort: sortKey, order: direction };
+}
+
+/**
+ * Dispatcher for `/graph/*`: auth → global RPM → per-host bucket → KV cache →
+ * Neo4j. The order matters; an unauthenticated caller must cost the database
+ * nothing, and a cache hit must not consume a token.
+ */
+async function handleGraph(request, env, cfg, gcfg, ctx, path, url) {
+  if (!gcfg.enabled) {
+    return errorResponse("graph_disabled", "The graph API is disabled on this Worker (GRAPH_API_ENABLED=false)", 403, {}, env);
+  }
+  if (request.method !== "GET") {
+    return errorResponse("method_not_allowed", "The graph API is read-only and only accepts GET", 405, { allow: "GET" }, env);
+  }
+
+  const auth = graphAuthorised(request, env, gcfg);
+  if (!auth.ok) return errorResponse("unauthorised", auth.reason, 401, {}, env);
+
+  const route = path.replace(/^\/graph\/?/, "") || "";
+  const handlers = {
+    overview: graphOverview,
+    search: graphSearch,
+    node: graphNode,
+    neighbors: graphNeighbors,
+    path: graphPath,
+    table: graphTable,
+  };
+  const handler = handlers[route];
+  if (!handler) {
+    return errorResponse("not_found", `Unknown graph route ${path}. Try /graph/health for the list.`, 404, {}, env);
+  }
+
+  const globalCheck = checkGlobalRate(cfg);
+  if (!globalCheck.allowed) {
+    return errorResponse("global_rate_limited", "Worker-wide request budget exhausted for this minute", 429, { retry_after: globalCheck.retryAfter }, env);
+  }
+
+  const params = url.searchParams;
+  const cacheKey = await cacheKeyFor(`graph/${route}?${params.toString()}`, "GET", { db: gcfg.database, v: WORKER_VERSION });
+  if (gcfg.cacheTtlSeconds > 0) {
+    const hit = await readCache(env, cacheKey);
+    if (hit) {
+      return jsonResponse({ ...hit.result, cached: true, auth_mode: auth.mode }, 200, { "X-PuppetNET-Cache": "HIT" }, env);
+    }
+  }
+
+  // Reuse the relay's bucket machinery, but not its ceilings: acquireHostToken
+  // clamps a requested rate to 10x HOST_RATE_PER_SEC and a burst to
+  // MAX_HOST_BURST, which is the right protection when the target is somebody
+  // else's API. The graph bucket guards *our own* database and has its own knobs,
+  // so widen the clamp to them — otherwise GRAPH_RATE_PER_SEC above 5 would be
+  // silently ignored and the console would 429 under ordinary use.
+  const budget = await acquireHostToken(env, {
+    ...cfg,
+    ctx,
+    hostRatePerSec: gcfg.ratePerSec,
+    hostBurst: gcfg.burst,
+    minHostRatePerSec: Math.min(cfg.minHostRatePerSec, gcfg.ratePerSec),
+    maxHostBurst: Math.max(cfg.maxHostBurst, gcfg.burst),
+  }, GRAPH_RATE_HOST, 1, {
+    rate_per_sec: gcfg.ratePerSec,
+    burst: gcfg.burst,
+  });
+  if (!budget.allowed) {
+    return errorResponse("graph_rate_limited", "Graph query budget exhausted — the free-tier database is protected from bursts", 429, {
+      retry_after: Math.max(1, budget.retryAfter),
+      policy: budget.policy,
+    }, env);
+  }
+
+  const started = nowMs();
+  try {
+    const payload = await handler(params, env, gcfg);
+    const elapsed = nowMs() - started;
+    const body = { ...payload, took_ms: elapsed, auth_mode: auth.mode, source: "worker", api: "graph/1" };
+
+    const serialised = JSON.stringify(body);
+    if (serialised.length > gcfg.maxResponseBytes) {
+      return errorResponse("response_too_large",
+        `Result is ${(serialised.length / 1024).toFixed(0)} KiB, over the ${Math.round(gcfg.maxResponseBytes / 1024)} KiB graph budget — lower the limit`,
+        502, { bytes: serialised.length }, env);
+    }
+
+    if (gcfg.cacheTtlSeconds > 0 && payload.ok && ctx && typeof ctx.waitUntil === "function") {
+      ctx.waitUntil(writeCache(env, cacheKey, body, gcfg.cacheTtlSeconds, gcfg.maxResponseBytes));
+    }
+    return jsonResponse(body, 200, {
+      "X-PuppetNET-Cache": "MISS",
+      "X-PuppetNET-Took-Ms": String(elapsed),
+      "X-PuppetNET-Ratelimit-Remaining": String(Math.floor(budget.remaining)),
+    }, env);
+  } catch (err) {
+    if (err && err.graphError) {
+      const status = err.status || 502;
+      console.warn(`[graph] ${route} failed: ${err.code} ${err.message}`);
+      return errorResponse(err.code, err.message, status, { took_ms: nowMs() - started, neo4j_code: err.neo4j_code || undefined }, env);
+    }
+    throw err;
+  }
+}
+
+/* -------------------------------------------------------------------------- */
 /*  Worker entrypoints                                                        */
 /* -------------------------------------------------------------------------- */
 
@@ -1593,6 +2735,17 @@ export default {
     try {
       if (path === "/" || path === "/health" || path === "/healthz") {
         return handleHealth(request, env, cfg);
+      }
+
+      // The graph read API gates itself (GRAPH_API_TOKEN / GRAPH_PUBLIC_READ),
+      // so it is matched before the relay's bearer check. It is read-only and
+      // holds no Neo4j credentials in the response.
+      const gcfg = readGraphConfig(env);
+      if (path === "/graph/health") {
+        return await handleGraphHealth(request, env, cfg, gcfg);
+      }
+      if (path.startsWith("/graph/")) {
+        return await handleGraph(request, env, cfg, gcfg, ctx, path, url);
       }
 
       const auth = authorised(request, env);

@@ -1,0 +1,603 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="description" content="PuppetNET — OSINT graph intelligence console. Entity resolution, cluster bridges, shortest-path handshakes and centrality-driven anomaly triage.">
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<meta name="robots" content="noindex, nofollow">
+<title>PuppetNET · Graph Intelligence Console</title>
+
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2305070d'/%3E%3Ccircle cx='16' cy='9' r='3.2' fill='%2322d3ee'/%3E%3Ccircle cx='8' cy='23' r='2.8' fill='%2310b981'/%3E%3Ccircle cx='24' cy='23' r='2.8' fill='%23a855f7'/%3E%3Cpath d='M16 12.2 9 20.6M16 12.2l7 8.4M10.8 23h10.4' stroke='%2322d3ee' stroke-width='1.3' fill='none' opacity='.75'/%3E%3C/svg%3E">
+
+<!-- Vendored, self-hosted: no CDN, no third-party request, no webfont fetch.
+     An OSINT console that loads assets from someone else's origin leaks its
+     operators. See web/vendor/README.md for versions and licences. -->
+<link rel="stylesheet" href="vendor/tailwind.css">
+<link rel="stylesheet" href="styles.css">
+</head>
+
+<body class="bg-void text-slate-200 font-sans antialiased overflow-hidden">
+
+<!-- ==============================  boot splash  =========================== -->
+<div id="boot" class="boot-screen">
+  <div class="boot-core">
+    <div class="boot-ring"></div>
+    <div class="boot-ring boot-ring-2"></div>
+    <span class="boot-glyph">◈</span>
+  </div>
+  <p class="boot-label">PUPPETNET</p>
+  <p id="boot-status" class="boot-status">initialising graph engine…</p>
+</div>
+
+<!-- ==============================  shell  ================================= -->
+<div id="app" class="app-shell" hidden>
+
+  <!-- ---------------------------------------------------------------- header -->
+  <header class="app-header">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 32 32" width="26" height="26">
+          <circle cx="16" cy="8" r="3.4" fill="currentColor" opacity=".95"/>
+          <circle cx="7" cy="24" r="3" fill="#10b981"/>
+          <circle cx="25" cy="24" r="3" fill="#a855f7"/>
+          <path d="M16 11.4 8.4 21.4M16 11.4l7.6 10M10 24h12" stroke="currentColor"
+                stroke-width="1.4" fill="none" opacity=".7"/>
+        </svg>
+      </span>
+      <span class="brand-text">
+        <strong>PUPPET<span class="brand-accent">NET</span></strong>
+        <small>graph intelligence console</small>
+      </span>
+    </div>
+
+    <!-- search-first header -->
+    <div class="search-wrap" role="search">
+      <div class="search-box" id="search-box">
+        <svg class="search-icon" viewBox="0 0 24 24" width="17" height="17" aria-hidden="true">
+          <circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="1.8"/>
+          <path d="m16.5 16.5 4.5 4.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+        </svg>
+        <input id="search" type="search" autocomplete="off" spellcheck="false"
+               placeholder="Search names, companies, registrations, IMO/MMSI, transponders, canonical keys…"
+               aria-label="Global entity search" aria-describedby="search-hint"
+               aria-expanded="false" aria-controls="search-suggest" role="combobox">
+        <button id="search-clear" class="search-clear" type="button" title="Clear (Esc)" aria-label="Clear search" hidden>✕</button>
+        <span id="search-spinner" class="search-spinner" hidden aria-hidden="true"></span>
+        <kbd class="search-kbd">⌘K</kbd>
+        <ul id="search-suggest" class="suggest" role="listbox" aria-label="Search suggestions" hidden></ul>
+      </div>
+      <p id="search-hint" class="search-hint">
+        <span data-i18n="hint">Enter to load the top match · Shift+Enter to search all · Alt+Enter for the table view</span>
+      </p>
+    </div>
+
+    <nav class="view-tabs" role="tablist" aria-label="Primary views">
+      <button class="view-tab is-active" role="tab" id="tab-graph" aria-selected="true" aria-controls="panel-graph" data-view="graph">
+        <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><circle cx="6" cy="7" r="2.4" fill="currentColor"/><circle cx="18" cy="6" r="2" fill="currentColor"/><circle cx="12" cy="17" r="2.6" fill="currentColor"/><path d="M8 8.4 10.8 15M16.6 7.8 13.2 15M8 7h8" stroke="currentColor" stroke-width="1.2" fill="none" opacity=".6"/></svg>
+        <span>Graph</span>
+      </button>
+      <button class="view-tab" role="tab" id="tab-table" aria-selected="false" aria-controls="panel-table" data-view="table">
+        <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="M3 5h18v14H3zM3 10h18M9 10v9M15 10v9" stroke="currentColor" stroke-width="1.4" fill="none"/></svg>
+        <span>Data</span>
+      </button>
+      <button class="view-tab" role="tab" id="tab-path" aria-selected="false" aria-controls="panel-path" data-view="path">
+        <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><circle cx="5" cy="19" r="2.4" fill="currentColor"/><circle cx="19" cy="5" r="2.4" fill="currentColor"/><path d="M6.6 17.4 12 12l5.4-5.4M9 12h6" stroke="currentColor" stroke-width="1.4" fill="none"/></svg>
+        <span>Handshake</span>
+      </button>
+      <span class="tab-ink" aria-hidden="true"></span>
+    </nav>
+
+    <div class="header-actions">
+      <div id="conn-pill" class="conn-pill" data-state="idle" title="Data source status">
+        <span class="conn-dot"></span>
+        <span class="conn-label">idle</span>
+      </div>
+      <button id="btn-rail" class="icon-btn lg:hidden" type="button" title="Filters" aria-label="Toggle filter rail">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M4 6h16M7 12h10M10 18h4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" fill="none"/></svg>
+      </button>
+      <button id="btn-inspector" class="icon-btn xl:hidden" type="button" title="Inspector" aria-label="Toggle inspector">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.6" fill="none"/><path d="M12 11v6M12 7.6v.9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+      </button>
+      <button id="btn-settings" class="icon-btn" type="button" title="Data source &amp; settings (S)" aria-label="Open settings">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><circle cx="12" cy="12" r="3.1" stroke="currentColor" stroke-width="1.6" fill="none"/><path d="M12 3.4v2.2M12 18.4v2.2M4.6 12H2.4M21.6 12h-2.2M6.7 6.7 5.2 5.2M18.8 18.8l-1.5-1.5M17.3 6.7l1.5-1.5M5.2 18.8l1.5-1.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+      </button>
+      <button id="btn-help" class="icon-btn" type="button" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><rect x="2.5" y="6" width="19" height="12" rx="2.4" stroke="currentColor" stroke-width="1.5" fill="none"/><path d="M6 9.6h.01M9 9.6h.01M12 9.6h.01M15 9.6h.01M18 9.6h.01M6 12.8h.01M9 12.8h.01M12 12.8h.01M15 12.8h.01M18 12.8h.01M8 15.8h8" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- ------------------------------------------------------------------ body -->
+  <div class="app-body">
+
+    <!-- ------------------------------------------------------ left: filters -->
+    <aside id="rail" class="rail" aria-label="Graph controls">
+      <div class="rail-scroll">
+
+        <section class="rail-section">
+          <h2 class="rail-title"><span>Focus</span><em id="focus-name" class="rail-title-em">whole graph</em></h2>
+
+          <div class="field">
+            <label class="field-label" for="depth">N-degree expansion</label>
+            <div class="segmented" id="depth" role="group" aria-label="Expansion depth in hops">
+              <button type="button" class="seg is-active" data-depth="1" aria-pressed="true">1</button>
+              <button type="button" class="seg" data-depth="2" aria-pressed="false">2</button>
+              <button type="button" class="seg" data-depth="3" aria-pressed="false">3</button>
+              <button type="button" class="seg" data-depth="4" aria-pressed="false">4</button>
+            </div>
+            <p class="field-help">Hops around the active node. Depth &gt; 2 is capped server-side by <code>GRAPH_MAX_DEPTH</code>.</p>
+          </div>
+
+          <div class="field field-row">
+            <button id="btn-expand" class="btn btn-primary btn-sm" type="button" title="Fetch the N-degree neighbourhood of the selected node (E)">
+              <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><circle cx="12" cy="12" r="2.6" fill="currentColor"/><circle cx="4" cy="6" r="1.9" fill="currentColor" opacity=".8"/><circle cx="20" cy="6" r="1.9" fill="currentColor" opacity=".8"/><circle cx="4" cy="18" r="1.9" fill="currentColor" opacity=".8"/><circle cx="20" cy="18" r="1.9" fill="currentColor" opacity=".8"/><path d="M10 10.6 5.4 7.2M14 10.6l4.6-3.4M10 13.4l-4.6 3.4M14 13.4l4.6 3.4" stroke="currentColor" stroke-width="1.2" opacity=".7"/></svg>
+              Expand
+            </button>
+            <button id="btn-isolate" class="btn btn-ghost btn-sm" type="button" title="Keep only this neighbourhood (I)">Isolate</button>
+            <button id="btn-reset" class="btn btn-ghost btn-sm" type="button" title="Back to the overview (R)">Reset</button>
+          </div>
+
+          <div class="field">
+            <label class="field-label" for="node-limit">Node budget <output id="node-limit-out" class="field-output">250</output></label>
+            <input id="node-limit" class="range" type="range" min="25" max="1200" step="25" value="250">
+            <p class="field-help">Hard ceiling per query. AuraDB Free has 200k nodes — never pull them all.</p>
+          </div>
+        </section>
+
+        <section class="rail-section">
+          <h2 class="rail-title"><span>Entity types</span>
+            <button class="link-btn" id="types-all" type="button">all</button>
+          </h2>
+          <div id="type-filters" class="chip-grid" role="group" aria-label="Filter by entity type"></div>
+        </section>
+
+        <section class="rail-section">
+          <h2 class="rail-title"><span>Relationships</span>
+            <button class="link-btn" id="rels-all" type="button">all</button>
+          </h2>
+          <div class="field">
+            <label class="field-label" for="min-weight">Min edge weight <output id="min-weight-out" class="field-output">0.00</output></label>
+            <input id="min-weight" class="range range-cyan" type="range" min="0" max="1" step="0.05" value="0">
+          </div>
+          <div class="field">
+            <label class="field-label" for="min-confidence">Min confidence <output id="min-confidence-out" class="field-output">0.00</output></label>
+            <input id="min-confidence" class="range range-emerald" type="range" min="0" max="1" step="0.05" value="0">
+          </div>
+          <div class="field field-row field-row-tight">
+            <label class="switch"><input id="hide-calculated" type="checkbox"><span class="switch-track"></span><span class="switch-label">Hide calculated edges</span></label>
+            <label class="switch"><input id="hide-weak" type="checkbox"><span class="switch-track"></span><span class="switch-label">Hide co-occurrence only</span></label>
+          </div>
+          <div id="rel-filters" class="rel-list" role="group" aria-label="Filter by relationship type"></div>
+        </section>
+
+        <section class="rail-section">
+          <h2 class="rail-title"><span>Rendering</span></h2>
+          <div class="field">
+            <label class="field-label" for="size-metric">Node size ∝</label>
+            <select id="size-metric" class="select">
+              <option value="betweenness" selected>Betweenness centrality</option>
+              <option value="anomaly_score">Anomaly score</option>
+              <option value="degree">Degree</option>
+              <option value="mention_count">Mention count</option>
+              <option value="confidence">Confidence</option>
+              <option value="risk_score">Risk score</option>
+              <option value="flat">Flat (no scaling)</option>
+            </select>
+            <p class="field-help"><code>betweenness</code>, <code>anomaly_score</code> and <code>cluster_id</code> are written by <code>graph_analytics.py</code>; nodes scored before the last maintenance run fall back to degree.</p>
+          </div>
+          <div class="field">
+            <label class="field-label" for="layout">Layout</label>
+            <select id="layout" class="select">
+              <option value="fcose" selected>Force-directed (fcose)</option>
+              <option value="cose">Force-directed (cose, no extension)</option>
+              <option value="concentric">Concentric by centrality</option>
+              <option value="breadthfirst">Hierarchy (breadth-first)</option>
+              <option value="circle">Circle</option>
+              <option value="grid">Grid</option>
+            </select>
+          </div>
+          <div class="field">
+            <label class="field-label" for="edge-style">Edge style</label>
+            <select id="edge-style" class="select">
+              <option value="bezier" selected>Bezier (directed)</option>
+              <option value="straight">Straight</option>
+              <option value="haystack">Haystack (fast, undirected)</option>
+            </select>
+          </div>
+          <div class="field field-row field-row-tight">
+            <label class="switch"><input id="show-labels" type="checkbox" checked><span class="switch-track"></span><span class="switch-label">Labels</span></label>
+            <label class="switch"><input id="colour-clusters" type="checkbox"><span class="switch-track"></span><span class="switch-label">Colour by cluster</span></label>
+          </div>
+          <div class="field field-row field-row-tight">
+            <label class="switch"><input id="glow" type="checkbox" checked><span class="switch-track"></span><span class="switch-label">Glow</span></label>
+            <label class="switch"><input id="animate-layout" type="checkbox" checked><span class="switch-track"></span><span class="switch-label">Animate</span></label>
+          </div>
+          <div class="field">
+            <label class="field-label" for="link-distance">Repulsion <output id="link-distance-out" class="field-output">1.0×</output></label>
+            <input id="link-distance" class="range range-purple" type="range" min="0.5" max="2.5" step="0.1" value="1">
+          </div>
+          <div class="field field-row">
+            <button id="btn-relayout" class="btn btn-ghost btn-sm" type="button" title="Re-run the layout (L)">Re-run layout</button>
+            <button id="btn-export-png" class="btn btn-ghost btn-sm" type="button" title="Download the canvas as PNG">Export PNG</button>
+          </div>
+        </section>
+
+        <section class="rail-section rail-section-last">
+          <h2 class="rail-title"><span>Anomaly leaderboard</span><em class="rail-title-em">last 24h</em></h2>
+          <ol id="leaderboard" class="leaderboard" aria-live="polite"></ol>
+          <button id="btn-refresh" class="btn btn-ghost btn-sm btn-block" type="button" title="Re-query the data source">↻ Refresh</button>
+        </section>
+
+      </div>
+    </aside>
+    <div id="rail-scrim" class="scrim" hidden></div>
+
+    <!-- -------------------------------------------------------- main: canvas -->
+    <main class="main">
+
+      <!-- graph view -->
+      <section id="panel-graph" class="view is-active" role="tabpanel" aria-labelledby="tab-graph">
+        <div id="cy" class="cy" tabindex="0" role="application"
+             aria-label="Interactive entity graph. Use plus and minus to zoom, arrow keys to pan."></div>
+
+        <div class="cy-hud cy-hud-tl">
+          <div class="hud-stat"><b id="hud-nodes">0</b><span>nodes</span></div>
+          <div class="hud-stat"><b id="hud-edges">0</b><span>edges</span></div>
+          <div class="hud-stat"><b id="hud-shown">0</b><span>visible</span></div>
+          <div class="hud-stat hud-stat-time"><b id="hud-ms">0</b><span>ms</span></div>
+        </div>
+
+        <div class="cy-hud cy-hud-tr">
+          <div class="hud-tools">
+            <button class="tool" id="btn-zoom-in" type="button" title="Zoom in (+)" aria-label="Zoom in">+</button>
+            <button class="tool" id="btn-zoom-out" type="button" title="Zoom out (−)" aria-label="Zoom out">−</button>
+            <button class="tool" id="btn-fit" type="button" title="Fit to view (F)" aria-label="Fit graph to view">⤢</button>
+            <button class="tool" id="btn-center" type="button" title="Centre on selection (C)" aria-label="Centre on selection">◎</button>
+            <button class="tool" id="btn-fullscreen" type="button" title="Fullscreen" aria-label="Toggle fullscreen">⛶</button>
+          </div>
+        </div>
+
+        <div class="cy-hud cy-hud-bl">
+          <div id="legend" class="legend" aria-label="Legend"></div>
+        </div>
+
+        <div id="cy-empty" class="cy-empty" hidden>
+          <div class="cy-empty-inner">
+            <span class="cy-empty-glyph">◈</span>
+            <h3>No graph loaded</h3>
+            <p id="cy-empty-msg">Search an entity, pick a node from the leaderboard, or open settings to connect a data source.</p>
+            <div class="cy-empty-actions">
+              <button class="btn btn-primary btn-sm" id="btn-empty-overview" type="button">Load overview</button>
+              <button class="btn btn-ghost btn-sm" id="btn-empty-demo" type="button">Load demo dataset</button>
+              <button class="btn btn-ghost btn-sm" id="btn-empty-settings" type="button">Connect a source</button>
+            </div>
+          </div>
+        </div>
+
+        <div id="cy-busy" class="cy-busy" hidden><span class="cy-busy-bar"></span></div>
+        <div id="cy-toast-host" class="toast-host" aria-live="polite" aria-atomic="false"></div>
+      </section>
+
+      <!-- table view -->
+      <section id="panel-table" class="view" role="tabpanel" aria-labelledby="tab-table" hidden>
+        <div class="table-toolbar">
+          <div class="segmented segmented-sm" id="table-tabs" role="group" aria-label="Table subject">
+            <button type="button" class="seg is-active" data-table="nodes" aria-pressed="true">Nodes <b id="count-nodes" class="seg-count">0</b></button>
+            <button type="button" class="seg" data-table="edges" aria-pressed="false">Edges <b id="count-edges" class="seg-count">0</b></button>
+            <button type="button" class="seg" data-table="sources" aria-pressed="false">Citations <b id="count-sources" class="seg-count">0</b></button>
+          </div>
+          <div class="table-tools">
+            <div class="mini-search">
+              <input id="table-filter" type="search" placeholder="Filter rows…" aria-label="Filter table rows" autocomplete="off" spellcheck="false">
+              <span class="mini-search-icon" aria-hidden="true">⌕</span>
+            </div>
+            <select id="table-type-filter" class="select select-sm" aria-label="Filter by type">
+              <option value="">All types</option>
+            </select>
+            <select id="table-sort" class="select select-sm" aria-label="Sort rows">
+              <option value="score-desc">Score ↓</option>
+              <option value="score-asc">Score ↑</option>
+              <option value="name-asc">Name A→Z</option>
+              <option value="degree-desc">Degree ↓</option>
+              <option value="confidence-desc">Confidence ↓</option>
+              <option value="weight-desc">Weight ↓</option>
+              <option value="recent-desc">Recently seen ↓</option>
+            </select>
+            <button id="btn-csv" class="btn btn-ghost btn-sm" type="button" title="Download the visible rows as CSV">⤓ CSV</button>
+            <button id="btn-table-sync" class="btn btn-ghost btn-sm" type="button" title="Show these rows in the graph">↔ Graph</button>
+          </div>
+        </div>
+
+        <div class="table-scroll" id="table-scroll">
+          <table class="data-table" id="data-table">
+            <thead id="data-head"></thead>
+            <tbody id="data-body"></tbody>
+          </table>
+          <div id="table-empty" class="table-empty" hidden>No rows match the current filters.</div>
+        </div>
+
+        <div class="table-foot">
+          <span id="table-range" class="table-range">0 rows</span>
+          <div class="pager">
+            <button class="tool" id="page-first" type="button" title="First page" aria-label="First page">«</button>
+            <button class="tool" id="page-prev" type="button" title="Previous page" aria-label="Previous page">‹</button>
+            <span class="pager-label" id="page-label">1 / 1</span>
+            <button class="tool" id="page-next" type="button" title="Next page" aria-label="Next page">›</button>
+            <button class="tool" id="page-last" type="button" title="Last page" aria-label="Last page">»</button>
+            <select id="page-size" class="select select-sm" aria-label="Rows per page">
+              <option>25</option><option selected>50</option><option>100</option><option>250</option>
+            </select>
+          </div>
+        </div>
+      </section>
+
+      <!-- handshake / pathfinding view -->
+      <section id="panel-path" class="view" role="tabpanel" aria-labelledby="tab-path" hidden>
+        <div class="path-grid">
+          <div class="path-panel">
+            <h2 class="panel-title">Shortest-path / handshake engine</h2>
+            <p class="panel-sub">Find how two entities are connected. Server-side <code>shortestPath()</code> when the Worker is connected; Dijkstra over the loaded subgraph otherwise.</p>
+
+            <div class="path-inputs">
+              <div class="field">
+                <label class="field-label" for="path-a">Entity A</label>
+                <div class="path-picker">
+                  <input id="path-a" type="text" list="entity-options" placeholder="Search entity A…" autocomplete="off" spellcheck="false">
+                  <span class="path-swatch path-swatch-a" aria-hidden="true"></span>
+                </div>
+              </div>
+              <button id="path-swap" class="icon-btn icon-btn-lg" type="button" title="Swap A and B" aria-label="Swap entities">⇄</button>
+              <div class="field">
+                <label class="field-label" for="path-b">Entity B</label>
+                <div class="path-picker">
+                  <input id="path-b" type="text" list="entity-options" placeholder="Search entity B…" autocomplete="off" spellcheck="false">
+                  <span class="path-swatch path-swatch-b" aria-hidden="true"></span>
+                </div>
+              </div>
+            </div>
+            <datalist id="entity-options"></datalist>
+
+            <div class="field-row path-controls">
+              <div class="field field-grow">
+                <label class="field-label" for="path-hops">Max hops <output id="path-hops-out" class="field-output">6</output></label>
+                <input id="path-hops" class="range" type="range" min="1" max="12" step="1" value="6">
+              </div>
+              <div class="field">
+                <label class="field-label" for="path-direction">Direction</label>
+                <select id="path-direction" class="select select-sm">
+                  <option value="undirected" selected>Undirected</option>
+                  <option value="outgoing">A → B only</option>
+                  <option value="incoming">B → A only</option>
+                </select>
+              </div>
+              <div class="field">
+                <label class="field-label" for="path-weight">Cost</label>
+                <select id="path-weight" class="select select-sm">
+                  <option value="hops" selected>Hops (fewest)</option>
+                  <option value="inverse-weight">1 − weight (strongest ties)</option>
+                  <option value="inverse-confidence">1 − confidence</option>
+                </select>
+              </div>
+              <button id="btn-find-path" class="btn btn-primary" type="button">Find chain</button>
+              <button id="btn-path-clear" class="btn btn-ghost" type="button">Clear</button>
+            </div>
+
+            <div id="path-result" class="path-result" aria-live="polite"></div>
+            <div id="path-alts" class="path-alts"></div>
+          </div>
+
+          <div class="path-side">
+            <h3 class="panel-title panel-title-sm">Neighbourhood engine</h3>
+            <p class="panel-sub">Click any node in the graph to make it active, then expand by depth.</p>
+            <div class="kv" id="path-active">
+              <div class="kv-row"><span>Active node</span><b class="muted">none</b></div>
+              <div class="kv-row"><span>Canonical key</span><b class="muted mono">—</b></div>
+              <div class="kv-row"><span>Degree</span><b class="muted">—</b></div>
+              <div class="kv-row"><span>Cluster</span><b class="muted">—</b></div>
+            </div>
+            <div class="field">
+              <label class="field-label" for="neighbour-depth">Depth <output id="neighbour-depth-out" class="field-output">1 hop</output></label>
+              <input id="neighbour-depth" class="range range-purple" type="range" min="1" max="4" step="1" value="1">
+            </div>
+            <div class="field-row">
+              <button id="btn-neighbour-run" class="btn btn-primary btn-sm btn-block" type="button">Expand neighbourhood</button>
+            </div>
+            <div class="field-row">
+              <button id="btn-path-from-active" class="btn btn-ghost btn-sm btn-block" type="button">Use as Entity A</button>
+            </div>
+            <div class="field-row">
+              <button id="btn-path-to-active" class="btn btn-ghost btn-sm btn-block" type="button">Use as Entity B</button>
+            </div>
+            <div id="neighbour-summary" class="neighbour-summary"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ------------------------------------------------- status bar -->
+      <footer class="statusbar">
+        <span class="sb-item"><i class="sb-dot" id="sb-dot"></i><b id="sb-source">demo dataset</b></span>
+        <span class="sb-item" id="sb-latency">— ms</span>
+        <span class="sb-item" id="sb-scope">scope: whole graph</span>
+        <span class="sb-item" id="sb-engine">layout: fcose</span>
+        <span class="sb-sep"></span>
+        <span class="sb-item sb-item-dim" id="sb-caps">nodes 0 · edges 0</span>
+        <span class="sb-item sb-item-dim" id="sb-metrics">metrics: —</span>
+        <span class="sb-grow"></span>
+        <span class="sb-item sb-item-dim sb-hide-sm">⌘K search · E expand · F fit · P path · T table · ? help</span>
+        <span class="sb-item" id="sb-clock">--:--:-- UTC</span>
+      </footer>
+    </main>
+
+    <!-- ------------------------------------------------- right: inspector -->
+    <aside id="inspector" class="inspector" aria-label="Entity inspector">
+      <div class="inspector-head">
+        <h2 class="inspector-title">Inspector</h2>
+        <button id="btn-inspector-close" class="icon-btn xl:hidden" type="button" aria-label="Close inspector">✕</button>
+      </div>
+      <div class="inspector-scroll" id="inspector-body">
+        <div class="inspector-empty">
+          <span class="inspector-glyph" aria-hidden="true">◈</span>
+          <p>Select a node or an edge to inspect its metadata, metrics and source citations.</p>
+        </div>
+      </div>
+    </aside>
+    <div id="inspector-scrim" class="scrim" hidden></div>
+
+  </div><!-- /app-body -->
+</div><!-- /app -->
+
+<!-- ==============================  settings modal  ========================= -->
+<div id="modal-settings" class="modal" role="dialog" aria-modal="true" aria-labelledby="settings-title" hidden>
+  <div class="modal-backdrop" data-close="1"></div>
+  <div class="modal-card modal-card-wide">
+    <header class="modal-head">
+      <h2 id="settings-title">Data source &amp; settings</h2>
+      <button class="icon-btn" type="button" data-close="1" aria-label="Close settings">✕</button>
+    </header>
+    <div class="modal-body">
+      <div class="settings-grid">
+        <section>
+          <h3 class="settings-group">Connection</h3>
+          <div class="field">
+            <label class="field-label" for="cfg-mode">Data source</label>
+            <select id="cfg-mode" class="select">
+              <option value="demo">Demo dataset (offline, bundled)</option>
+              <option value="worker">Cloudflare Worker <code>/graph</code> API</option>
+              <option value="neo4j">Neo4j HTTP API (direct — local dev only)</option>
+            </select>
+            <p class="field-help" id="cfg-mode-help">The demo dataset is a synthetic 68-node offshore network. Nothing leaves the browser.</p>
+          </div>
+          <div class="field" id="row-base" hidden>
+            <label class="field-label" for="cfg-base">API base URL</label>
+            <input id="cfg-base" class="input" type="url" placeholder="https://relay.example.workers.dev" autocomplete="off" spellcheck="false">
+            <p class="field-help">Worker root (no trailing slash). Same-origin requests need nothing here.</p>
+          </div>
+          <div class="field" id="row-token" hidden>
+            <label class="field-label" for="cfg-token">API token</label>
+            <input id="cfg-token" class="input" type="password" placeholder="GRAPH_API_TOKEN / PROXY_AUTH_TOKEN" autocomplete="off">
+            <p class="field-help warn">Stored in <code>localStorage</code> on this device only. A browser-held token is public to anyone who can read this page's storage — gate the Worker with <code>ALLOWED_ORIGINS</code> and treat a public console as read-only, non-sensitive.</p>
+          </div>
+          <div class="field" id="row-db" hidden>
+            <label class="field-label" for="cfg-db">Neo4j database</label>
+            <input id="cfg-db" class="input" type="text" value="neo4j" autocomplete="off" spellcheck="false">
+          </div>
+          <div class="field" id="row-neo4j-creds" hidden>
+            <label class="field-label" for="cfg-neo4j-user">Neo4j user / password</label>
+            <div class="field-row">
+              <input id="cfg-neo4j-user" class="input" type="text" placeholder="neo4j" autocomplete="off" spellcheck="false">
+              <input id="cfg-neo4j-pass" class="input" type="password" placeholder="password" autocomplete="off">
+            </div>
+            <p class="field-help warn">Direct mode puts AuraDB credentials in the browser. Use it against a scratch database on <code>localhost</code>, never against production.</p>
+          </div>
+          <div class="field-row">
+            <button id="btn-test-conn" class="btn btn-primary btn-sm" type="button">Test connection</button>
+            <button id="btn-save-cfg" class="btn btn-ghost btn-sm" type="button">Save</button>
+            <button id="btn-clear-cfg" class="btn btn-danger-ghost btn-sm" type="button">Forget credentials</button>
+          </div>
+          <p class="field-help" id="cfg-probe">Not probed yet.</p>
+        </section>
+
+        <section>
+          <h3 class="settings-group">Behaviour</h3>
+          <div class="field field-row field-row-tight">
+            <label class="switch"><input id="cfg-autosuggest" type="checkbox" checked><span class="switch-track"></span><span class="switch-label">Live search suggestions</span></label>
+            <label class="switch"><input id="cfg-autoexpand" type="checkbox"><span class="switch-track"></span><span class="switch-label">Expand on select</span></label>
+          </div>
+          <div class="field field-row field-row-tight">
+            <label class="switch"><input id="cfg-persist" type="checkbox" checked><span class="switch-track"></span><span class="switch-label">Persist layout &amp; filters</span></label>
+            <label class="switch"><input id="cfg-reduce-motion" type="checkbox"><span class="switch-track"></span><span class="switch-label">Reduce motion</span></label>
+          </div>
+          <div class="field">
+            <label class="field-label" for="cfg-page-size">Table page size</label>
+            <input id="cfg-page-size" class="input" type="number" min="10" max="500" step="10" value="50">
+          </div>
+          <div class="field">
+            <label class="field-label" for="cfg-request-timeout">Request timeout (ms)</label>
+            <input id="cfg-request-timeout" class="input" type="number" min="2000" max="60000" step="1000" value="15000">
+          </div>
+          <h3 class="settings-group">Deep links</h3>
+          <p class="field-help">The URL hash encodes the view, query and focus node so a finding can be shared: <code>#/graph?q=…&amp;focus=…&amp;depth=2</code></p>
+          <div class="field-row">
+            <button id="btn-copy-link" class="btn btn-ghost btn-sm" type="button">Copy current link</button>
+            <button id="btn-copy-cypher" class="btn btn-ghost btn-sm" type="button">Copy Cypher for this view</button>
+          </div>
+        </section>
+      </div>
+    </div>
+    <footer class="modal-foot">
+      <span class="modal-foot-note">PuppetNET console <b id="cfg-version">1.0.0</b> · <span id="cfg-worker-version">worker: unknown</span></span>
+      <button class="btn btn-primary btn-sm" type="button" data-close="1">Done</button>
+    </footer>
+  </div>
+</div>
+
+<!-- ==============================  help modal  ============================= -->
+<div id="modal-help" class="modal" role="dialog" aria-modal="true" aria-labelledby="help-title" hidden>
+  <div class="modal-backdrop" data-close="1"></div>
+  <div class="modal-card">
+    <header class="modal-head">
+      <h2 id="help-title">Keyboard &amp; interactions</h2>
+      <button class="icon-btn" type="button" data-close="1" aria-label="Close help">✕</button>
+    </header>
+    <div class="modal-body">
+      <div class="help-grid">
+        <div><kbd>⌘</kbd><kbd>K</kbd> or <kbd>/</kbd><span>Focus search</span></div>
+        <div><kbd>Esc</kbd><span>Close / clear / deselect</span></div>
+        <div><kbd>Enter</kbd><span>Load top match</span></div>
+        <div><kbd>⇧</kbd><kbd>Enter</kbd><span>Search all matches</span></div>
+        <div><kbd>Alt</kbd><kbd>Enter</kbd><span>Open matches in the table</span></div>
+        <div><kbd>E</kbd><span>Expand active node by N hops</span></div>
+        <div><kbd>I</kbd><span>Isolate neighbourhood</span></div>
+        <div><kbd>R</kbd><span>Reset to overview</span></div>
+        <div><kbd>F</kbd><span>Fit graph</span></div>
+        <div><kbd>C</kbd><span>Centre on selection</span></div>
+        <div><kbd>L</kbd><span>Re-run layout</span></div>
+        <div><kbd>P</kbd><span>Handshake view</span></div>
+        <div><kbd>T</kbd><span>Table view</span></div>
+        <div><kbd>G</kbd><span>Graph view</span></div>
+        <div><kbd>1</kbd>–<kbd>4</kbd><span>Set expansion depth</span></div>
+        <div><kbd>+</kbd> <kbd>−</kbd><span>Zoom</span></div>
+        <div><kbd>S</kbd><span>Settings</span></div>
+        <div><kbd>?</kbd><span>This dialog</span></div>
+      </div>
+      <h3 class="settings-group">Mouse</h3>
+      <ul class="help-list">
+        <li><b>Click a node</b> — make it active, inspect it, highlight its ties.</li>
+        <li><b>Double-click a node</b> — expand its neighbourhood by the current depth.</li>
+        <li><b>Shift+click</b> — add to the selection (multi-select for the table).</li>
+        <li><b>Alt+click</b> — hide the node and its edges from the current view.</li>
+        <li><b>Click an edge</b> — inspect confidence, weight, method and citations.</li>
+        <li><b>Right-click a node</b> — quick actions: expand, isolate, path A/B, hide.</li>
+        <li><b>Drag background</b> — pan · <b>scroll</b> — zoom · <b>drag node</b> — pin it (double-click background to unpin all).</li>
+      </ul>
+      <h3 class="settings-group">Where the numbers come from</h3>
+      <ul class="help-list help-list-dim">
+        <li><code>betweenness</code>, <code>degree_spike</code>, <code>offshore_cluster_ratio</code>, <code>anomaly_score</code>, <code>cluster_id</code> are written by <code>graph_analytics.py --centrality</code> (Brandes / GDS).</li>
+        <li>Edge <code>weight</code> is the source-trust × extraction-method score; <code>confidence</code> is the noisy-OR of every observation.</li>
+        <li>Citations are <code>Document</code> nodes reached through <code>MENTIONS</code>, or the <code>doc_id</code>/<code>source_id</code> recorded on the edge.</li>
+      </ul>
+    </div>
+    <footer class="modal-foot">
+      <span class="modal-foot-note">Zero external requests: every asset is vendored in <code>web/vendor/</code>.</span>
+      <button class="btn btn-primary btn-sm" type="button" data-close="1">Close</button>
+    </footer>
+  </div>
+</div>
+
+<!-- context menu -->
+<div id="ctx-menu" class="ctx-menu" role="menu" hidden></div>
+
+<noscript>
+  <div class="noscript">PuppetNET console requires JavaScript. The data itself lives in Neo4j; nothing is
+  rendered server-side.</div>
+</noscript>
+
+<script src="vendor/layout-base.min.js"></script>
+<script src="vendor/cose-base.min.js"></script>
+<script src="vendor/cytoscape.min.js"></script>
+<script src="vendor/cytoscape-fcose.min.js"></script>
+<script src="app.js" defer></script>
+</body>
+</html>

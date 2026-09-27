@@ -1,0 +1,136 @@
+# =============================================================================
+#  PuppetNET — Cloudflare Pages deployment for the analyst console
+# =============================================================================
+#  Publishes web/ exactly as it is committed. There is no build step at deploy
+#  time: the Tailwind CSS is compiled in CI and committed (see the `web` job in
+#  ci.yml, which fails if web/vendor/tailwind.css drifts), and the graph engine
+#  is vendored with its licences. That is deliberate — the console has to be
+#  deployable to a static host with no toolchain, no CDN and no paid dependency.
+#
+#  Secrets (repository → Settings → Secrets and variables → Actions):
+#    CLOUDFLARE_API_TOKEN   API token with "Cloudflare Pages — Edit" permission
+#    CLOUDFLARE_ACCOUNT_ID  the account that owns the Pages project
+#  Optional variable:
+#    PAGES_PROJECT_NAME     defaults to "puppetnet-console"
+#
+#  Without those secrets the workflow verifies the console and then skips the
+#  upload with a notice, so a fork or a first push is never a red build.
+#
+#  The Worker (worker.js) is deployed separately, because it carries bindings and
+#  secrets of its own:
+#    npx wrangler deploy            # see wrangler.toml and .env.example
+# =============================================================================
+
+name: Deploy console
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "web/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/pages_deploy.yml"
+  workflow_dispatch:
+    inputs:
+      preview:
+        description: "Upload as a preview deployment instead of production"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# Deploys are serialised: two concurrent uploads to the same project can leave
+# the alias pointing at whichever finished last, not whichever was newest.
+concurrency:
+  group: pages-deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify the console before deploying
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install build and test tooling
+        run: npm ci
+
+      - name: Syntax check the shipped JavaScript
+        run: node --check web/app.js
+
+      - name: Committed Tailwind build is up to date
+        run: |
+          npm run build:css
+          git diff --exit-code web/vendor/tailwind.css
+
+      # Never upload a console that cannot boot, render, filter or find a path.
+      - name: Console smoke test (headless browser)
+        run: node tests/web_smoke.mjs
+
+  deploy:
+    name: Upload to Cloudflare Pages
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: verify
+    # A pull request has no business publishing the console.
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check Cloudflare credentials
+        id: creds
+        env:
+          CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -z "$CF_API_TOKEN" ] || [ -z "$CF_ACCOUNT_ID" ]; then
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping the upload — set CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID to deploy web/ to Cloudflare Pages."
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Idempotent in practice: if the project already exists this errors and the
+      # deploy continues, which is what a first push needs and nothing else.
+      - name: Ensure the Pages project exists
+        if: steps.creds.outputs.present == 'true'
+        continue-on-error: true
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: >-
+            pages project create ${{ vars.PAGES_PROJECT_NAME || 'puppetnet-console' }}
+            --production-branch=main
+
+      - name: Deploy web/ to Cloudflare Pages
+        if: steps.creds.outputs.present == 'true'
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          # --commit-dirty: the checkout is clean, but a manual dispatch from a
+          # working branch should not fail on wrangler's git check.
+          command: >-
+            pages deploy web
+            --project-name=${{ vars.PAGES_PROJECT_NAME || 'puppetnet-console' }}
+            --commit-dirty=true
+            ${{ (github.event_name == 'workflow_dispatch' && inputs.preview) && format('--branch={0}', github.ref_name) || '' }}
+
+      - name: Report
+        if: steps.creds.outputs.present == 'true'
+        run: |
+          echo "Console uploaded. Cloudflare Pages aliases it to the production domain for \`main\`;"
+          echo "web/_headers travels with the deployment, so CSP, X-Frame-Options and the"
+          echo "referrer/permissions policy apply to the live console without extra configuration."

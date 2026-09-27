@@ -1,0 +1,62 @@
+# =============================================================================
+#  Cloudflare Pages response headers — web/_headers
+# =============================================================================
+#
+#  Deployed automatically when the Pages project's output directory is `web/`.
+#  Syntax: a path line, then indented `Header: value` lines.
+#  https://developers.cloudflare.com/pages/configuration/headers/
+#
+#  Two goals:
+#
+#   1. A strict CSP. The console renders text harvested from hostile sources —
+#      document titles, entity names, evidence snippets. Every one of those is
+#      escaped in app.js, and this policy is the second line of defence if an
+#      escaping bug ever slips through: inline script is not allowed at all, so
+#      an injected `onerror=` handler has nothing to execute.
+#   2. Cache the vendored libraries without poisoning an update. They are not
+#      content-hashed, so they get a bounded lifetime plus must-revalidate rather
+#      than `immutable`.
+# =============================================================================
+
+/*
+  # Nothing here needs a plugin, an eval, or a remote origin.
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; frame-src 'none'; manifest-src 'self'; worker-src 'self' blob:
+  # `style-src 'unsafe-inline'` is required because per-entity colours come from
+  # data (background/border/box-shadow set as inline styles). Every inline style
+  # the console writes is a colour value it computed itself — never user text —
+  # and inline *style* cannot execute script in a CSP3 browser.
+
+  # The API base is configurable at runtime (a Worker on another domain, or a
+  # local Neo4j HTTP endpoint), so connect-src cannot be pinned to one origin
+  # without breaking `neo4j` mode. Tighten this to your Worker's exact origin in
+  # production and drop `https:` — see docs/web-console.md#hardening.
+  Connect-Src: 'self' https:
+
+  # An OSINT console must never be framed: clickjacking a "hide node" or
+  # "forget credentials" button is a real attack.
+  X-Frame-Options: DENY
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: no-referrer
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), browsing-topics=(), interest-cohort=()
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Resource-Policy: same-origin
+  # The console is dark-only and holds no cross-origin state worth isolating.
+  X-XSS-Protection: 0
+
+  # HTML must always be revalidated: a stale index.html pointing at old assets is
+  # the one failure mode a static deploy cannot recover from on its own.
+  Cache-Control: no-cache
+
+/index.html
+  Cache-Control: no-cache, must-revalidate
+
+# Vendored libraries: versioned by the commit that vendored them, so a week of
+# caching plus revalidation is safe and saves a 400 KB re-download per session.
+/vendor/*
+  Cache-Control: public, max-age=604800, must-revalidate
+
+/styles.css
+  Cache-Control: public, max-age=3600, must-revalidate
+
+/app.js
+  Cache-Control: public, max-age=3600, must-revalidate

@@ -1,13 +1,19 @@
 # =============================================================================
 #  PuppetNET — continuous integration
 # =============================================================================
-#  Guards the three deliverables on every push and pull request:
-#    * worker.js   — syntax-checked with node --check and linted if a config
-#                    is present
+#  Guards every deliverable on each push and pull request:
+#    * worker.js   — syntax-checked with node --check, its graph API and host
+#                    profiles exercised against a stubbed Neo4j
 #    * ingest.py   — imported, CLI smoke-tested (--version, --list-sources,
 #                    --print-config, --doctor) and exercised by pytest
 #    * the package — unit tests that never need a spaCy model, a Neo4j
 #                    instance, or network access (see tests/conftest.py)
+#    * web/        — the analyst console: shipped JavaScript syntax-checked, the
+#                    committed Tailwind build proven up to date, and the whole
+#                    SPA booted inside jsdom against the vendored graph engine
+#
+#  Nothing here touches the network beyond npm/PyPI: both smoke suites stub
+#  every upstream, so CI cannot pass because a third-party API was reachable.
 # =============================================================================
 
 name: CI
@@ -119,3 +125,56 @@ jobs:
       - name: Dry-run wrangler config (if the CLI is reachable)
         continue-on-error: true
         run: npx --yes wrangler@latest deploy --dry-run --outdir /tmp/wrangler-out
+
+  web:
+    name: Web console
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      # Dev tooling only (Tailwind CLI, jsdom, terser). The console itself ships
+      # no runtime dependency: everything it loads lives in web/vendor/.
+      - name: Install build and test tooling
+        run: npm ci
+
+      - name: Syntax check the shipped JavaScript
+        run: |
+          node --check web/app.js
+          node --check worker.js
+
+      # The console is self-hostable, so the CSS it ships must be the CSS its
+      # sources produce. A stale commit means the deployed page silently loses
+      # whatever class was added last.
+      - name: Committed Tailwind build is up to date
+        run: |
+          npm run build:css
+          git diff --exit-code web/vendor/tailwind.css
+
+      - name: Vendored libraries and licences are committed
+        run: |
+          for file in cytoscape.min.js cytoscape-fcose.min.js layout-base.min.js \
+                      cose-base.min.js tailwind.css README.md; do
+            test -s "web/vendor/$file" || { echo "missing web/vendor/$file"; exit 1; }
+          done
+          for lib in cytoscape cytoscape-fcose layout-base cose-base; do
+            test -s "web/vendor/LICENSE.$lib" || { echo "missing licence for $lib"; exit 1; }
+          done
+          echo "vendored assets present with licences"
+
+      # Boots index.html + app.js + the vendored engine inside jsdom and drives
+      # the real UI: search, canvas, filters, N-hop expansion, handshake
+      # pathfinding, the data table, CSV export, keyboard shortcuts, deep links,
+      # worker mode against the actual worker.js, and the offline fallback.
+      - name: Console smoke test (headless browser)
+        run: node tests/web_smoke.mjs
+
+      - name: Graph API smoke test
+        run: node tests/worker_smoke.mjs

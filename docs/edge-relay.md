@@ -1,13 +1,17 @@
 # Edge fetch relay (`worker.js`)
 
-A Cloudflare Worker that performs every outbound HTTP request on behalf of the Python
-harvester. Two jobs: make the traffic look like ordinary browser traffic from many
-places, and keep it polite enough that a daily cron never gets a source blocked.
+A Cloudflare Worker with two independent halves. The **fetch relay** performs every
+outbound HTTP request on behalf of the Python harvester: make the traffic look like
+ordinary browser traffic from many places, and keep it polite enough that a daily cron
+never gets a source blocked. The **graph read API** answers the analyst console
+([`web/`](../web), documented in [web-console.md](web-console.md)) straight from Neo4j,
+so the database credentials never reach a browser.
 
 * Source: [`worker.js`](../worker.js) · config: [`wrangler.toml`](../wrangler.toml)
 * Runtime: Workers (V8 isolate), `nodejs_compat`, CPU limit 30 ms/request budget
 * All bindings optional — without KV/Queues the relay degrades to a stateless forwarder
   with per-isolate rate limiting.
+* Version `1.6.0`. The graph API is `graph/1`; every response says so.
 
 ---
 
@@ -22,6 +26,8 @@ places, and keep it polite enough that a daily cron never gets a source blocked.
 | `GET` | `/tasks/{id}` | bearer | Poll a deferred (queued) request |
 | `DELETE` | `/tasks/{id}` | bearer | Drop a queued task result |
 | `DELETE` | `/cache?url=…` | bearer | Purge a cached response |
+| `GET` | `/graph/health` | public | Graph API liveness, limits, entity/index counts |
+| `GET` | `/graph/*` | graph token | Read-only graph queries — see [Graph read API](#graph-read-api) |
 | `OPTIONS` | `*` | public | CORS preflight (`ALLOWED_ORIGINS`) |
 
 **Auth** — `Authorization: Bearer <PROXY_AUTH_TOKEN>` (or `X-Proxy-Token`). Multiple
@@ -35,7 +41,7 @@ every authenticated route is rejected, because an unauthenticated relay is an op
 {
   "ok": true,
   "worker": "puppetnet-edge-relay",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "time": "2026-09-27T04:00:00.000Z",
   "bindings": {"rate_limit_kv": true, "result_kv": true, "queue": true, "auth_configured": true},
   "limits": {"global_rpm": 900, "host_rate_per_sec": 0.5, "host_burst": 4,
@@ -62,7 +68,7 @@ without its KV namespaces is caught before a scheduled run.
 ```json
 {
   "ok": true,
-  "version": "1.5.0",
+  "version": "1.6.0",
   "global": {"minute": 1790000000, "count": 42, "rpm_limit": 900},
   "local_buckets": [{"host": "example.test", "tokens": 2.413, "age_ms": 1820}],
   "bindings": {"rate_limit_kv": true, "result_kv": true, "queue": true}
@@ -206,6 +212,102 @@ transport `worker_queue`.
 
 ---
 
+## Graph read API
+
+`/graph/*` is what the analyst console calls. It is **read-only** (any method but `GET`
+is refused with `405`), it authenticates separately from the relay, and it holds the
+Neo4j credentials server-side: the browser sends a graph token, the Worker sends Basic
+auth upstream, and neither the URI nor the password ever appears in a response — even in
+an error, which is why `/graph/health` reports the *host* rather than `NEO4J_URI`.
+
+**Auth** — `Authorization: Bearer <GRAPH_API_TOKEN>` (or `X-Graph-Token`).
+`GRAPH_API_TOKENS` accepts a comma-separated list for rotation, comparison is
+constant-time, and the API fails closed: with no token configured every route is
+rejected unless `GRAPH_PUBLIC_READ=true`, which exists for a console that genuinely has
+no secret to hold and is off by default. `GRAPH_API_ENABLED=false` turns the whole
+surface off with `403`.
+
+### Endpoints
+
+| Route | Parameters | Returns |
+| --- | --- | --- |
+| `/graph/health` | — | `ok`, version, `graph.limits`, entity/edge/index counts, whether `puppetnet_entity_search` is `ONLINE`, the endpoint list. Always `200`: a monitor needs the detail, `ok` carries the verdict |
+| `/graph/overview` | `limit` (≤1200, default 250), `metric`, `type` | top entities ranked by an allowlisted metric, with the induced edges between them |
+| `/graph/search` | `q` (≤400 chars), `limit`, `type` | full-text search when the index exists, otherwise a scored `CASE` fallback: exact key 100, id 95, name 90, prefix 70, contains 50, alias 40, jurisdiction 12 |
+| `/graph/node` | `key` | the entity, its edges, its neighbours and up to 40 citations |
+| `/graph/neighbors` | `key`, `depth` (1–4), `limit`, `min_weight`, `types` | level-by-level BFS. Induced edges include ties that were not traversed (a strong second-hop tie is evidence), plus a `truncated` flag |
+| `/graph/path` | `from`, `to`, `max_hops` (≤12), `direction`, `cost` | shortest path by hops, `inverse-weight` or `inverse-confidence`, up to 3 alternatives. Weighted searches are capped at 4 hops and 20 000 enumerated paths |
+| `/graph/table` | `subject=nodes\|edges\|sources`, `limit`, `skip`, `sort`, `order`, `q`, `type`/`types`, `min_weight`, `min_confidence` | paged rows for the console's table view |
+
+`direction` is `undirected` (default), `outgoing` or `incoming`; `cost` is `hops`
+(default), `inverse-weight` or `inverse-confidence`. Property names cannot be Cypher
+parameters, so `metric`, `sort`, `type` and `types` are matched against fixed allowlists
+(`GRAPH_SORTABLE`, `GRAPH_LABELS`, `GRAPH_REL_TYPES`) and silently fall back when a caller
+invents one — the only defence that actually works for an `ORDER BY`.
+
+### Envelope
+
+Every success is one JSON object:
+
+```json
+{
+  "ok": true,
+  "subject": "neighbors",
+  "root": "PERSON:vladimir-kastelion-9f2c1a7b",
+  "depth": 2,
+  "nodes": [{ "key": "…", "name": "…", "entity_type": "Person", "labels": ["Entity", "Person"],
+              "betweenness": 0.412, "anomaly_score": 0.83, "degree": 4, "cluster_id": 7 }],
+  "edges": [{ "id": 9001, "type": "OWNS", "source": "…", "target": "…",
+              "weight": 0.92, "confidence": 0.92, "method": "nlp:leaks", "source_id": "icij:…" }],
+  "truncated": false,
+  "took_ms": 41,
+  "auth_mode": "token",
+  "source": "worker",
+  "api": "graph/1",
+  "cached": true
+}
+```
+
+Errors are `{"ok": false, "error": {"code": "…", "message": "…"}}` with a status that
+means something: `400` bad request, `401` unauthorised, `403` graph disabled, `404`
+unknown route, `405` not `GET`, `429` rate-limited (graph budget or Worker-wide, with
+`retry_after`), `502` upstream/refused (including `response_too_large`, which protects
+both the free-tier database and the browser). Response headers carry
+`X-PuppetNET-Cache: HIT|MISS`, `X-PuppetNET-Took-Ms` and
+`X-PuppetNET-Ratelimit-Remaining`.
+
+```bash
+curl -s "$WORKER/graph/neighbors?key=PERSON:vladimir-kastelion-9f2c1a7b&depth=2" \
+     -H "Authorization: Bearer $GRAPH_API_TOKEN"
+```
+
+### Limits, caching and politeness
+
+Each handler issues **one** transaction POST to Neo4j, with an `AbortController` timeout
+(`GRAPH_TIMEOUT_MS`, default 20 s). Graph queries draw from their own token bucket
+(`GRAPH_RATE_PER_SEC` 4/s, `GRAPH_BURST` 8) keyed `graph:neo4j`, separate from the relay's
+per-host buckets, so a console left open on a dashboard cannot starve the harvester.
+Successful responses are cached (`GRAPH_CACHE_TTL_SECONDS`, default 60, `0` disables) when
+a KV binding exists; a cache hit skips both Neo4j and the rate bucket. Serialised payloads
+over `GRAPH_MAX_RESPONSE_BYTES` (default 6 MiB) are refused rather than shipped.
+
+Traversal bounds are the reason this API can face the open internet: depth ≤ 4, hops ≤ 12
+(weighted ≤ 4), 20 000 enumerated paths, 1200 nodes, 2000 table rows, 400-character
+queries, 40 citations, 8 evidence items. Variable-length patterns are expanded
+level-by-level instead of `[*1..4]`, which would enumerate every path in the graph.
+
+### Testing the graph API
+
+`tests/worker_smoke.mjs` (32 checks) runs the exported `fetch` handler against a fake
+Neo4j built on the same fixture the console tests use — no wrangler, no network, no
+bindings. It covers the projection contract for every route, the search fallback when the
+full-text index is missing, auth and fail-closed behaviour, rate limiting, cache
+headers, payload refusal, secret redaction (`assertNoGraphSecrets` on every response
+body) and the read-only guarantee: every statement the Worker sent is checked for write
+clauses, with the detector self-tested so the assertion cannot pass vacuously.
+
+---
+
 ## Politeness mechanics
 
 **Fingerprint rotation.** A pool of coherent desktop fingerprints (UA ↔ `sec-ch-ua` ↔
@@ -328,8 +430,15 @@ wrangler secret put PROXY_AUTH_TOKEN      # openssl rand -hex 32
 wrangler secret put OPENCORPORATES_API_TOKEN
 wrangler secret put ADSBEXCHANGE_API_KEY
 wrangler secret put COMPANIES_HOUSE_API_KEY
+# The graph read API (the analyst console). These stay on the Worker: the browser
+# is given GRAPH_API_TOKEN and never sees the database credentials.
+wrangler secret put NEO4J_URI             # neo4j+s://<instance>.databases.neo4j.io:7687
+wrangler secret put NEO4J_USERNAME
+wrangler secret put NEO4J_PASSWORD
+wrangler secret put GRAPH_API_TOKEN       # openssl rand -hex 16
 wrangler deploy                           # or: wrangler deploy --env production
 curl -s https://<worker>.workers.dev/health | jq
+curl -s https://<worker>.workers.dev/graph/health | jq '.graph.counts'
 ```
 
 Local development needs no bindings at all:
@@ -363,6 +472,14 @@ python ingest.py --doctor        # probes /health and reports the bindings
 | `ENFORCE_HTTPS` / `ALLOW_PRIVATE_NETWORKS` / `BLOCKED_HOST_SUFFIXES` | `true` / `false` / *(empty)* | SSRF & policy guards |
 | `ALLOWED_ORIGINS` | `*` | CORS for the PuppetNET front-end |
 | `WIKIDATA_USER_AGENT` | PuppetNET/1.5 … | Identity presented to WDQS (their policy requires contact details) |
+| `GRAPH_API_ENABLED` / `GRAPH_PUBLIC_READ` | `true` / `false` | Graph surface on/off; tokenless reads (off by default — it fails closed) |
+| `GRAPH_RATE_PER_SEC` / `GRAPH_BURST` | `4` / `8` | Graph token bucket, separate from the relay's per-host buckets |
+| `GRAPH_CACHE_TTL_SECONDS` | `60` | `0` disables caching of graph responses |
+| `GRAPH_TIMEOUT_MS` | `20000` | Per-transaction `AbortController` deadline |
+| `GRAPH_MAX_NODES` / `GRAPH_MAX_DEPTH` / `GRAPH_MAX_HOPS` | `1200` / `4` / `12` | Ceilings the Worker enforces on caller overrides |
+| `GRAPH_MAX_RESPONSE_BYTES` | `6291456` | Serialised payload ceiling; over it, `502 response_too_large` |
+| `GRAPH_PATH_ALTERNATIVES` | `true` | Return up to 3 alternative routes with a handshake |
+| `NEO4J_DATABASE` | `neo4j` | Database in the transactional URL path |
 
 The `[env.production]` overlay tightens `GLOBAL_RPM` to 600, `HOST_RATE_PER_SEC` to 0.34
 and `HOST_BURST` to 3 for hostile origins.

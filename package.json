@@ -1,0 +1,29 @@
+{
+  "name": "puppetnet-web",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Build and test tooling for the PuppetNET graph intelligence console (web/) and the edge relay (worker.js). No runtime dependencies: the browser assets in web/vendor/ are committed, so the console deploys to Cloudflare Pages with no build step.",
+  "type": "module",
+  "scripts": {
+    "build:css": "tailwindcss -c web/tailwind.config.cjs -i web/tailwind.input.css -o web/vendor/tailwind.css --minify",
+    "build:css:watch": "tailwindcss -c web/tailwind.config.cjs -i web/tailwind.input.css -o web/vendor/tailwind.css --watch",
+    "vendor:libs": "node scripts/vendor-libs.mjs",
+    "check": "node --check worker.js && node --check web/app.js",
+    "test:worker": "node tests/worker_smoke.mjs",
+    "test:web": "node tests/web_smoke.mjs",
+    "test": "npm run check && npm run test:worker && npm run test:web",
+    "serve": "python3 -m http.server 8080 --directory web --bind 0.0.0.0"
+  },
+  "devDependencies": {
+    "cose-base": "2.2.0",
+    "cytoscape": "3.30.4",
+    "cytoscape-fcose": "2.2.0",
+    "jsdom": "25.0.1",
+    "layout-base": "2.0.1",
+    "tailwindcss": "3.4.17",
+    "terser": "5.36.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

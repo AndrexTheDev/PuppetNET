@@ -1,0 +1,70 @@
+/* =============================================================================
+   Tailwind entry point for the PuppetNET console.
+
+   Compiled output is committed at web/vendor/tailwind.css:
+
+       npm run build:css
+
+   The division of labour:
+
+     * Tailwind utilities      — structure, spacing, type and responsive
+                                 visibility, used directly in index.html and in
+                                 the template literals app.js builds DOM from.
+     * @layer base / components below — the few cross-cutting rules that are
+                                 better expressed once than repeated as
+                                 utilities (focus rings, tabular numerals).
+     * web/styles.css          — the bespoke console components (canvas HUD,
+                                 glow, chain, inspector) and every keyframe.
+                                 It is loaded *after* the Tailwind build so it
+                                 wins the cascade where the two overlap.
+   ========================================================================== */
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  /* One focus ring for the whole console: cyan, offset, and visible on the
+     dark surfaces without a second outline colour per component. */
+  :focus-visible {
+    @apply outline outline-2 outline-offset-2 outline-signal-cyan;
+  }
+
+  /* Every number in this UI is a metric; proportional digits make columns of
+     them jitter horizontally as values change. */
+  .num,
+  td.cell-num,
+  .metric-value,
+  .cell-bar-value,
+  .lb-score,
+  .hud-stat b {
+    font-variant-numeric: tabular-nums;
+  }
+
+  ::selection {
+    @apply bg-signal-cyan/25 text-white;
+  }
+}
+
+@layer components {
+  /* Small utility-composed helpers used by JS-generated markup. Keeping them
+     here means app.js stays free of six-class strings inline. */
+  .tw-row {
+    @apply flex items-center gap-2;
+  }
+  .tw-row-between {
+    @apply flex items-center justify-between gap-2;
+  }
+  .tw-stack {
+    @apply flex flex-col gap-1;
+  }
+  .tw-metric-label {
+    @apply font-mono text-micro uppercase tracking-[0.14em] text-slate-500;
+  }
+  .tw-muted-note {
+    @apply mt-1 text-2xs leading-relaxed text-slate-500;
+  }
+  .tw-panel-note {
+    @apply rounded-md border border-edge bg-panel2 px-2.5 py-2 text-2xs text-slate-400;
+  }
+}

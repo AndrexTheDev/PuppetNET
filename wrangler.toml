@@ -13,6 +13,9 @@
 #     wrangler secret put OPENCORPORATES_API_TOKEN     # optional, see below
 #     wrangler secret put ADSBEXCHANGE_API_KEY         # optional (RapidAPI)
 #     wrangler secret put COMPANIES_HOUSE_API_KEY      # optional
+#     wrangler secret put NEO4J_URI                    # for the /graph/* API
+#     wrangler secret put NEO4J_PASSWORD
+#     wrangler secret put GRAPH_API_TOKEN              # console token (optional)
 #     wrangler deploy
 #
 #  `wrangler dev --local` works without any binding: the relay degrades to a
@@ -82,7 +85,7 @@ MAX_QUEUE_DELAY_SECONDS = "300"
 #
 # Identifying the tool is a requirement of Wikidata's API policy, not a courtesy:
 # set a contactable agent so an operator can reach you before blocking you.
-WIKIDATA_USER_AGENT = "PuppetNET/1.5 (OSINT research harvester; github.com/AndrexTheDev/PuppetNET) edge-relay"
+WIKIDATA_USER_AGENT = "PuppetNET/1.6 (OSINT research harvester; github.com/AndrexTheDev/PuppetNET) edge-relay"
 
 # Credentials are Worker *secrets*, never [vars], so they cannot be committed or
 # read back over /health (which reports only whether one is configured):
@@ -93,11 +96,60 @@ WIKIDATA_USER_AGENT = "PuppetNET/1.5 (OSINT research harvester; github.com/Andre
 # They are injected on the outgoing request only, so a deferred Queue task, a KV
 # cache key and a stored task result never contain them.
 
+# -----------------------------------------------------------------------------
+# Graph read API (/graph/*) — serves web/, the browser console
+# -----------------------------------------------------------------------------
+#
+# A static SPA on Cloudflare Pages cannot hold database credentials: whatever is
+# shipped to a browser is public. These endpoints let the Worker hold the Neo4j
+# secrets and hand the console back exactly the graph it is allowed to see.
+# Every statement is read-only and parameterised, and no endpoint accepts Cypher.
+GRAPH_API_ENABLED = "true"
+GRAPH_PUBLIC_READ = "false"        # true = no token needed (read-only, still rate-limited)
+NEO4J_DATABASE = "neo4j"           # AuraDB virtual database name
+# Politeness toward the database: a token bucket keyed graph:neo4j, separate from
+# the per-host buckets used by the harvester.
+GRAPH_RATE_PER_SEC = "4"
+GRAPH_BURST = "8"
+GRAPH_TIMEOUT_MS = "20000"
+# Result caching in RESULT_KV. A dashboard refresh should cost one query, not
+# six; 60s is short enough that a re-ingest becomes visible quickly.
+GRAPH_CACHE_TTL_SECONDS = "60"
+# Hard ceilings on what a browser may ask for (free-tier protection).
+GRAPH_MAX_NODES = "1200"
+GRAPH_MAX_DEPTH = "4"
+GRAPH_MAX_HOPS = "12"
+GRAPH_MAX_RESPONSE_BYTES = "6291456"   # 6 MiB
+GRAPH_PATH_ALTERNATIVES = "true"
+# Capacity ceilings reported to the console's status bar; must match the values
+# graph_analytics.py uses so the two agree on when pruning should escalate.
+AURA_NODE_CAP = "200000"
+AURA_EDGE_CAP = "400000"
+
+# The database credentials are *secrets*, never [vars]:
+#   NEO4J_URI        -> AuraDB bolt URI (neo4j+s://<id>.databases.neo4j.io:7687);
+#                       the Worker rewrites it to the https transactional endpoint
+#                       at the same host. NEO4J_HTTP_URI overrides for a
+#                       self-hosted database behind a proxy.
+#   NEO4J_USERNAME   -> optional, defaults to "neo4j"
+#   NEO4J_PASSWORD   -> required for /graph/* to report configured
+#   GRAPH_API_TOKEN  -> bearer token for the console. Distinct from
+#                       PROXY_AUTH_TOKEN on purpose: rotating the dashboard token
+#                       must not touch the ingest pipeline. Comma-separate several
+#                       (or use GRAPH_API_TOKENS). If neither is set, the graph API
+#                       falls back to accepting PROXY_AUTH_TOKEN so a
+#                       single-secret deployment still works.
+# A URI can carry credentials, so /graph/health reports only the host, and error
+# messages strip any userinfo before they are logged or returned.
+
 # Security
 ENFORCE_HTTPS = "true"             # refuse plaintext http:// targets
 ALLOW_PRIVATE_NETWORKS = "false"   # SSRF guard: block localhost / RFC1918
 BLOCKED_HOST_SUFFIXES = ""         # e.g. "facebook.com,linkedin.com"
-ALLOWED_ORIGINS = "*"              # CORS for the PuppetNET web front-end
+# CORS for the PuppetNET web front-end. "*" is fine for a read-only console and
+# required while it is served from a Pages preview URL; pin it to your Pages
+# domain in production (see docs/web-console.md#hardening).
+ALLOWED_ORIGINS = "*"
 
 # -----------------------------------------------------------------------------
 # Bindings — fill in the ids after `wrangler kv namespace create ...`

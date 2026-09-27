@@ -1,17 +1,20 @@
 # PuppetNET — serverless OSINT harvest & NLP graph engine
 
-PuppetNET is the data-acquisition half of an OSINT network-analysis application: a
-**daily, serverless pipeline** that harvests corporate-registry, offshore-leaks and
-news sources, extracts **people, organisations, locations and craft (aircraft /
-vessels / vehicles)** with spaCy, resolves them into **weighted relationships**, and
-writes an idempotent property graph into **Neo4j AuraDB**.
+PuppetNET is a **serverless OSINT network-analysis application**: a daily pipeline that
+harvests corporate-registry, offshore-leaks and news sources, extracts **people,
+organisations, locations and craft (aircraft / vessels / vehicles)** with spaCy, resolves
+them into **weighted relationships**, writes an idempotent property graph into **Neo4j
+AuraDB**, keeps that graph true — and then lets an analyst read it in a browser.
 
-There is no server to run. The whole system is three moving parts:
+There is no server to run. Six moving parts:
 
 | Part | File | Runs on |
 | --- | --- | --- |
-| Edge fetch relay (IP rotation, rate limiting, deferral queue) | [`worker.js`](worker.js) | Cloudflare Workers |
+| Edge fetch relay **and graph read API** (IP rotation, rate limiting, deferral queue, `/graph/*`) | [`worker.js`](worker.js) | Cloudflare Workers |
 | Harvest + NLP + graph writer | [`ingest.py`](ingest.py) → [`puppetnet/`](puppetnet) | GitHub Actions runner |
+| Graph maintenance (entity resolution, pruning, centrality, anomaly scoring) | [`graph_analytics.py`](graph_analytics.py) | GitHub Actions, after the ingest |
+| Alerting (cluster-bridge push, daily digest) | [`telegram_bot.py`](telegram_bot.py) | GitHub Actions, after maintenance |
+| **Analyst console** (search, graph canvas, handshake, evidence table) | [`web/`](web) | Cloudflare Pages — static, no build step |
 | Daily schedule | [`.github/workflows/daily_ingest.yml`](.github/workflows/daily_ingest.yml) | GitHub Actions cron (`0 4 * * *`) |
 
 ```
@@ -115,6 +118,27 @@ WIKIDATA_USER_AGENT  ICIJ_QUERY_TERMS  RSS_FEEDS    (optional)
 `Daily Ingest` can also be triggered by hand (`workflow_dispatch`) with inputs for
 sources, limit, dry run, log level, skip-NLP and fail-on-error. Each run uploads its
 report as an artefact and appends a summary to the job log.
+
+### 6. Open the console
+
+```bash
+npm ci && npm run serve       # http://localhost:8080
+```
+
+It boots offline on a bundled demo dataset — 52 invented entities, 88 invented ties — so
+the canvas, the filters, the handshake view and the evidence table are all usable before
+anything is deployed. To point it at a real graph, press `S`, choose **Cloudflare Worker**,
+and give it the Worker URL plus a token:
+
+```bash
+wrangler secret put GRAPH_API_TOKEN       # openssl rand -hex 16
+wrangler deploy
+npx wrangler pages deploy web --project-name=puppetnet-console
+```
+
+The console is a static upload: `web/` with **no build command**, because the Tailwind CSS
+is compiled in CI and committed and the graph engine is vendored with its licences. Guide:
+[docs/web-console.md](docs/web-console.md).
 
 ---
 
@@ -354,6 +378,35 @@ never routed through the edge relay, and it appears in no report or state file.
 
 ---
 
+## Web console
+
+[`web/`](web) is the reading half: a dark, keyboard-driven single-page console for the
+graph, in plain HTML + JavaScript + Tailwind + Cytoscape.js. No framework, no build step
+at deploy time, no CDN and no paid dependency — every byte the browser loads is committed,
+so it deploys to Cloudflare Pages as a static directory and works from a USB stick.
+
+| Module | What it does |
+| --- | --- |
+| Search-first header | Instant querying of names, aliases, company numbers, canonical keys, jurisdictions and aircraft tails. Locally scored suggestions first, then the API. `Enter` loads the best match, `Shift+Enter` all of them, `Alt+Enter` opens them in the table |
+| Graph canvas | Force-directed (fcose) 2D graph: zoom, pan, pin, click-to-inspect, double-click to expand, right-click quick actions. **Node size is betweenness centrality** (or anomaly, degree, mentions, confidence, risk, flat), colour is the entity label or the `cluster_id`, edges are grouped and filterable by type, weight and confidence |
+| Neighbourhood engine | N-degree expansion, **1–4 hops**, around the active node — plus *isolate*, which drops everything outside that neighbourhood. Capped by a node ceiling, and truncation is reported rather than hidden |
+| Handshake (pathfinding) | Entity A → Entity B renders the shortest connection chain with each tie's predicate, weight, confidence, method and citation, the weakest tie, up to three alternatives, and the Cypher that reproduces it. Hops ≤ 12, cost by hops / inverse weight / inverse confidence, direction undirected / outgoing / incoming |
+| Evidence table | Nodes, edges or sources as filterable, sortable, paged rows; sync the filtered rows back to the canvas; export CSV (RFC 4180, with formula-injection defence) |
+| Deep links | `#/v=table&q=kastelion&focus=PERSON:…&depth=2&metric=degree` — a shared link opens exactly what the sender saw. Credentials are never written to a URL, and never read from one |
+
+It runs in three modes: **demo** (the bundled synthetic network, offline), **worker**
+(`/graph/*` on `worker.js` — production, because the Worker holds the database
+credentials) and **neo4j** (direct HTTP, local development only).
+
+The console is a reader: it only ever issues `GET`s, the graph API refuses any other
+method, and both smoke suites assert that no statement reaching Neo4j contains a write
+clause. Harvested text is escaped everywhere it is rendered, a strict CSP forbids inline
+script, `X-Frame-Options: DENY` stops a *hide node* button being clickjacked, and the
+Cypher it offers for copy-paste takes its ordering metric from a fixed allowlist. See
+[docs/web-console.md](docs/web-console.md#hardening).
+
+---
+
 ## CLI
 
 ```
@@ -467,9 +520,26 @@ no wrangler, no network, no bindings:
 
 ```bash
 node --check worker.js          # syntax
-node tests/worker_smoke.mjs     # host profiles: SPARQL form POST, rate ceiling,
-                                # credential injection, secret redaction, /health
+node tests/worker_smoke.mjs     # 32 checks: host profiles (SPARQL form POST, rate
+                                # ceiling, credential injection, secret redaction)
+                                # and the whole /graph/* read API
 ```
+
+The console is tested the same way — the **shipped** `index.html`, `app.js` and vendored
+Cytoscape booted inside jsdom, with the real `worker.js` behind a fake Neo4j:
+
+```bash
+node tests/web_smoke.mjs        # 24 checks, ~19 s: offline boot and render, escaping on
+                                # every surface, sizing/colour, filters, expansion,
+                                # handshake, table + CSV, keyboard, deep links, worker
+                                # mode, offline fallback, credentials
+npm test                        # syntax check + both smoke suites
+```
+
+Both suites share `tests/helpers/fake_neo4j.mjs`, a stubbed Neo4j over a six-entity
+fixture, so a browser-side assertion and a Worker-side assertion are made against the
+same graph. Neither touches the network: they cannot pass because a third-party API
+happened to be reachable.
 
 ---
 
@@ -512,12 +582,25 @@ puppetnet/
                               (maintenance reads/writes through neo4j_client too)
   domain.py                   domain labels (ShellCompany/Foundation/Aircraft), jurisdictions
   pipeline.py                 the daily run
+web/
+  index.html                  console shell: search, canvas, rail, inspector, dialogs
+  app.js                      providers, rendering, filters, pathfinding, table, export
+  styles.css                  dark theme, glow, animations, responsive rules
+  _headers                    CSP, framing and cache policy (Cloudflare Pages)
+  tailwind.config.cjs         content globs for the compiled, committed CSS
+  vendor/                     cytoscape + fcose + layout-base + cose-base + tailwind.css,
+                              four MIT licence texts and an inventory README
+scripts/vendor-libs.mjs       reproduces web/vendor/ from node_modules, strictly
+package.json                  dev tooling only: jsdom, tailwindcss, terser
 .github/workflows/
   daily_ingest.yml            cron 04:00 UTC + manual dispatch
   graph_maintenance.yml       after the ingest: dedupe/prune/centrality + alerts
-  ci.yml                      lint + test on push/PR
-tests/                        928 offline tests + tests/worker_smoke.mjs (Node)
-docs/                         architecture, configuration, schema, NLP, relay, operations
+  ci.yml                      python, worker and web jobs on push/PR
+  pages_deploy.yml            verify, then upload web/ to Cloudflare Pages on main
+tests/                        928 offline tests, worker_smoke.mjs (32), web_smoke.mjs (24)
+                              and helpers/fake_neo4j.mjs, the stub both suites share
+docs/                         architecture, configuration, schema, NLP, relay, console,
+                              operations
 ```
 
 ---
@@ -528,7 +611,8 @@ docs/                         architecture, configuration, schema, NLP, relay, o
 * [docs/configuration.md](docs/configuration.md) — every setting, env var and YAML key
 * [docs/graph-schema.md](docs/graph-schema.md) — nodes, relationships, Cypher templates
 * [docs/nlp-pipeline.md](docs/nlp-pipeline.md) — extraction stages, rules, degradation
-* [docs/edge-relay.md](docs/edge-relay.md) — `worker.js` HTTP contract and deployment
+* [docs/edge-relay.md](docs/edge-relay.md) — `worker.js` HTTP contract, graph read API, deployment
+* [docs/web-console.md](docs/web-console.md) — the analyst console: UI, deep links, hardening, Pages
 * [docs/operations.md](docs/operations.md) — running, monitoring and troubleshooting
 
 ## Licence

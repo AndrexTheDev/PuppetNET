@@ -1,5 +1,5 @@
 /**
- * worker_smoke.mjs — behavioural smoke test for the edge relay.
+ * worker_smoke.mjs — behavioural smoke test for the edge relay and graph API.
  *
  *   node tests/worker_smoke.mjs
  *
@@ -15,11 +15,35 @@
  *     injected at the edge — and those secrets never appear in the response the
  *     harvester receives, which is what keeps a token out of a GitHub Actions log.
  *   * Ordinary websites still get the rotating browser fingerprint.
+ *   * The read-only /graph/* API — what web/ talks to — sends parameterised,
+ *     mutation-free Cypher, clamps every caller-supplied limit, holds the Neo4j
+ *     credentials itself and never returns them.
+ *
+ * The graph half runs against a fake Neo4j (below) that dispatches on the shape
+ * of the statement the Worker emits, so the Cypher contract is asserted rather
+ * than assumed.
  *
  * Exits non-zero on the first failed assertion so CI can gate on it.
  */
 
 import assert from "node:assert/strict";
+
+import {
+  FX,
+  FX_BY_KEY,
+  GRAPH_INDEX,
+  P_KASTELION,
+  O_MERIDIAN,
+  O_SARNEN,
+  F_TALLOW,
+  L_LIMASSOL,
+  A_TAIL,
+  P_UNKNOWN,
+  neo4jCalls,
+  neo4jBehaviour,
+  runStatement,
+  fakeNeo4jTxResponse,
+} from "./helpers/fake_neo4j.mjs";
 
 const worker = (await import("../worker.js")).default;
 
@@ -45,6 +69,34 @@ async function stubFetch(target, init = {}) {
 
   if (url.includes("robots.txt")) {
     return new Response("User-agent: *\nAllow: /\n", { status: 200 });
+  }
+
+  // Neo4j's transactional HTTP endpoint — the only upstream the graph API uses.
+  const parsed = new URL(url);
+  if (/\/db\/[^/]+\/tx\/commit$/.test(parsed.pathname)) {
+    let payload = {};
+    try {
+      payload = JSON.parse(typeof init.body === "string" && init.body ? init.body : "{}");
+    } catch (_) {
+      payload = {};
+    }
+    neo4jCalls.push({
+      url: parsed.toString(),
+      method: String(init.method || "GET").toUpperCase(),
+      headers: init.headers,
+      statements: payload.statements || [],
+      aborted: Boolean(init.signal && init.signal.aborted),
+    });
+    const envelope = (body, status) => new Response(JSON.stringify(body), {
+      status: status || 200,
+      headers: { "content-type": "application/json" },
+    });
+    // Failure injection lives in the shared helper, so the Worker and the console
+    // are tested against exactly the same misbehaving upstream.
+    const out = fakeNeo4jTxResponse(payload.statements || []);
+    return out.text !== undefined
+      ? new Response(out.text, { status: out.status, headers: { "content-type": out.contentType } })
+      : envelope(out.json, out.status);
   }
   // Echo the path only: a realistic upstream would never repeat our credentials,
   // and this keeps the "no secret in the response" assertions about the Worker.
@@ -312,6 +364,677 @@ await check("an unauthenticated caller is refused before any profile runs", asyn
   const res = await relay("/fetch", { url: "https://api.opencorporates.com/v0.4/companies/gb/01234567" }, "wrong-token");
   assert.equal(res.status, 401);
   assert.equal(upstreamCalls.length, 0, "no upstream request may be made for an unauthenticated call");
+});
+
+/* ========================================================================== */
+/*  Graph read API (/graph/*) — the console's server side                      */
+/* ==========================================================================
+ *
+ *  What these checks prove, in the terms the console depends on:
+ *
+ *   * The Worker turns an AuraDB bolt URI into the https transactional endpoint
+ *     and attaches Basic auth itself — the browser never sees a credential, and
+ *     no credential comes back in a response, a log line or a cache write.
+ *   * Every endpoint is read-only, and every value a caller controls travels as a
+ *     query parameter. The one thing that must be interpolated — an ORDER BY
+ *     property, and a traversal bound Cypher cannot parameterise — is checked
+ *     against an allowlist by the *fake server*, so an injection reaches the
+ *     assertions as a failure instead of as a silent no-op.
+ *   * Limits are clamped server-side: a browser asking for 100k nodes or a 99-hop
+ *     walk gets the ceiling, not an error and not a stalled database.
+ *   * Auth has three honest modes (graph token, relay token, opt-in public read)
+ *     and fails closed when none is configured.
+ * ========================================================================== */
+
+const NEO4J = Object.freeze({
+  uri: "neo4j+s://abcd1234.databases.neo4j.io:7687",
+  user: "neo4j",
+  password: "aura-SECRET-do-not-leak",
+  database: "neo4j",
+});
+const GRAPH_TOKEN = "console-token-SECRET-9";
+
+function lastNeo4j() {
+  return neo4jCalls[neo4jCalls.length - 1];
+}
+
+function graphHeader(call, name) {
+  if (!call || !call.headers) return null;
+  if (typeof call.headers.get === "function") return call.headers.get(name);
+  const key = Object.keys(call.headers).find((candidate) => candidate.toLowerCase() === name.toLowerCase());
+  return key ? call.headers[key] : null;
+}
+
+function makeGraphEnv(overrides = {}) {
+  return {
+    ...SECRETS,
+    NEO4J_URI: NEO4J.uri,
+    NEO4J_USERNAME: NEO4J.user,
+    NEO4J_PASSWORD: NEO4J.password,
+    NEO4J_DATABASE: NEO4J.database,
+    GRAPH_API_TOKEN: GRAPH_TOKEN,
+    // Off by default so each check sees a real query; the cache check opts in.
+    GRAPH_CACHE_TTL_SECONDS: "0",
+    // Generous by default so rate limiting is only asserted where it is the point.
+    GRAPH_RATE_PER_SEC: "200",
+    GRAPH_BURST: "200",
+    ...overrides,
+  };
+}
+
+async function graph(path, options = {}) {
+  const env = options.env || makeGraphEnv(options.envOverrides || {});
+  const token = options.token === undefined ? GRAPH_TOKEN : options.token;
+  const request = new Request(`https://relay.example.invalid${path}`, {
+    method: options.method || "GET",
+    headers: token === null ? {} : { authorization: `Bearer ${token}` },
+  });
+  const response = await worker.fetch(request, env, makeCtx());
+  const text = await response.text();
+  let body = null;
+  try {
+    body = JSON.parse(text);
+  } catch (_) {
+    body = null;
+  }
+  return { status: response.status, body, text, headers: response.headers, env };
+}
+
+/** Values a caller controls that must never be interpolated into a statement. */
+const POISON = Object.freeze([
+  "' OR 1=1 //",
+  "}) DETACH DELETE n //",
+  "anomaly_score DESC, e.name",
+  "99; DROP INDEX x",
+  "<script>alert(1)</script>",
+]);
+
+function assertReadOnlyAndParameterised(label) {
+  neo4jCalls.forEach((call) => {
+    call.statements.forEach((item) => {
+      const statement = String(item.statement || "");
+      assert.ok(statement.length > 0, `${label}: empty statement sent`);
+      for (const verb of ["CREATE ", "MERGE ", "DELETE", "DETACH", "REMOVE ", "DROP ", "LOAD CSV", "CALL {", "FOREACH"]) {
+        assert.ok(!statement.toUpperCase().includes(verb.toUpperCase()),
+          `${label}: a read-only API must never emit '${verb.trim()}' — got: ${statement.slice(0, 200)}`);
+      }
+      for (const poison of POISON) {
+        assert.ok(!statement.includes(poison), `${label}: caller text was interpolated into Cypher: ${poison}`);
+      }
+      // Parameters are the only channel for caller data: every `$name` the
+      // statement references must be bound in the parameters map. (A statement
+      // that references none — the count queries behind /graph/health — needs no
+      // map at all, which is why this is not a blanket "must be an object".)
+      const referenced = new Set();
+      for (const match of statement.matchAll(/\$([A-Za-z_]\w*)/g)) referenced.add(match[1]);
+      if (referenced.size) {
+        assert.equal(typeof item.parameters, "object",
+          `${label}: statement binds $${[...referenced].join(", $")} but sent no parameters map`);
+        for (const name of referenced) {
+          assert.ok(Object.prototype.hasOwnProperty.call(item.parameters, name),
+            `${label}: statement references $${name} but it is not bound`);
+        }
+      }
+    });
+  });
+}
+
+function assertNoGraphSecrets(text, label) {
+  assert.ok(!text.includes(NEO4J.password), `${label}: NEO4J_PASSWORD leaked into the response`);
+  assert.ok(!text.includes(GRAPH_TOKEN), `${label}: GRAPH_API_TOKEN leaked into the response`);
+  assert.ok(!text.includes("7687"), `${label}: the bolt port leaked — the URI should be reduced to a host`);
+  const basic = `Basic ${Buffer.from(`${NEO4J.user}:${NEO4J.password}`).toString("base64")}`;
+  assert.ok(!text.includes(basic), `${label}: the Basic auth header leaked into the response`);
+  assert.ok(!text.includes(`${NEO4J.user}:${NEO4J.password}`), `${label}: credentials leaked into the response`);
+}
+
+// --- G1. /graph/health: public, informative, credential-free ----------------
+await check("/graph/health rewrites the bolt URI, authenticates, and leaks nothing", async () => {
+  neo4jCalls.length = 0;
+  const res = await graph("/graph/health", { token: null });
+
+  assert.equal(res.status, 200, res.text.slice(0, 400));
+  assert.equal(res.body.ok, true, "a configured database must report ok");
+  assert.equal(res.body.graph.configured, true);
+  // The AuraDB bolt URI becomes the https transactional endpoint at the same host.
+  assert.equal(res.body.graph.host, "abcd1234.databases.neo4j.io", "only the host may be reported");
+  assert.equal(res.body.graph.database, "neo4j");
+  assert.equal(res.body.graph.public_read, false);
+  assert.equal(res.body.graph.counts.nodes, FX.nodes.length);
+  assert.equal(res.body.graph.counts.edges, FX.edges.length);
+  assert.equal(res.body.graph.counts.fulltext, true, "the full-text index must be detected");
+  assert.ok(res.body.endpoints.includes("/graph/neighbors"));
+
+  const call = lastNeo4j();
+  assert.equal(call.url, `https://abcd1234.databases.neo4j.io/db/${NEO4J.database}/tx/commit`,
+    "bolt+7687 must become https+443 at the transactional endpoint");
+  assert.equal(call.method, "POST");
+  const auth = graphHeader(call, "authorization");
+  assert.ok(auth && auth.startsWith("Basic "), "the Worker must attach Basic auth itself");
+  assert.equal(Buffer.from(auth.slice(6), "base64").toString("utf8"), `${NEO4J.user}:${NEO4J.password}`);
+  assert.equal(graphHeader(call, "content-type"), "application/json");
+  assert.ok(call.statements.some((item) => item.statement.includes("db.indexes()")));
+
+  assertNoGraphSecrets(res.text, "/graph/health");
+  assertReadOnlyAndParameterised("/graph/health");
+});
+
+// --- G2. /graph/overview: shaping, ceilings and the ORDER BY allowlist ------
+await check("/graph/overview returns the console's node/edge shapes under a ceiling", async () => {
+  neo4jCalls.length = 0;
+  const res = await graph("/graph/overview?limit=4&metric=betweenness");
+
+  assert.equal(res.status, 200, res.text.slice(0, 400));
+  assert.equal(res.body.ok, true);
+  assert.equal(res.body.subject, "overview");
+  assert.equal(res.body.metric, "betweenness");
+  assert.equal(res.body.nodes.length, 4, "the limit must be honoured");
+  assert.equal(res.body.truncated, true, "6 entities with a limit of 4 is a truncated view");
+  assert.equal(res.body.caps.nodes, FX.nodes.length);
+  assert.equal(res.body.caps.edges, FX.edges.length);
+  assert.equal(res.body.metrics_at, "2026-09-27T04:30:00Z");
+
+  const scores = res.body.nodes.map((node) => node.betweenness);
+  assert.deepEqual(scores, scores.slice().sort((a, b) => b - a), "nodes must arrive ranked by the requested metric");
+
+  // The node shape is what app.js normalises; a rename here breaks the console.
+  const top = res.body.nodes[0];
+  for (const field of ["key", "name", "entity_type", "labels", "confidence", "mention_count", "degree",
+    "betweenness", "anomaly_score", "cluster_id", "first_seen", "last_seen", "metrics_at", "aliases",
+    "source_ids", "doc_ids", "props"]) {
+    assert.ok(field in top, `overview node is missing '${field}'`);
+  }
+  assert.equal(top.key, L_LIMASSOL, "Limassol is the highest-betweenness fixture node");
+  assert.deepEqual(top.labels, ["Entity", "Location"]);
+  assert.equal(top.props.jurisdiction, "CY", "identifier properties must be carried in props");
+
+  // Edges are the ones induced by the returned page — no dangling endpoints.
+  const keys = new Set(res.body.nodes.map((node) => node.key));
+  assert.ok(res.body.edges.length > 0, "the induced edge set must not be empty");
+  res.body.edges.forEach((edge) => {
+    assert.ok(keys.has(edge.source) && keys.has(edge.target),
+      `edge ${edge.id} references a node the payload does not contain`);
+    for (const field of ["id", "source", "target", "type", "weight", "confidence", "method", "evidence"]) {
+      assert.ok(field in edge, `overview edge is missing '${field}'`);
+    }
+  });
+
+  assert.equal(res.headers.get("X-PuppetNET-Cache"), "MISS");
+  assertNoGraphSecrets(res.text, "/graph/overview");
+  assertReadOnlyAndParameterised("/graph/overview");
+});
+
+await check("/graph/overview refuses to interpolate a caller-supplied metric", async () => {
+  neo4jCalls.length = 0;
+  const res = await graph(`/graph/overview?limit=3&metric=${encodeURIComponent("anomaly_score DESC, e.name")}`);
+
+  assert.equal(res.status, 200, res.text.slice(0, 400));
+  // Clamped to the default: the injected fragment is gone, and the fake server
+  // would have raised a syntax error had it reached the statement.
+  assert.equal(res.body.metric, "anomaly_score");
+  const statements = lastNeo4j().statements.map((item) => item.statement).join("\n");
+  assert.ok(statements.includes("ORDER BY coalesce(e.anomaly_score, 0) DESC"), "the allowlisted metric must be used");
+  assert.ok(!statements.includes("anomaly_score DESC, e.name"), "the injected ORDER BY text must not survive");
+
+  // A metric that exists but is not sortable is clamped too.
+  neo4jCalls.length = 0;
+  const second = await graph("/graph/overview?limit=2&metric=password");
+  assert.equal(second.body.metric, "anomaly_score");
+  assertReadOnlyAndParameterised("/graph/overview metric clamp");
+});
+
+await check("/graph/overview clamps an absurd limit to the configured ceiling", async () => {
+  neo4jCalls.length = 0;
+  const res = await graph("/graph/overview?limit=999999");
+  assert.equal(res.status, 200, res.text.slice(0, 400));
+  const limit = lastNeo4j().statements[0].parameters.limit;
+  assert.ok(limit <= 1200, `limit must be clamped to the ceiling, got ${limit}`);
+  assert.equal(res.body.nodes.length, FX.nodes.length, "the fixture only has 6 entities");
+
+  neo4jCalls.length = 0;
+  const negative = await graph("/graph/overview?limit=-5");
+  assert.ok(negative.body.nodes.length >= 1, "a negative limit must clamp up to 1, not to nothing");
+});
+
+// --- G3. /graph/search: index first, scan as fallback -----------------------
+await check("/graph/search uses the full-text index when it is online", async () => {
+  neo4jCalls.length = 0;
+  const res = await graph("/graph/search?q=kastelion&limit=5");
+
+  assert.equal(res.status, 200, res.text.slice(0, 400));
+  assert.equal(res.body.method, "fulltext");
+  assert.ok(res.body.nodes.length >= 1, "the fixture contains 'Kastelion'");
+  assert.equal(res.body.nodes[0].key, P_KASTELION);
+  assert.ok(res.body.nodes[0].match_score > 0, "a full-text hit must carry a score");
+
+  const statement = lastNeo4j().statements[0].statement;
+  assert.ok(statement.includes("db.index.fulltext.queryNodes($index, $ftq)"), "the index name and query must be parameters");
+  assert.equal(lastNeo4j().statements[0].parameters.index, GRAPH_INDEX);
+  assert.equal(lastNeo4j().statements[0].parameters.ftq, "kastelion*", "the query is reduced to Lucene-safe prefix tokens");
+  assertNoGraphSecrets(res.text, "/graph/search");
+  assertReadOnlyAndParameterised("/graph/search");
+});
+
+await check("/graph/search falls back to a deterministic scan when the index is gone", async () => {
+  neo4jBehaviour.noFulltextIndex = true;
+  try {
+    neo4jCalls.length = 0;
+    const res = await graph("/graph/search?q=meridian&limit=5");
+    assert.equal(res.status, 200, res.text.slice(0, 400));
+    assert.equal(res.body.method, "scan", "a missing index must degrade, not fail");
+    assert.equal(res.body.nodes[0].key, O_MERIDIAN);
+    assert.equal(res.body.nodes[0].match_score, 70, "'meridian' is a name prefix, so STARTS WITH scores 70");
+
+    // A mid-name hit is weaker than a prefix: the ranking an analyst expects.
+    neo4jCalls.length = 0;
+    const contains = await graph("/graph/search?q=holdings");
+    assert.equal(contains.body.nodes[0].key, O_MERIDIAN);
+    assert.equal(contains.body.nodes[0].match_score, 50, "a CONTAINS hit scores 50 in the scan");
+
+    // Exact identifiers outrank a name substring — that ordering is what makes
+    // a pasted IMO or tail number land on the right entity.
+    neo4jCalls.length = 0;
+    const byTail = await graph("/graph/search?q=9H-KAST");
+    assert.equal(byTail.body.nodes[0].key, A_TAIL);
+    assert.equal(byTail.body.nodes[0].match_score, 95);
+
+    // An empty query is not an error and costs the database nothing.
+    neo4jCalls.length = 0;
+    const empty = await graph("/graph/search?q=");
+    assert.equal(empty.body.method, "empty");
+    assert.equal(empty.body.nodes.length, 0);
+    assert.equal(neo4jCalls.length, 0, "an empty query must not reach Neo4j");
+  } finally {
+    neo4jBehaviour.noFulltextIndex = false;
+  }
+});
+
+// --- G4. /graph/node: inspector payload -------------------------------------
+await check("/graph/node returns the node, its ties, its neighbours and its citations", async () => {
+  neo4jCalls.length = 0;
+  const res = await graph(`/graph/node?key=${encodeURIComponent(O_MERIDIAN)}`);
+
+  assert.equal(res.status, 200, res.text.slice(0, 400));
+  assert.equal(res.body.node.key, O_MERIDIAN);
+  assert.equal(res.body.node.name, "Meridian Holdings Ltd");
+  assert.equal(res.body.node.props.company_number, "HE312345");
+  assert.equal(res.body.node.degree, 3, "Meridian has three incident ties");
+
+  assert.equal(res.body.edges.length, 3);
+  assert.ok(res.body.nodes.some((node) => node.key === P_KASTELION), "neighbours must be named, not just keyed");
+  assert.equal(res.body.citations.length, FX.docs.length);
+  assert.equal(res.body.citations[0].source_name, "OpenCorporates", "a citation must name its source");
+  assert.ok(res.body.citations[0].url.startsWith("https://"), "a citation must be followable");
+
+  assert.equal(lastNeo4j().statements.length, 4, "one round trip for the whole inspector payload");
+  assertNoGraphSecrets(res.text, "/graph/node");
+  assertReadOnlyAndParameterised("/graph/node");
+});
+
+await check("/graph/node 404s on an unknown key and 400s without one", async () => {
+  const missing = await graph(`/graph/node?key=${encodeURIComponent(P_UNKNOWN)}`);
+  assert.equal(missing.status, 404);
+  assert.equal(missing.body.ok, false);
+  assert.equal(missing.body.error.code, "not_found");
+
+  const noKey = await graph("/graph/node");
+  assert.equal(noKey.status, 400);
+  assert.equal(noKey.body.error.code, "bad_request");
+});
+
+// --- G5. /graph/neighbors: the N-degree engine ------------------------------
+await check("/graph/neighbors clamps depth and generates a level-by-level walk", async () => {
+  neo4jCalls.length = 0;
+  const res = await graph(`/graph/neighbors?key=${encodeURIComponent(P_KASTELION)}&depth=99&limit=50`);
+
+  assert.equal(res.status, 200, res.text.slice(0, 400));
+  assert.equal(res.body.depth, 4, "depth is clamped to the 4-hop ceiling");
+  assert.ok(res.body.nodes.some((node) => node.key === A_TAIL), "4 hops from Kastelion reaches the aircraft");
+
+  // The generated statement expands level by level rather than enumerating paths,
+  // which is the difference between O(sum of degrees) and O(paths).
+  const statement = lastNeo4j().statements[0].statement;
+  assert.ok(statement.includes("WITH [root] AS seen0"), "the walk must start from the root list");
+  assert.ok(statement.includes("f3 IS NOT NULL"), "depth 4 must generate four levels");
+  assert.ok(!statement.includes("f4 IS NOT NULL"), "and no more than four");
+  assert.ok(!statement.includes("[*1.."), "a variable-length path pattern would enumerate paths exponentially");
+  assert.ok(statement.includes("CASE WHEN size(frontier0) = 0 THEN [null]"),
+    "an empty frontier must not collapse the query");
+  assertReadOnlyAndParameterised("/graph/neighbors");
+});
+
+await check("/graph/neighbors applies weight and type filters to every hop", async () => {
+  neo4jCalls.length = 0;
+  const strong = await graph(`/graph/neighbors?key=${encodeURIComponent(P_KASTELION)}&depth=2&min_weight=0.8`);
+  assert.equal(strong.status, 200, strong.text.slice(0, 400));
+  // Kastelion →(0.92) Meridian at hop 1, then Meridian →(0.83) Limassol at hop 2:
+  // both ties clear the filter, so Limassol is legitimately in a 2-hop scope.
+  // Sarnen is not — every route to it (0.58 direct, 0.71 via Meridian) is weaker.
+  assert.deepEqual(strong.body.nodes.map((node) => node.key).sort(),
+    [L_LIMASSOL, O_MERIDIAN, P_KASTELION].sort(),
+    "the walk may only cross ties at or above min_weight");
+  assert.ok(!strong.body.nodes.some((node) => node.key === O_SARNEN), "Sarnen is only reachable over weak ties");
+  assert.ok(!strong.body.nodes.some((node) => node.key === A_TAIL), "and the aircraft is further out still");
+
+  // The filter governs *traversal*, not *display*: every tie between in-scope
+  // nodes comes back, including the 0.6 LOCATED_IN that was not walked. Hiding
+  // weak ties is the console's own filter panel, so returning them keeps the two
+  // independent instead of double-filtering.
+  assert.deepEqual(strong.body.edges.map((edge) => edge.id).sort(), ["9001", "9004", "9005"],
+    "the induced edge set covers every tie between in-scope nodes");
+  assert.deepEqual(strong.body.filters, { min_weight: 0.8, types: [] });
+
+  neo4jCalls.length = 0;
+  const typed = await graph(`/graph/neighbors?key=${encodeURIComponent(P_KASTELION)}&depth=2&types=OWNS,CONTROLS`);
+  assert.deepEqual(typed.body.filters.types, ["OWNS", "CONTROLS"]);
+  assert.ok(typed.body.nodes.some((node) => node.key === O_SARNEN), "the CONTROLS tie reaches Sarnen");
+  assert.ok(!typed.body.nodes.some((node) => node.key === L_LIMASSOL), "LOCATED_IN was filtered out");
+  assert.equal(lastNeo4j().statements[0].parameters.types.join(","), "OWNS,CONTROLS");
+
+  // An unknown type is dropped rather than passed through to Cypher.
+  neo4jCalls.length = 0;
+  const bogus = await graph(`/graph/neighbors?key=${encodeURIComponent(P_KASTELION)}&types=OWNS,HACKS`);
+  assert.deepEqual(bogus.body.filters.types, ["OWNS"], "types outside the relation vocabulary must be ignored");
+});
+
+await check("/graph/neighbors returns a filtered-out node itself rather than nothing", async () => {
+  // Tallow Creek has one tie, weaker than the filter. A naive `UNWIND []` walk
+  // would collapse the whole query and 404 on a node that plainly exists.
+  const res = await graph(`/graph/neighbors?key=${encodeURIComponent(F_TALLOW)}&depth=2&min_weight=0.95`);
+  assert.equal(res.status, 200, res.text.slice(0, 400));
+  assert.equal(res.body.nodes.length, 1, "the root is always in its own neighbourhood");
+  assert.equal(res.body.nodes[0].key, F_TALLOW);
+  assert.equal(res.body.edges.length, 0, "and no tie survives the filter");
+  assert.equal(res.body.nodes[0].degree, 1, "degree counts every tie, filtered or not");
+});
+
+// --- G6. /graph/path: shortest chain and handshake --------------------------
+await check("/graph/path finds the shortest chain between two entities", async () => {
+  neo4jCalls.length = 0;
+  const res = await graph(`/graph/path?from=${encodeURIComponent(P_KASTELION)}&to=${encodeURIComponent(A_TAIL)}`);
+
+  assert.equal(res.status, 200, res.text.slice(0, 400));
+  assert.equal(res.body.found, true);
+  // The fixture gives Kastelion a direct CONTROLS tie to the shell, so the
+  // shortest handshake is person → shell → aircraft (2 hops), not the 3-hop
+  // route through the holding company. A path engine that returned the longer
+  // chain would be quietly wrong in the one place an analyst looks hardest.
+  assert.equal(res.body.hops, 2);
+  assert.deepEqual(res.body.nodeKeys, [P_KASTELION, O_SARNEN, A_TAIL],
+    "the handshake chain is person → shell → aircraft");
+  assert.equal(res.body.edges.length, 2);
+  assert.deepEqual(res.body.edges.map((edge) => edge.type), ["CONTROLS", "REGISTERED_TO"]);
+  assert.equal(res.body.nodes[1].name, "Sarnen Offshore Services SA", "chain nodes arrive named");
+  assert.ok(res.body.meanWeight > 0 && res.body.minWeight > 0, "the chain must carry its tie strengths");
+  assert.ok(Array.isArray(res.body.alternatives), "alternatives are always an array");
+  assert.equal(res.body.bounded, false, "hop-count shortest paths are exact, not bounded");
+  assert.ok(lastNeo4j().statements[0].statement.includes("shortestPath"));
+  assertNoGraphSecrets(res.text, "/graph/path");
+  assertReadOnlyAndParameterised("/graph/path");
+});
+
+await check("/graph/path reports an unreachable pair instead of failing", async () => {
+  const res = await graph(`/graph/path?from=${encodeURIComponent(P_KASTELION)}&to=${encodeURIComponent(P_UNKNOWN)}`);
+  assert.equal(res.status, 200, res.text.slice(0, 400));
+  assert.equal(res.body.found, false);
+  assert.equal(res.body.reason, "unreachable");
+  assert.equal(res.body.nodes.length, 0);
+
+  const same = await graph(`/graph/path?from=${encodeURIComponent(P_KASTELION)}&to=${encodeURIComponent(P_KASTELION)}`);
+  assert.equal(same.status, 400, "a path from a node to itself is a caller error");
+
+  const missing = await graph(`/graph/path?from=${encodeURIComponent(P_KASTELION)}`);
+  assert.equal(missing.status, 400);
+});
+
+await check("/graph/path bounds the weighted cost search and clamps its inputs", async () => {
+  neo4jCalls.length = 0;
+  const weighted = await graph(
+    `/graph/path?from=${encodeURIComponent(P_KASTELION)}&to=${encodeURIComponent(A_TAIL)}&cost=inverse-weight&max_hops=12`
+  );
+  assert.equal(weighted.status, 200, weighted.text.slice(0, 400));
+  assert.equal(weighted.body.cost_function, "inverse-weight");
+  assert.equal(weighted.body.bounded, true, "weighted enumeration is an approximation and must say so");
+  const enumeration = lastNeo4j().statements[1];
+  assert.ok(enumeration, "a weighted request needs a second statement");
+  assert.ok(enumeration.statement.includes("1.05 - coalesce(r.weight, 0)"), "cost is inverse tie weight");
+  assert.ok(/\[\*1\.\.4\]/.test(enumeration.statement), "weighted enumeration is capped at 4 hops");
+  assert.ok(enumeration.statement.includes("LIMIT $enumCap"), "and capped again by how many paths are produced");
+  assert.equal(enumeration.parameters.enumCap, 20000);
+
+  // Hostile inputs are clamped to the defaults, not echoed back.
+  neo4jCalls.length = 0;
+  const hostile = await graph(
+    `/graph/path?from=${encodeURIComponent(P_KASTELION)}&to=${encodeURIComponent(A_TAIL)}` +
+    `&cost=${encodeURIComponent("<script>alert(1)</script>")}&direction=${encodeURIComponent("sideways")}&max_hops=99`
+  );
+  assert.equal(hostile.body.cost_function, "hops");
+  assert.equal(hostile.body.direction, "undirected");
+  assert.equal(hostile.body.max_hops, 12, "hops are clamped to the ceiling");
+  assert.ok(/\[\*1\.\.12\]/.test(lastNeo4j().statements[0].statement));
+  assertReadOnlyAndParameterised("/graph/path clamping");
+});
+
+// --- G7. /graph/table: paged metadata --------------------------------------
+await check("/graph/table pages nodes, edges and sources with server-side totals", async () => {
+  const nodes = await graph("/graph/table?subject=nodes&limit=2&skip=1&sort=name&order=asc");
+  assert.equal(nodes.status, 200, nodes.text.slice(0, 400));
+  assert.equal(nodes.body.subject, "nodes");
+  assert.equal(nodes.body.total, FX.nodes.length);
+  assert.equal(nodes.body.rows.length, 2);
+  assert.equal(nodes.body.limit, 2);
+  assert.equal(nodes.body.skip, 1);
+
+  const edges = await graph("/graph/table?subject=edges&min_weight=0.5&sort=weight&order=desc&limit=10");
+  assert.equal(edges.body.subject, "edges");
+  assert.ok(edges.body.rows.every((edge) => edge.weight >= 0.5), "min_weight must be applied server-side");
+  assert.ok(edges.body.total >= edges.body.rows.length);
+  const weights = edges.body.rows.map((edge) => edge.weight);
+  assert.deepEqual(weights, weights.slice().sort((a, b) => b - a), "edges arrive in the requested order");
+
+  const sources = await graph("/graph/table?subject=sources&limit=10");
+  assert.equal(sources.body.subject, "sources");
+  assert.equal(sources.body.rows.length, FX.docs.length);
+  assert.ok(sources.body.rows[0].doc_id, "a source row must be identifiable");
+  assert.ok(sources.body.rows[0].title, "and titled");
+
+  const capped = await graph("/graph/table?subject=nodes&limit=999999");
+  assert.ok(capped.body.limit <= 2000, `table rows must be capped, got ${capped.body.limit}`);
+
+  const unknownSubject = await graph("/graph/table?subject=secrets");
+  assert.equal(unknownSubject.body.subject, "nodes", "an unknown subject falls back to nodes");
+  assertReadOnlyAndParameterised("/graph/table");
+  assertNoGraphSecrets(sources.text, "/graph/table");
+});
+
+// --- G8. Auth, method and configuration ------------------------------------
+await check("the graph API gates itself: token, relay fallback, opt-in public read", async () => {
+  neo4jCalls.length = 0;
+  const anonymous = await graph("/graph/overview?limit=2", { token: null });
+  assert.equal(anonymous.status, 401, "a private graph must require a token");
+  assert.equal(neo4jCalls.length, 0, "an unauthenticated call must never reach the database");
+
+  const wrong = await graph("/graph/overview?limit=2", { token: "not-the-token" });
+  assert.equal(wrong.status, 401);
+  assert.equal(neo4jCalls.length, 0);
+
+  const withGraphToken = await graph("/graph/overview?limit=2", { token: GRAPH_TOKEN });
+  assert.equal(withGraphToken.status, 200);
+  assert.equal(withGraphToken.body.auth_mode, "graph-token");
+
+  const withRelayToken = await graph("/graph/overview?limit=2", { token: SECRETS.PROXY_AUTH_TOKEN });
+  assert.equal(withRelayToken.status, 200, "a single-secret deployment must still work");
+  assert.equal(withRelayToken.body.auth_mode, "relay-token");
+
+  const publicRead = await graph("/graph/overview?limit=2", { envOverrides: { GRAPH_PUBLIC_READ: "true" }, token: null });
+  assert.equal(publicRead.status, 200);
+  assert.equal(publicRead.body.auth_mode, "public");
+
+  const headerToken = await (async () => {
+    const request = new Request("https://relay.example.invalid/graph/overview?limit=2", {
+      headers: { "x-graph-token": GRAPH_TOKEN },
+    });
+    const response = await worker.fetch(request, makeGraphEnv(), makeCtx());
+    return response.status;
+  })();
+  assert.equal(headerToken, 200, "x-graph-token is accepted for a browser that cannot set Authorization");
+});
+
+await check("the graph API is GET-only, rejects unknown routes, and can be switched off", async () => {
+  const posted = await graph("/graph/overview?limit=2", { method: "POST" });
+  assert.equal(posted.status, 405, "a read-only API must not accept writes");
+  assert.equal(posted.body.error.code, "method_not_allowed");
+
+  const unknown = await graph("/graph/drop-everything");
+  assert.equal(unknown.status, 404);
+  assert.ok(unknown.body.error.message.includes("/graph/health"), "the error should point at the route list");
+
+  const disabled = await graph("/graph/overview?limit=2", { envOverrides: { GRAPH_API_ENABLED: "false" } });
+  assert.equal(disabled.status, 403);
+  assert.equal(disabled.body.error.code, "graph_disabled");
+});
+
+await check("an unconfigured database fails closed without touching the network", async () => {
+  neo4jCalls.length = 0;
+  const res = await graph("/graph/overview?limit=2", {
+    envOverrides: { NEO4J_URI: "", NEO4J_PASSWORD: "" },
+  });
+  assert.equal(res.status, 503);
+  assert.equal(res.body.error.code, "neo4j_unconfigured");
+  assert.equal(neo4jCalls.length, 0);
+
+  // A plaintext URI to a remote host is refused: it would put credentials on the wire.
+  neo4jCalls.length = 0;
+  const plaintext = await graph("/graph/overview?limit=2", {
+    envOverrides: { NEO4J_URI: "http://neo4j.example.invalid:7474" },
+  });
+  assert.equal(plaintext.status, 503);
+  assert.equal(neo4jCalls.length, 0, "plaintext to a remote database must not be dialled");
+
+  // /graph/health stays public and says so.
+  const health = await graph("/graph/health", { envOverrides: { NEO4J_URI: "" }, token: null });
+  assert.equal(health.status, 200);
+  assert.equal(health.body.ok, false);
+  assert.equal(health.body.graph.configured, false);
+});
+
+// --- G9. Upstream failure mapping ------------------------------------------
+await check("Neo4j failures map to honest HTTP statuses without leaking detail", async () => {
+  neo4jBehaviour.unauthorized = true;
+  try {
+    const res = await graph("/graph/overview?limit=2");
+    assert.equal(res.status, 503, "bad database credentials are a service problem, not a client one");
+    assert.equal(res.body.error.code, "neo4j_error");
+    assert.equal(res.body.error.neo4j_code, "Neo.ClientError.Security.Unauthorized");
+    assertNoGraphSecrets(res.text, "neo4j unauthorized");
+  } finally {
+    neo4jBehaviour.unauthorized = false;
+  }
+
+  neo4jBehaviour.error = { message: "Invalid input 'DELETE': expected a read-only statement" };
+  try {
+    const res = await graph("/graph/overview?limit=2");
+    assert.equal(res.status, 502);
+    assert.equal(res.body.ok, false);
+    assert.ok(res.body.error.message.includes("read-only"));
+  } finally {
+    neo4jBehaviour.error = null;
+  }
+
+  neo4jBehaviour.rawText = "<html>502 Bad Gateway</html>";
+  try {
+    const res = await graph("/graph/overview?limit=2");
+    assert.equal(res.status, 502);
+    assert.equal(res.body.error.code, "bad_gateway");
+    assert.ok(res.body.error.message.includes("non-JSON"), "an HTML error page must be reported as such");
+  } finally {
+    neo4jBehaviour.rawText = null;
+  }
+});
+
+// --- G10. Rate limiting and caching ----------------------------------------
+await check("graph queries share a token bucket, so a burst cannot stall the database", async () => {
+  const env = makeGraphEnv({ GRAPH_RATE_PER_SEC: "0.01", GRAPH_BURST: "2" });
+  neo4jCalls.length = 0;
+
+  const first = await graph("/graph/overview?limit=1", { env });
+  const second = await graph("/graph/overview?limit=2", { env });
+  const third = await graph("/graph/overview?limit=3", { env });
+
+  assert.equal(first.status, 200);
+  assert.equal(second.status, 200);
+  assert.equal(third.status, 429, "burst=2 must refuse the third call");
+  assert.equal(third.body.error.code, "graph_rate_limited");
+  assert.ok(third.body.error.retry_after >= 1, "a 429 must tell the console when to retry");
+  assert.equal(neo4jCalls.length, 2, "a refused call must not reach the database");
+});
+
+// The graph bucket lives in the isolate, keyed `graph:neo4j`, and is shared by
+// every env the checks build — the previous check drained it at 0.01 req/s. At
+// the default 200 req/s a 150 ms pause refills ~30 tokens, which is deterministic
+// enough to assert on without waiting the 100 s that drain would need.
+await sleep(150);
+
+await check("a cached graph response costs one query and stores no credential", async () => {
+  const store = new Map();
+  const kv = {
+    async get(key, type) {
+      const raw = store.get(key);
+      if (!raw) return null;
+      return type === "json" ? JSON.parse(raw) : raw;
+    },
+    async put(key, value) {
+      store.set(key, value);
+    },
+  };
+  const env = makeGraphEnv({ RESULT_KV: kv, GRAPH_CACHE_TTL_SECONDS: "60" });
+  neo4jCalls.length = 0;
+
+  const first = await graph("/graph/overview?limit=3&metric=anomaly_score", { env });
+  assert.equal(first.status, 200);
+  assert.equal(first.headers.get("X-PuppetNET-Cache"), "MISS");
+  assert.equal(neo4jCalls.length, 1);
+
+  const second = await graph("/graph/overview?limit=3&metric=anomaly_score", { env });
+  assert.equal(second.status, 200);
+  assert.equal(second.body.cached, true);
+  assert.equal(second.headers.get("X-PuppetNET-Cache"), "HIT");
+  assert.equal(neo4jCalls.length, 1, "a cache hit must not query the database again");
+  assert.deepEqual(second.body.nodes.map((node) => node.key), first.body.nodes.map((node) => node.key));
+
+  // A different query is a different cache entry.
+  const third = await graph("/graph/overview?limit=4&metric=anomaly_score", { env });
+  assert.equal(third.body.cached, undefined);
+  assert.equal(neo4jCalls.length, 2);
+
+  for (const value of store.values()) {
+    assert.ok(!value.includes(NEO4J.password), "a cached payload must never contain the database password");
+    assert.ok(!value.includes(GRAPH_TOKEN), "a cached payload must never contain a bearer token");
+  }
+});
+
+// --- G11. Response ceiling --------------------------------------------------
+await check("an oversized graph response is refused rather than shipped", async () => {
+  const res = await graph("/graph/overview?limit=6", { envOverrides: { GRAPH_MAX_RESPONSE_BYTES: "512" } });
+  assert.equal(res.status, 502);
+  assert.equal(res.body.error.code, "response_too_large");
+  assert.ok(res.body.error.bytes > 512, "the error should report how big the payload was");
+});
+
+// --- G12. The console's contract with the relay's /health -------------------
+await check("/health advertises the graph API without exposing it", async () => {
+  const res = await relay("/health");
+  assert.equal(res.status, 200, res.text.slice(0, 300));
+  assert.equal(res.body.bindings.graph_api, false, "the relay env has no NEO4J_* secrets, so the graph API is off");
+  assert.equal(res.body.bindings.graph_token, false);
+  assert.equal(res.body.graph_api, "/graph/health");
+  assert.equal(res.body.version, "1.6.0");
+  assertNoSecrets(res.text, "/health");
+
+  const configured = await graph("/health", { token: null });
+  assert.equal(configured.body.bindings.graph_api, true, "with NEO4J_* set, /health reports the graph API available");
+  assert.equal(configured.body.bindings.graph_token, true);
+  assertNoGraphSecrets(configured.text, "/health with graph secrets");
 });
 
 console.log(`\nworker.js smoke test: ${checks} checks passed`);
