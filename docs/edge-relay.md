@@ -379,6 +379,34 @@ free-tier CPU and KV quotas across all hosts.
 host + user-agent. `Crawl-delay` tightens the host bucket. A disallowed path is refused
 with `403 robots_disallowed` *before* any egress.
 
+### Free-tier KV budget
+
+Workers KV Free allows **100 000 reads and 1 000 writes per day**, and writes are the scarce
+resource — the scheduled cadence is built around that number.
+
+The relay therefore only touches KV when there is something to coordinate. A host that
+receives fewer than two requests inside one `KV_SYNC_INTERVAL_MS` window is *cold*: no
+bucket read, no bucket write, and no `robots.txt` cache entry. A host that is requested
+again in the window is *hot* and costs at most one read plus one write per window; a host
+that exhausted its budget publishes that immediately. The deferred-queue path writes one
+`RESULT_KV` entry per *deferred task*, which only happens for hot hosts.
+
+Why this matters here: an hourly news run fetches every article from its own host, so it
+touches hundreds of hosts with one request each, 24 times a day.
+
+| Shape | KV ops if every host is synced | KV ops with the hot-host rule |
+| --- | --- | --- |
+| One hourly run, ~400 article hosts, no host requested twice | ~400 writes (+ robots writes per host) | **0 writes**, 400 robots reads |
+| The same host across a 15-minute run | up to ~45 writes (one per window) | ≤ 45 writes, same |
+| A day of hourly runs (24) | ≫ 1 000 writes — the quota is gone before noon | bounded by the few hosts that are actually hot |
+
+Losing the quota would not cost money (KV writes simply fail, and the relay catches the
+error), but the fleet would lose its shared rate limits and its robots cache — i.e. it would
+become less polite, which is the whole point of the relay. `[cost] worker/kvWritePerRequest`
+in [`scripts/audit.mjs`](../scripts/audit.mjs) fails the build if a write ever returns to the
+per-request path, and the smoke suite asserts the behaviour (a cold host costs one robots
+read and nothing else; six requests inside one window cost at most one write).
+
 The evaluator follows the specification's own vocabulary: group selection is by
 user-agent substring (a group written for another crawler does not apply, and `*` is the
 fallback), `*` matches any run of characters, a trailing `$` anchors the end of the path,

@@ -884,6 +884,10 @@ class IngestStats:
     relations_extracted: int = 0
     relations_written: int = 0
     relations_dropped_low_confidence: int = 0
+    #: Entities refused by the writer because their name has no usable form — an
+    #: empty or punctuation-only name would collapse every such mention into one
+    #: junk node per type ("ORGANIZATION:unknown-…").
+    entities_dropped_unnamed: int = 0
     dependency_triples: int = 0
     cooccurrence_triples: int = 0
     craft_entities: int = 0

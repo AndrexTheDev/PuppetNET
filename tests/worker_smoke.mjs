@@ -1266,4 +1266,76 @@ await check("the robots evaluator honours the rules, not the longest line of the
   assert.equal(robotsFetches.length, 0, "with respect_robots off there is no robots request");
 });
 
+// --- G16. Workers KV Free allows 1k writes/day: only hot hosts may spend them ---
+await check("KV writes go to hot hosts only, so an hourly news run cannot drain the free quota", async () => {
+  // The relay is expected to be *polite* rather than to coordinate: a host that
+  // receives one request in a sync window has no shared budget to defend, and a
+  // KV read or write for it is pure quota spend. Before this rule, every served
+  // request wrote its bucket (`acquireHostToken`'s fire-and-forget put) and the
+  // robots cache wrote once per host per TTL — with ~400 article hosts per hourly
+  // run that spent the day's 1k writes in one run.
+  const ops = { reads: 0, writes: 0, keys: [] };
+  const store = new Map();
+  const env = {
+    ...makeEnv(),
+    HOST_RATE_PER_SEC: "50",
+    HOST_BURST: "50",
+    KV_SYNC_INTERVAL_MS: "20000",
+    RATE_LIMIT_KV: {
+      async get(key) {
+        ops.reads += 1;
+        ops.keys.push(`get:${key}`);
+        return store.has(key) ? store.get(key) : null;
+      },
+      async put(key, value) {
+        ops.writes += 1;
+        ops.keys.push(`put:${key}`);
+        store.set(key, value);
+      },
+    },
+  };
+
+  // One request to a cold article host: nothing about it is worth a KV op.
+  const cold = await relay("/fetch", { url: "https://cold.example/story-1", respect_robots: true }, SECRETS.PROXY_AUTH_TOKEN, env);
+  assert.equal(cold.status, 200, `the fetch itself must still work: ${cold.text.slice(0, 160)}`);
+  assert.equal(ops.writes, 0, `a cold host must not write KV: ${ops.keys.join(",")}`);
+  assert.equal(
+    ops.keys.filter((entry) => entry.startsWith("get:rl:")).length,
+    0,
+    `a cold host must not read a rate-limit bucket: ${ops.keys.join(",")}`
+  );
+  // A robots.txt read is allowed and wanted: it is 100× cheaper than a write and a
+  // hit saves the origin a request.
+  assert.equal(ops.reads, 1, `one robots lookup, nothing else: ${ops.keys.join(",")}`);
+
+  // A second request to the same host inside the same window makes it hot: now
+  // the fleet-wide view matters and one read + one write are justified.
+  const hot = await relay("/fetch", { url: "https://cold.example/story-2", respect_robots: true }, SECRETS.PROXY_AUTH_TOKEN, env);
+  assert.equal(hot.status, 200);
+  assert.ok(ops.writes >= 1, "a hot host publishes its bucket");
+  assert.ok(ops.reads >= 1, "and inherits the fleet's view before spending");
+  const bucketWrites = ops.keys.filter((entry) => entry.startsWith("put:rl:cold.example")).length;
+  assert.equal(bucketWrites, 1, "at most one bucket write per host per sync window");
+
+  // The robots.txt cache follows the same rule: a host fetched once does not get
+  // a cache entry, a host fetched twice does.
+  assert.ok(
+    ops.keys.some((entry) => entry.startsWith("put:robots:")),
+    "the second request is what makes the robots cache worth spending a write on"
+  );
+
+  // …and a hot host is throttled rather than published per request: the sync is
+  // bounded by the window, which is what keeps a run's write count proportional to
+  // its *duration* and not to its document count.
+  const before = ops.writes;
+  for (let index = 0; index < 6; index += 1) {
+    const burst = await relay("/fetch", { url: `https://cold.example/story-${index + 3}`, respect_robots: true }, SECRETS.PROXY_AUTH_TOKEN, env);
+    assert.equal(burst.status, 200, "the burst is served, not refused");
+  }
+  assert.ok(
+    ops.writes - before <= 1,
+    `six requests inside one window must cost at most one write, cost ${ops.writes - before}`
+  );
+});
+
 console.log(`\nworker.js smoke test: ${checks} checks passed`);

@@ -26,6 +26,7 @@ from ..models import (
     SourceSpec,
     is_safe_relationship_type,
     iso,
+    normalize_name,
     relation_evidence_is_new,
     utcnow,
 )
@@ -51,6 +52,9 @@ class WriteSummary:
     #: Entity nodes refused by the AuraDB Free node budget (and the edges that
     #: would have pointed at them).
     entities_capped: int = 0
+    #: Entities refused because their name has no comparison form (see
+    #: ``GraphWriter._drop_unnamed``).
+    entities_dropped_unnamed: int = 0
     relations_capped: int = 0
     relations_by_type: dict[str, int] = field(default_factory=dict)
     entities_by_type: dict[str, int] = field(default_factory=dict)
@@ -133,6 +137,7 @@ class GraphWriter:
             "relations_written": stats.relations_written,
             "relations_dropped_low_confidence": stats.relations_dropped_low_confidence,
             "entities_capped_node_budget": self.summary.entities_capped,
+            "entities_dropped_unnamed": self.summary.entities_dropped_unnamed,
             "relations_capped_node_budget": self.summary.relations_capped,
             "dependency_triples": stats.dependency_triples,
             "cooccurrence_triples": stats.cooccurrence_triples,
@@ -298,6 +303,39 @@ class GraphWriter:
         )
         return existing + admitted
 
+    def _drop_unnamed(self, entities: list[Entity]) -> list[Entity]:
+        """Refuse entities whose name has no comparison form.
+
+        ``normalize_name`` strips punctuation, accents and legal suffixes, so a
+        name that leaves nothing behind — ``""``, ``"   "``, ``"!!!"``, ``"()"`` —
+        has no identity to key on: every such mention would MERGE into the single
+        node ``TYPE:unknown-<digest>`` and accumulate mentions, aliases and
+        confidence from unrelated documents. The NLP layer already refuses spans
+        shorter than two characters, so this catches what structured adapters can
+        still hand over (a registry row with an empty name field) and keeps a
+        missing upstream check from becoming a wrong graph fact.
+
+        Counterpart to ``relations_dropped_low_confidence``: the run report says
+        what was refused, so a silent zero is distinguishable from a silent drop.
+
+        The filter runs *before* the resolver and the merge, because two unnamed
+        entities share the key ``TYPE:unknown-<digest>`` — merging them first would
+        hide one of the two refusals and, worse, hand the resolver a key it would
+        have kept.
+        """
+        kept: list[Entity] = []
+        for entity in entities:
+            if normalize_name(entity.name, entity.entity_type):
+                kept.append(entity)
+                continue
+            self.stats.entities_dropped_unnamed += 1
+            self.summary.entities_dropped_unnamed += 1
+            logger.warning(
+                "dropping entity with no usable name (type=%s, key=%s, mentions=%d)",
+                entity.entity_type.value, entity.canonical_key, entity.mention_count,
+            )
+        return kept
+
     def _mark_new_entity_evidence(self, rows: list[dict[str, Any]]) -> None:
         """Set ``row["is_new"]`` per entity row from what the graph already holds.
 
@@ -332,10 +370,15 @@ class GraphWriter:
         """Resolve, group by type and upsert entities. Returns (rows, resolved)."""
         if not entities:
             return 0, []
+        # Before anything keys on them: an unnamed entity must not enter the
+        # resolver, the alias index or the merge (see _drop_unnamed).
+        usable = self._drop_unnamed(list(entities))
+        if not usable:
+            return 0, []
         if not self.resolver.loaded:
             self.resolver.load(self.client)
-        key_map = self.resolver.resolve_batch(entities)
-        resolved = merge_entities_by_key(entities, key_map)
+        key_map = self.resolver.resolve_batch(usable)
+        resolved = merge_entities_by_key(usable, key_map)
         resolved = self._apply_node_cap(resolved)
         if not resolved:
             return 0, []

@@ -848,6 +848,25 @@ function auditWorker() {
     finding("worker/failClosed", "security", "medium", file, "graph auth",
       "no explicit public-read switch found", "Require a token unless explicitly opened.");
   }
+  // Workers KV Free allows 1k writes/day. A KV write on the request path spends
+  // that budget per document, and the scheduled cadence (24 hourly runs with
+  // hundreds of article hosts each) would drain it before noon — after which the
+  // fleet silently loses its shared rate limits and its robots.txt cache. Bucket
+  // writes belong to the throttled sync (one per hot host per sync window).
+  {
+    const start = worker.indexOf("async function acquireHostToken(");
+    if (start >= 0) {
+      const end = worker.indexOf("\n}", start);
+      const body = worker.slice(start, end < 0 ? worker.length : end);
+      if (/\.put\(/.test(body)) {
+        finding("worker/kvWritePerRequest", "cost", "high", file, "acquireHostToken",
+          "a KV write sits on the per-request path",
+          "Publish the bucket from the throttled sync (one write per hot host per window), "
+          + "not once per request: KV Free allows 1k writes/day and a single hourly run can "
+          + "exceed that.");
+      }
+    }
+  }
 }
 
 /* ========================================================================== */

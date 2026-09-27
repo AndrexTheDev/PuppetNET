@@ -711,8 +711,8 @@ function injectCredentials(task, url, profile, env) {
 /*  Rate limiting — hybrid in-isolate + KV token bucket                       */
 /* -------------------------------------------------------------------------- */
 
-const localBuckets = new Map(); // host -> { tokens, ts }
-const localSyncState = new Map(); // host -> lastKvSyncMs
+const localBuckets = new Map(); // host -> { tokens, ts, hits, windowStart, synced, denied }
+const localSyncState = new Map(); // host -> { windowStart, lastSync } — legacy view, kept for /stats
 const globalWindow = { minute: 0, count: 0 };
 
 function nowMs() {
@@ -745,19 +745,37 @@ function checkGlobalRate(cfg) {
 }
 
 /**
- * Merge a KV-persisted bucket with the in-isolate bucket.
+ * Merge a KV-persisted bucket with the in-isolate bucket — for *hot* hosts only.
  *
  * KV is eventually consistent and each isolate keeps its own view, so we take
  * the *most conservative* of the two (fewest tokens, oldest timestamp) to keep
- * the fleet's aggregate request rate close to the configured budget. Sync is
- * throttled to one KV read + one write per host per `kvSyncIntervalMs`, which
- * keeps free-tier KV operation counts (100k reads / 1k writes per day) safe.
+ * the fleet's aggregate request rate close to the configured budget.
+ *
+ * The KV namespace is the scarce resource, not the requests: Workers KV Free
+ * allows 100k reads and **1k writes per day**. The relay therefore only involves
+ * KV when there is something to coordinate:
+ *
+ *   * a **cold** host (fewer than two requests in the current
+ *     `kvSyncIntervalMs` window) is skipped entirely — one request cannot exceed
+ *     a shared budget, so a read would teach nothing and a write would publish
+ *     nothing. News harvesting is exactly this shape: hundreds of distinct
+ *     article hosts, one request each, 24 times a day.
+ *   * a **hot** host costs at most one read + one write per window, and a host
+ *     that was rate-limited publishes that immediately (`denied`).
+ *
+ * Before this gate, every served request wrote its bucket
+ * (`acquireHostToken`'s fire-and-forget `put`), plus one write per host per
+ * window here: an hourly run over ~400 article hosts spent the day's write quota
+ * in a single run and left the fleet without shared rate limits for the rest of
+ * the day. See `docs/edge-relay.md` § Free-tier KV budget.
  */
 async function syncBucketWithKv(env, cfg, host, local) {
   if (!env.RATE_LIMIT_KV) return local;
   const key = `rl:${host}`;
-  const last = localSyncState.get(host) || 0;
   const now = nowMs();
+  const hot = local.hits >= 2 || local.denied === true;
+  if (!hot) return local;
+  const last = localSyncState.get(host) || 0;
   if (now - last < cfg.kvSyncIntervalMs) return local;
   localSyncState.set(host, now);
 
@@ -811,9 +829,18 @@ async function acquireHostToken(env, cfg, host, cost, requestedPolicy) {
   const now = nowMs();
   let bucket = localBuckets.get(host);
   if (!bucket) {
-    bucket = { tokens: burst, ts: now };
+    bucket = { tokens: burst, ts: now, hits: 0, windowStart: now, denied: false };
     localBuckets.set(host, bucket);
   }
+  // Requests are counted per sync window: the count is what tells the throttled
+  // KV sync whether this host is worth coordinating at all.
+  if (now - (bucket.windowStart || 0) >= cfg.kvSyncIntervalMs) {
+    bucket.windowStart = now;
+    bucket.hits = 0;
+    bucket.denied = false;
+  }
+  bucket.hits += 1;
+
   refill(bucket, ratePerSec, burst, now);
   bucket = await syncBucketWithKv(env, cfg, host, bucket);
   refill(bucket, ratePerSec, burst, nowMs());
@@ -821,22 +848,22 @@ async function acquireHostToken(env, cfg, host, cost, requestedPolicy) {
   if (bucket.tokens >= cost) {
     bucket.tokens -= cost;
     localBuckets.set(host, bucket);
-    // Fire-and-forget persistence keeps the hot path fast.
-    if (env.RATE_LIMIT_KV) {
-      // `waitUntil` is supplied by the caller through cfg.ctx when available.
-      const persist = env.RATE_LIMIT_KV
-        .put(`rl:${host}`, JSON.stringify({ tokens: bucket.tokens, ts: bucket.ts, rate: ratePerSec, burst, v: WORKER_VERSION }), {
-          expirationTtl: Math.max(120, Math.ceil(3600 / Math.max(0.01, ratePerSec))),
-        })
-        .catch((err) => console.warn(`[ratelimit] KV persist failed: ${err && err.message}`));
-      if (cfg.ctx && typeof cfg.ctx.waitUntil === "function") cfg.ctx.waitUntil(persist);
-    }
+    // No fire-and-forget write here on purpose: publishing the bucket is the
+    // throttled sync's job, which keeps the namespace inside its daily write
+    // quota. The cost is that the last requests of a window are published at the
+    // start of the next one, which the conservative merge absorbs.
     return { allowed: true, remaining: bucket.tokens, retryAfter: 0, policy };
   }
 
   const deficit = cost - bucket.tokens;
   const retryAfter = Math.max(1, Math.ceil(deficit / ratePerSec));
+  // A denial is the one case worth publishing out of turn: every other colo
+  // should stop spending the same host's budget.
+  bucket.denied = true;
   localBuckets.set(host, bucket);
+  if (env.RATE_LIMIT_KV) {
+    syncBucketWithKv(env, cfg, host, bucket).catch(() => {});
+  }
   return { allowed: false, remaining: bucket.tokens, retryAfter, policy };
 }
 
@@ -848,6 +875,7 @@ function rateLimitSnapshot() {
       host,
       tokens: Math.round(bucket.tokens * 1000) / 1000,
       age_ms: now - bucket.ts,
+      window_hits: bucket.hits || 0,
     });
   }
   hosts.sort((a, b) => a.host.localeCompare(b.host));
@@ -984,7 +1012,16 @@ async function checkRobots(env, cfg, url, userAgent, respectRobots) {
       // Fail-open on transient robots errors, but never cache the miss.
       return { allowed: true, crawlDelay: null, source: "fetch-error" };
     }
-    if (env.RATE_LIMIT_KV) {
+    // Cache robots.txt across runs only for hosts we actually revisit (see
+    // syncBucketWithKv): a write per cold article host would spend the KV write
+    // quota on hosts that are fetched once, and the next run simply fetches their
+    // robots.txt again — one polite request per run instead of a quota write.
+    const hostBucket = localBuckets.get(parsed.hostname);
+    // robots.txt is checked *before* the host token is taken, so "this host has
+    // already been requested in this window" is `hits >= 1` here — the same
+    // condition the token path spells `hits >= 2` after incrementing.
+    const revisited = Boolean(hostBucket) && (hostBucket.hits >= 1 || hostBucket.denied === true);
+    if (env.RATE_LIMIT_KV && revisited) {
       env.RATE_LIMIT_KV
         .put(cacheKey, text, { expirationTtl: cfg.robotsTtlSeconds })
         .catch((err) => console.warn(`[robots] KV write failed: ${err && err.message}`));

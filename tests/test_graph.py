@@ -1311,6 +1311,25 @@ def test_persist_summary_is_serialisable(writer):
     assert payload["relations_by_type"] == {}
 
 
+def test_an_entity_without_a_usable_name_is_refused(writer):
+    """An empty or punctuation-only name has no identity to key on: every such
+    mention would MERGE into one junk node per type and collect unrelated
+    aliases, mentions and confidence. The NLP layer refuses spans shorter than two
+    characters, so this catches what a structured adapter can still hand over."""
+    stats = writer.stats
+    unnamed = entity("", EntityType.ORGANIZATION)
+    punctuation = entity("!!!", EntityType.ORGANIZATION)
+    named = entity("Gazprom", EntityType.ORGANIZATION)
+
+    written, resolved = writer.write_entities([unnamed, punctuation, named])
+
+    assert [item.name for item in resolved] == ["Gazprom"], "only the named entity survives"
+    assert written == 1
+    assert stats.entities_dropped_unnamed == 2
+    assert writer.summary.entities_dropped_unnamed == 2, "the run report must say what it refused"
+    assert stats.entities_written == 1
+
+
 def test_the_dedupe_read_is_index_backed():
     """The dedupe index runs on every scheduled run — 24 times a day on the hourly
     tier — so it must not be a full label scan over a graph that only grows.
