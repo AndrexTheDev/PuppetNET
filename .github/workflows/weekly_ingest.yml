@@ -284,6 +284,41 @@ jobs:
       # A weekly run is one shot per week: unlike the hourly runs, a partial
       # failure here is worth failing on, because the next deep run is seven
       # days away. Exit 3 is therefore escalated on the schedule as well.
+
+      # ---------------------------------------------------------------------
+      # Operational warning. A 24-hour schedule that breaks silently is worse
+      # than one that stops: the next run overwrites the log line, and the first
+      # symptom is a graph that quietly stopped growing. Exit 1 (configuration)
+      # and 2 (runtime) mean nothing was written, so the operator hears about it;
+      # exit 3 is per-source and expected, and the daily digest already reports
+      # it. No token configured is a valid deployment (harvest without alerts).
+      # ---------------------------------------------------------------------
+      - name: Warn on a hard failure
+        if: always() && !cancelled() && steps.ingest.outputs.exit_code != '0' && steps.ingest.outputs.exit_code != '3' && steps.ingest.outputs.exit_code != ''
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_IDS: ${{ secrets.TELEGRAM_CHAT_IDS }}
+          INGEST_EXIT: ${{ steps.ingest.outputs.exit_code }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          WORKFLOW_NAME: "Weekly Ingest"
+        run: |
+          if [ -z "$TELEGRAM_BOT_TOKEN" ]; then
+            echo "TELEGRAM_BOT_TOKEN is not set — skipping the failure warning"
+            exit 0
+          fi
+          case "$INGEST_EXIT" in
+            1) reason="configuration error — secrets or config/sources.yaml are invalid";;
+            2) reason="runtime failure — the pipeline aborted before it wrote the graph";;
+            *) reason="unexpected exit";;
+          esac
+          set +e
+          python telegram_bot.py --failure "$reason (exit $INGEST_EXIT)" \
+            --workflow "$WORKFLOW_NAME" --exit-code "$INGEST_EXIT" --run-url "$RUN_URL"
+          # The warning is best effort: a Telegram outage must not turn a failed
+          # harvest into a failed workflow for a *different* reason.
+          echo "warning pass exited with $?"
+          exit 0
+
       - name: Fail on incomplete deep run
         if: always()
         env:

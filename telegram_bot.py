@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import html
 import json
 import logging
@@ -207,9 +208,12 @@ def bullet(label: str, value: Any, *, precision: int | None = None) -> str:
         rendered = "yes" if value else "no"
     elif isinstance(value, (list, tuple)):
         rendered = ", ".join(escape(item) for item in value)
-    elif isinstance(value, str) and value.startswith("<") and value.endswith(">"):
-        rendered = value  # pre-formatted by the caller
     else:
+        # Always escaped, including values that *look* like markup. The previous
+        # version passed anything matching `<…>` through unescaped ("pre-formatted
+        # by the caller"): an entity name or an error message is not a caller, and
+        # `<b>pwned</b>` from a hostile source would have arrived in the channel as
+        # markup. Callers that want a tag build it with `tag()`.
         rendered = escape(value)
     return f"• {escape(label)}: {rendered}"
 
@@ -621,6 +625,66 @@ def format_status_report(outcome_report: Mapping[str, Any]) -> str:
         bullet("Dry run", bool(outcome_report.get("dry_run"))),
     ]
     return compact(lines)
+
+
+def format_failure_alert(
+    message: str,
+    *,
+    workflow: str = "",
+    run_url: str = "",
+    exit_code: Any = None,
+    source: str = "",
+    when: datetime | None = None,
+) -> str:
+    """Compact warning for a *scheduled run* that failed.
+
+    The alert passes below need a maintenance report to say anything; this one
+    exists for the case where no report will ever arrive — the hourly harvest
+    aborted, the credentials expired, the runner could not reach Neo4j. Without
+    it a broken 24-hour schedule is invisible: the next run overwrites the log
+    line nobody reads, and the first symptom is a graph that quietly stopped
+    growing.
+    """
+    # `bullet()` escapes its value; passing a pre-escaped string here escaped it
+    # twice and produced "&amp;lt;" in the channel.
+    lines = [
+        tag("⚠️ PuppetNET run failed"),
+        bullet("What", message.strip()[:400]),
+    ]
+    if workflow:
+        lines.append(bullet("Workflow", workflow))
+    if source:
+        lines.append(bullet("Source", source))
+    if exit_code is not None and str(exit_code) != "":
+        lines.append(bullet("Exit code", str(exit_code)))
+    if run_url and str(run_url).startswith("http"):
+        lines.append(bullet("Run", f'<a href="{escape(run_url)}">open the run log</a>'))
+    lines.append(bullet("Time", iso(when)))
+    return compact(lines)
+
+
+def failure_key(
+    message: str,
+    *,
+    workflow: str = "",
+    source: str = "",
+    exit_code: Any = None,
+) -> str:
+    """Suppression key for a failure alert.
+
+    Deliberately *not* keyed on the wording: the same broken source reports a
+    slightly different error on every run (a timeout for 30 s, then connection
+    refused, then a read timeout), and the operator wants one alert per broken
+    thing — one per 24 h window, see ``AlertLedger.suppression_hours`` — not one
+    per sentence. Identity is ``workflow | source | exit code``; the message only
+    decides the key when all three are empty, which happens on a hand-written
+    dispatch.
+    """
+    identity = f"{workflow}|{source}|{exit_code if exit_code not in (None, '') else ''}"
+    if identity == "||":
+        identity = f"||{message.strip()[:200]}"
+    digest = hashlib.sha1(identity.encode()).hexdigest()[:16]
+    return f"failure:{digest}"
 
 
 # --------------------------------------------------------------------------- #
@@ -1441,6 +1505,12 @@ def build_parser() -> argparse.ArgumentParser:
     passes.add_argument("--bridge", action="store_true", help="push new cluster-bridge alerts only")
     passes.add_argument("--digest", action="store_true", help="send the top-N anomaly digest only")
     passes.add_argument("--test", action="store_true", help="verify the token (getMe) and send a test message")
+    passes.add_argument(
+        "--failure",
+        default="",
+        metavar="TEXT",
+        help="warn about a failed scheduled run (no report needed); suppressed like every other alert",
+    )
 
     sources = parser.add_argument_group("input")
     sources.add_argument("--report", default="", help="maintenance report JSON to alert on")
@@ -1448,6 +1518,10 @@ def build_parser() -> argparse.ArgumentParser:
     sources.add_argument("--top", type=int, default=0, help="digest rows (default: settings or 5)")
     sources.add_argument("--bridge-limit", type=int, default=0, help="max bridge alerts per run")
     sources.add_argument("--window-hours", type=float, default=24.0, help="digest window in hours")
+    sources.add_argument("--workflow", default="", help="workflow name for --failure (e.g. \"Hourly Ingest\")")
+    sources.add_argument("--source", default="", help="source id for --failure, when one source is at fault")
+    sources.add_argument("--exit-code", default="", help="exit code of the failed run, for --failure")
+    sources.add_argument("--run-url", default="", help="link to the failed run, for --failure")
 
     delivery = parser.add_argument_group("delivery")
     delivery.add_argument("--chat-id", default="", help="override TELEGRAM_CHAT_IDS (comma separated)")
@@ -1540,6 +1614,56 @@ def main(argv: Sequence[str] | None = None) -> int:
             window_hours=window_hours,
             force=bool(args.force),
         )
+
+        # --- operational failure warning -------------------------------- #
+        # Placed before the report passes because there may be no report: this is
+        # the pass for the run that died before it wrote one.
+        if args.failure:
+            key = failure_key(
+                args.failure, workflow=args.workflow, source=args.source, exit_code=args.exit_code
+            )
+            text = format_failure_alert(
+                args.failure,
+                workflow=args.workflow,
+                run_url=args.run_url,
+                exit_code=args.exit_code,
+                source=args.source,
+            )
+            run_report = AlertRunReport(
+                run_id=str(getattr(settings, "run_id", "") or f"alerts-{utc_now():%Y%m%dT%H%M%SZ}"),
+                chats=list(chats),
+                dry_run=dry_run,
+                forced=bool(args.force),
+            )
+            if not args.force and ledger.suppressed(key):
+                # One alert per broken thing per suppression window: an hourly cron
+                # would otherwise send the same warning 24 times a day, and a
+                # channel that cries wolf gets muted — including the alert that
+                # matters.
+                logger.info("failure alert suppressed (sent <%.0fh ago): %s", ledger.suppression_hours, key)
+                run_report.bridge_suppressed = 1
+            else:
+                for chat_id in chats:
+                    outcome = sender.send_text(chat_id, text, kind="failure", dedupe_key=key)
+                    run_report.outcomes.append(outcome.to_dict())
+                    if outcome.ok:
+                        run_report.bridge_sent += 1
+                        if not dry_run:
+                            ledger.mark_sent(key)
+                            ledger.bump("failure_alerts_sent")
+                    else:
+                        run_report.failures += 1
+                        ledger.bump("failure_alerts_failed")
+            run_report.sender_stats = dict(sender.stats)
+            run_report.status = (
+                "failed" if run_report.failures else ("partial" if run_report.errors else "completed")
+            )
+            run_report.ledger = ledger.describe()
+            ledger.save()
+            emit_github_output(run_report)
+            print(json.dumps(run_report.to_dict(), indent=2, ensure_ascii=False) if args.json else summarise(run_report))
+            sender.close()
+            return EXIT_OK if run_report.status != "failed" else EXIT_DELIVERY
 
         # --- connectivity check ----------------------------------------- #
         if args.test:

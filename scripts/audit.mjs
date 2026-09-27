@@ -939,6 +939,14 @@ function auditPython() {
       "assert is stripped under python -O", "Validate explicitly on production paths."],
     [/verify\s*=\s*False/g, "high", "python/tlsVerifyOff",
       "TLS verification disabled", "Remove verify=False."],
+    // A renderer that passes a value through because it "looks like markup" is
+    // an injection sink: the check that decides is a property of the *content*,
+    // which the attacker controls, not of the caller. This existed in
+    // `telegram_bot.bullet()` and let `<b>pwned</b>` from any source field reach
+    // the channel as markup.
+    [/startswith\("(<|\\u003c)"\)[^\n]*endswith\(">"\)/g, "high", "python/looksLikeMarkup",
+      "a value is trusted because it looks like markup",
+      "Escape everything and build tags with an explicit helper."],
   ];
   for (const file of files) {
     const isTest = /(^|\/)tests?\//.test(file) || /test_.*\.py$/.test(file);

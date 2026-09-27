@@ -247,6 +247,36 @@ The maintenance workflow fails the job on `1`/`2` from `graph_analytics.py` and 
 `telegram_bot.py`; `3` (partial) is a warning for both, and "Telegram not configured" is a
 warning rather than an error because maintenance-only is a supported deployment.
 
+#### Failure alerts — closing the 24-hour loop
+
+The alert passes above need a maintenance report to say anything, and on a 24-hour schedule
+that leaves the most dangerous failure invisible: a run that *dies before writing one*. The
+next run overwrites the log line nobody reads, and the first symptom is a graph that quietly
+stopped growing — days later, when somebody looks at it.
+
+Every ingest workflow therefore has a **Warn on a hard failure** step:
+
+```
+python telegram_bot.py --failure "<reason> (exit N)" \
+  --workflow "$WORKFLOW_NAME" --exit-code "$INGEST_EXIT" --run-url "$RUN_URL"
+```
+
+* It runs on exit `1` (configuration) and `2` (runtime) — both mean nothing was written.
+  Exit `3` is per-source and expected; the daily digest already reports it, and 24 warnings a
+  day would train the operator to ignore the channel.
+* No token configured is not an error: harvest-without-alerts is a valid deployment, and the
+  step logs that it skipped.
+* The warning is *best effort* — it always exits 0. A Telegram outage must not turn a failed
+  harvest into a failed workflow for a different reason.
+* Failures are suppressed like every other alert (24 h, `AlertLedger`), and the key is
+  `workflow | source | exit code` — **not** the message. A broken source reports a different
+  error on every attempt (timeout, then connection refused); the operator wants one alert per
+  broken thing, not one per sentence.
+
+A workflow that dies *before* the ingest step (a rejected `--doctor` preflight, a failed
+checkout) sends no alert: GitHub's own scheduled-workflow failure notification covers it, and
+the alternative — alerting on every step failure — is the noise this design avoids.
+
 ---
 
 ## 3. Run reports

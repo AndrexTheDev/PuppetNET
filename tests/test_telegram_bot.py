@@ -1009,3 +1009,102 @@ def test_cli_test_pass_without_chats_still_verifies_the_token(monkeypatch, tmp_p
     code = tb.main(["--test", "--dry-run", "--state", str(tmp_path / "ledger.json")])
     assert code == tb.EXIT_OK
     assert "chats" in capsys.readouterr().out
+
+
+# --------------------------------------------------------------------------- #
+# Operational failure alerts (--failure)
+# --------------------------------------------------------------------------- #
+
+
+def failure_env(monkeypatch, tmp_path: Path) -> None:
+    """A dry-run Telegram deployment with a ledger inside the test's tmp dir."""
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", TOKEN)
+    monkeypatch.setenv("TELEGRAM_CHAT_IDS", "111")
+    monkeypatch.setenv("TELEGRAM_STATE_PATH", str(tmp_path / "telegram_alerts.json"))
+    monkeypatch.setenv("DRY_RUN", "true")
+
+
+def test_the_failure_key_ignores_the_wording_but_not_the_source():
+    """One alert per broken thing, not one per sentence.
+
+    An hourly cron would otherwise send the same warning 24 times a day — the
+    error text changes between attempts (timeout, then connection refused) while
+    the failure is the same one.
+    """
+    first = tb.failure_key("timed out after 30s", workflow="Hourly Ingest", source="news_world", exit_code=2)
+    second = tb.failure_key("connection refused", workflow="Hourly Ingest", source="news_world", exit_code=2)
+    other_source = tb.failure_key("connection refused", workflow="Hourly Ingest", source="adsb_exchange", exit_code=2)
+    other_exit = tb.failure_key("connection refused", workflow="Hourly Ingest", source="news_world", exit_code=1)
+
+    assert first == second, "the same broken source is one alert"
+    assert first != other_source, "a second broken source is a second alert"
+    assert first != other_exit
+    assert tb.failure_key("hand-written note") != first, "with no context the message is the identity"
+
+
+def test_a_failure_alert_formats_without_a_report():
+    """The pass exists for the run that died before it wrote a report."""
+    text = tb.format_failure_alert(
+        "ingest.py exited 2 — the pipeline aborted",
+        workflow="Hourly Ingest",
+        run_url="https://github.com/example/actions/runs/7",
+        exit_code=2,
+        source="news_world",
+    )
+    assert "PuppetNET run failed" in text
+    assert "Hourly Ingest" in text and "news_world" in text and "2" in text
+    assert 'href="https://github.com/example/actions/runs/7"' in text
+    assert "<script>" not in text
+
+    # A message that tries to inject markup is escaped, like every other sink.
+    hostile = tb.format_failure_alert("<b>pwned</b>", workflow="<i>x</i>")
+    assert "<b>pwned</b>" not in hostile and "&lt;b&gt;pwned&lt;/b&gt;" in hostile
+
+
+def test_main_sends_a_failure_alert_and_exits_zero(monkeypatch, tmp_path, capsys):
+    failure_env(monkeypatch, tmp_path)
+    exit_code = tb.main([
+        "--failure", "ingest.py exited 2 — the pipeline aborted",
+        "--workflow", "Hourly Ingest",
+        "--exit-code", "2",
+        "--source", "news_world",
+        "--dry-run", "--json",
+    ])
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == tb.EXIT_OK
+    assert payload["status"] == "completed"
+    assert payload["bridge_sent"] == 1
+    outcomes = payload["outcomes"]
+    assert outcomes and outcomes[0]["kind"] == "failure"
+    assert outcomes[0]["ok"] is True and outcomes[0]["dry_run"] is True
+    assert "PuppetNET run failed" in outcomes[0]["preview"]
+
+
+def test_a_failure_inside_the_suppression_window_is_not_repeated(monkeypatch, tmp_path, capsys):
+    """The second hourly run must not repeat yesterday's warning."""
+    failure_env(monkeypatch, tmp_path)
+    key = tb.failure_key("anything", workflow="Hourly Ingest", source="news_world", exit_code=2)
+    state = tmp_path / "telegram_alerts.json"
+    state.write_text(
+        json.dumps({"sent": {key: tb.iso(tb.utc_now())}, "digests": {}, "counters": {}}),
+        encoding="utf-8",
+    )
+
+    exit_code = tb.main([
+        "--failure", "connection refused",
+        "--workflow", "Hourly Ingest", "--exit-code", "2", "--source", "news_world",
+        "--state", str(state), "--dry-run", "--json",
+    ])
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == tb.EXIT_OK, "a suppressed alert is the expected case, not an error"
+    assert payload["bridge_sent"] == 0 and payload["bridge_suppressed"] == 1
+    assert payload["outcomes"] == [], "nothing was sent, so there is nothing to report as sent"
+
+
+def test_a_failure_alert_never_persists_anything_in_a_dry_run(monkeypatch, tmp_path, capsys):
+    """Persisting a dry run would suppress the first *real* delivery."""
+    failure_env(monkeypatch, tmp_path)
+    state = tmp_path / "telegram_alerts.json"
+    tb.main(["--failure", "boom", "--workflow", "Hourly Ingest", "--state", str(state), "--dry-run", "--json"])
+    capsys.readouterr()
+    assert not state.exists(), "the suppression ledger must stay untouched in a dry run"
