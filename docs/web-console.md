@@ -525,8 +525,16 @@ drawers — **60 images per run**.
 
 Each state carries a `prepare()` and an in-page `assert()`: a shot is only taken once the
 state it claims to show is verified (a QR path density, a row count, a banner's wording, a
-drawer's open class), and any assertion failure or uncaught page error fails the run. A
-matrix of pretty pictures is not a test; this one has a verdict per pixel set.
+drawer's open class), and any assertion failure or uncaught page error fails the run.
+
+Then the picture itself is measured. The PNG the harness just wrote is decoded inside the
+page, downscaled to 48×48 and every pixel compared against the frame's most common colour
+(quantised to 4 bits per channel, so anti-aliasing does not count as content). A state that
+satisfies its DOM assertions while painting a flat rectangle — a canvas that never drew, a
+stylesheet that 404'd, a font that did not load — fails as *blank*. The measured ink range
+is part of `matrix.json`, the job summary and the run's annotation, so "the matrix is green"
+means "sixty screens verifiably showed something", not "sixty files were written". A matrix
+of pretty pictures is not a test; this one has a verdict per pixel set.
 
 ```bash
 npm run screenshots -- --list                 # what the matrix covers

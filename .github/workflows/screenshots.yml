@@ -100,7 +100,12 @@ jobs:
       # the fatal stage if the harness never reached its first screenshot.
       - name: Summarise the matrix
         if: always()
-        run: node scripts/screenshots.mjs --summary .screenshots/matrix.json >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          node scripts/screenshots.mjs --summary .screenshots/matrix.json >> "$GITHUB_STEP_SUMMARY"
+          # Annotations are the part of a run that stays readable through the
+          # GitHub API when neither the job log nor the artefact blob is
+          # reachable, so the verdict travels further than the pictures do.
+          node scripts/screenshots.mjs --annotate .screenshots/matrix.json
 
       # Uploaded even on failure: a red matrix is exactly when the pictures matter.
       # include-hidden-files is not cosmetic here — the output directory is

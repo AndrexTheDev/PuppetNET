@@ -49,11 +49,12 @@ const WEB = path.join(ROOT, "web");
 /* -------------------------------------------------------------------------- */
 
 function parseFlags(argv) {
-  const flags = { out: ".screenshots", only: "", viewport: "", list: false, summary: "", timeout: 45000 };
+  const flags = { out: ".screenshots", only: "", viewport: "", list: false, summary: "", annotate: "", timeout: 45000 };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--list") flags.list = true;
     else if (arg === "--summary") flags.summary = String(argv[++i] || "");
+    else if (arg === "--annotate") flags.annotate = String(argv[++i] || "");
     else if (arg === "--only") flags.only = String(argv[++i] || "");
     else if (arg === "--viewport") flags.viewport = String(argv[++i] || "");
     else if (arg === "--out") flags.out = String(argv[++i] || ".screenshots");
@@ -488,6 +489,54 @@ async function launchChromium(chromium) {
 }
 
 /**
+ * Measure the shot that was just taken, from inside the page: decode the PNG,
+ * downscale it to 48x48 and compare every pixel against the most common one.
+ *
+ * This is the difference between "the elements existed" and "the analyst can see
+ * something". A canvas that never painted, a stylesheet that 404'd or a font that
+ * did not load all still satisfy a DOM assertion while producing a flat
+ * rectangle — which is exactly the failure a screenshot matrix exists to catch,
+ * and which nobody notices until the artefact is opened.
+ */
+async function pixelStats(page, buffer) {
+  const dataUrl = "data:image/png;base64," + buffer.toString("base64");
+  return page.evaluate(async (url) => {
+    const image = new Image();
+    await new Promise((resolve, reject) => {
+      image.onload = resolve;
+      image.onerror = () => reject(new Error("the PNG would not decode"));
+      image.src = url;
+    });
+    const size = 48;
+    const canvas = document.createElement("canvas");
+    canvas.width = size;
+    canvas.height = size;
+    const context = canvas.getContext("2d");
+    context.drawImage(image, 0, 0, size, size);
+    const { data } = context.getImageData(0, 0, size, size);
+    // Quantise to 4 bits per channel: anti-aliasing must not count as content.
+    const counts = new Map();
+    for (let i = 0; i < data.length; i += 4) {
+      const key = (data[i] >> 4) + "," + (data[i + 1] >> 4) + "," + (data[i + 2] >> 4);
+      counts.set(key, (counts.get(key) || 0) + 1);
+    }
+    let background = null;
+    let backgroundCount = 0;
+    counts.forEach((count, key) => {
+      if (count > backgroundCount) { background = key; backgroundCount = count; }
+    });
+    const total = size * size;
+    return {
+      width: image.naturalWidth,
+      height: image.naturalHeight,
+      distinct: counts.size,
+      inkPct: Math.round(((total - backgroundCount) / total) * 1000) / 10,
+      background,
+    };
+  }, dataUrl);
+}
+
+/**
  * Markdown for the CI job summary — the verdict a human reads before opening a
  * single PNG, and the part of a failed run that survives without the log.
  */
@@ -544,6 +593,17 @@ function summarise(matrixPath) {
     lines.push("");
   }
 
+  const measured = shots.filter((shot) => shot.pixels && shot.pixels.inkPct !== undefined);
+  if (measured.length) {
+    const sorted = measured.slice().sort((a, b) => a.pixels.inkPct - b.pixels.inkPct);
+    const ink = sorted.map((shot) => shot.pixels.inkPct);
+    const median = ink[Math.floor(ink.length / 2)];
+    const bytes = shots.reduce((sum, shot) => sum + (shot.bytes || 0), 0);
+    lines.push(`**Pixel evidence** — ink ${ink[0]}–${ink[ink.length - 1]}% of the frame `
+      + `(median ${median}%), ${(bytes / 1048576).toFixed(1)} MB of PNG. Flattest: `
+      + sorted.slice(0, 3).map((shot) => `\`${shot.state}\` ${shot.pixels.inkPct}%`).join(", ") + ".", "");
+  }
+
   const pageErrors = run.pageErrors || [];
   if (pageErrors.length) {
     lines.push(`**Uncaught page errors (${pageErrors.length}):**`, "");
@@ -556,7 +616,50 @@ function summarise(matrixPath) {
   console.log(lines.join("\n"));
 }
 
+/** Escape a GitHub workflow-command field (%, \r, \n; : and , inside a title). */
+function commandField(value, isTitle) {
+  let out = String(value).replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
+  if (isTitle) out = out.replace(/:/g, "%3A").replace(/,/g, "%2C");
+  return out;
+}
+
+/**
+ * Emit the verdict as workflow commands. Annotations are the one part of a run
+ * that is readable through the GitHub API without the job log or the artefact
+ * blob, so a matrix can be triaged from a shell that can reach neither.
+ */
+function annotate(matrixPath) {
+  let run = null;
+  try {
+    run = JSON.parse(readFileSync(matrixPath, "utf8"));
+  } catch (error) {
+    console.log(`::error title=${commandField("Screenshot matrix produced no result", true)}::`
+      + commandField(`${matrixPath}: ${String(error.message).split("\n")[0]}`, false));
+    return;
+  }
+  const shots = run.shots || [];
+  const failures = run.failures || [];
+  if (run.fatal) {
+    console.log(`::error title=${commandField(`Screenshot matrix died in "${run.fatal.stage}"`, true)}::`
+      + commandField(run.fatal.message.split("\n")[0], false));
+    return;
+  }
+  if (failures.length) {
+    const detail = failures.slice(0, 6)
+      .map((failure) => `${failure.viewport}/${failure.state}: ${failure.problem}`).join(" | ");
+    console.log(`::error title=${commandField(`Screenshot matrix: ${failures.length}/${shots.length} states did not verify`, true)}::`
+      + commandField(detail, false));
+    return;
+  }
+  const measured = shots.filter((shot) => shot.pixels && shot.pixels.inkPct !== undefined);
+  const ink = measured.map((shot) => shot.pixels.inkPct).sort((a, b) => a - b);
+  const span = ink.length ? `, ink ${ink[0]}-${ink[ink.length - 1]}%` : "";
+  console.log(`::notice title=${commandField(`Screenshot matrix: ${shots.length}/${shots.length} states verified`, true)}::`
+    + commandField(`${(run.durationMs / 1000).toFixed(1)}s across ${new Set(shots.map((s) => s.viewport)).size} viewports${span}`, false));
+}
+
 async function main() {
+  if (FLAGS.annotate) { annotate(path.resolve(ROOT, FLAGS.annotate)); return; }
   if (FLAGS.summary) { summarise(path.resolve(ROOT, FLAGS.summary)); return; }
   if (FLAGS.list) { printMatrix(); return; }
 
@@ -650,15 +753,33 @@ async function main() {
           }
         }
         const file = path.join(dir, `${state.id}.png`);
-        await page.screenshot({ path: file, animations: "disabled" });
+        const buffer = await page.screenshot({ path: file, animations: "disabled" });
+        let pixels = null;
+        try {
+          pixels = await pixelStats(page, buffer);
+        } catch (error) {
+          pixels = { error: String(error.message).split("\n")[0] };
+        }
+        // A flat rectangle is a failed state even when every element was where the
+        // assertion expected it. The thresholds are deliberately unreachable by a
+        // real screen: the emptiest state here (the print stylesheet) still inks
+        // several percent of the frame in dozens of colours.
+        if (!verdict && pixels && !pixels.error
+          && (pixels.inkPct < 0.3 || pixels.distinct < 3)) {
+          verdict = `the shot is blank (ink ${pixels.inkPct}%, ${pixels.distinct} colours)`;
+        }
         const shot = {
           viewport: viewport.id, width: viewport.width, height: viewport.height,
           state: state.id, title: state.title, file: path.relative(ROOT, file),
           ms: Date.now() - started, ok: !verdict, problem: verdict || null,
+          bytes: buffer.length, pixels,
         };
         shots.push(shot);
         if (verdict) failures.push(shot);
-        console.log(`  ${verdict ? "FAIL" : " ok "} ${viewport.id}/${state.id}.png  ${shot.ms} ms${verdict ? `  — ${verdict}` : ""}`);
+        console.log(`  ${verdict ? "FAIL" : " ok "} ${viewport.id}/${state.id}.png  ${shot.ms} ms`
+          + `  ${(buffer.length / 1024).toFixed(0)} kB`
+          + (pixels && pixels.inkPct !== undefined ? `  ink ${pixels.inkPct}%/${pixels.distinct}` : "")
+          + (verdict ? `  — ${verdict}` : ""));
       }
       stage = `close:${viewport.id}`;
       await context.close();
