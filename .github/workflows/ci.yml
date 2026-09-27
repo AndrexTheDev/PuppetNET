@@ -176,6 +176,7 @@ jobs:
       - name: Syntax check the shipped JavaScript
         run: |
           node --check web/app.js
+          node --check web/modals.js
           node --check worker.js
 
       # The console is self-hostable, so the CSS it ships must be the CSS its
@@ -189,10 +190,12 @@ jobs:
       - name: Vendored libraries and licences are committed
         run: |
           for file in cytoscape.min.js cytoscape-fcose.min.js layout-base.min.js \
-                      cose-base.min.js tailwind.css README.md; do
+                      cose-base.min.js qrcode.min.js tailwind.css README.md; do
             test -s "web/vendor/$file" || { echo "missing web/vendor/$file"; exit 1; }
           done
-          for lib in cytoscape cytoscape-fcose layout-base cose-base; do
+          # qrcode-generator ships no licence inside its tarball, so the upstream
+          # MIT text is committed verbatim — see web/vendor/README.md.
+          for lib in cytoscape cytoscape-fcose layout-base cose-base qrcode-generator; do
             test -s "web/vendor/LICENSE.$lib" || { echo "missing licence for $lib"; exit 1; }
           done
           echo "vendored assets present with licences"
@@ -206,3 +209,10 @@ jobs:
 
       - name: Graph API smoke test
         run: node tests/worker_smoke.mjs
+
+      # Feature tests say a module works; the audit says the modules still agree
+      # with each other — client caps versus GRAPH_LIMITS, Aura budgets versus the
+      # HUD, the cost perimeter, dangling ARIA references, SEO completeness.
+      # Accepted risks are registered in scripts/audit.mjs with a written reason.
+      - name: Repository audit
+        run: npm run audit

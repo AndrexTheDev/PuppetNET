@@ -1,0 +1,100 @@
+# =============================================================================
+#  PuppetNET — screenshot matrix (visual beta test)
+# =============================================================================
+#  Renders the *shipped* console in a real Chromium across four viewports and
+#  sixteen states, and asserts each state before photographing it: a matrix of
+#  pretty pictures is not a test, so every shot carries a verdict and the job
+#  fails if any state does not verify.
+#
+#  The images are build artefacts, never commits — 60 PNGs per run would bloat
+#  the repository and go stale the moment the CSS moves. Download them from the
+#  run summary (`screenshot-matrix`, kept 14 days), or render them locally:
+#
+#      npm install -D playwright && npx playwright install --with-deps chromium
+#      npm run screenshots -- --list          # what the matrix covers
+#      npm run screenshots -- --only donate   # one state, every viewport
+#
+#  Playwright is installed here with --no-save rather than declared as a
+#  devDependency, because its postinstall downloads browser binaries on every
+#  `npm ci` — including in jobs that never open a browser.
+# =============================================================================
+
+name: Screenshot matrix
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "web/**"
+      - "scripts/screenshots.mjs"
+      - ".github/workflows/screenshots.yml"
+  pull_request:
+    paths:
+      - "web/**"
+      - "scripts/screenshots.mjs"
+      - ".github/workflows/screenshots.yml"
+  workflow_dispatch:
+    inputs:
+      only:
+        description: "Only states whose id or title contains this (empty = all 60)"
+        type: string
+        default: ""
+      viewport:
+        description: "Only viewports whose id contains this (empty = all four)"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: screenshots-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  matrix:
+    name: Render and verify the matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install build and test tooling
+        run: npm ci
+
+      - name: Install Playwright and Chromium
+        run: |
+          npm install --no-save playwright@1.63.0
+          npx playwright install --with-deps chromium
+
+      - name: Show what will be rendered
+        run: node scripts/screenshots.mjs --list
+
+      # The dispatch inputs travel through the environment, never through the
+      # shell line, so a hostile string cannot become part of the command.
+      - name: Render the matrix
+        env:
+          ONLY: ${{ inputs.only }}
+          VIEWPORT: ${{ inputs.viewport }}
+        run: |
+          args=(--out .screenshots)
+          if [ -n "$ONLY" ]; then args+=(--only "$ONLY"); fi
+          if [ -n "$VIEWPORT" ]; then args+=(--viewport "$VIEWPORT"); fi
+          node scripts/screenshots.mjs "${args[@]}"
+
+      # Uploaded even on failure: a red matrix is exactly when the pictures matter.
+      - name: Upload the matrix
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshot-matrix
+          path: .screenshots
+          retention-days: 14
+          if-no-files-found: error

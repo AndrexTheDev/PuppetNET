@@ -1075,8 +1075,9 @@
 
     async path(from, to, opts) {
       const data = demoDataset();
-      const maxHops = clamp(toNumber(opts && opts.maxHops, 6), 1, 12);
-      const result = localShortestPath(data.nodes, data.edges, from, to, maxHops, (opts && opts.cost) || "hops", opts && opts.direction);
+      const costName = (opts && opts.cost) || "hops";
+      const maxHops = clampHops(opts && opts.maxHops, costName);
+      const result = localShortestPath(data.nodes, data.edges, from, to, maxHops, costName, opts && opts.direction);
       return Object.assign({ ok: true, source: "demo" }, result);
     },
 
@@ -1386,7 +1387,7 @@
       },
 
       async path(from, to, opts) {
-        const maxHops = clamp(toNumber(opts.maxHops, 6), 1, 12);
+        const maxHops = clampHops(opts.maxHops, opts.cost);
         const direction = ["outgoing", "incoming", "undirected"].indexOf(opts.direction) >= 0 ? opts.direction : "undirected";
         const left = direction === "incoming" ? "<-" : "-";
         const right = direction === "outgoing" ? "->" : "-";
@@ -1667,6 +1668,54 @@
   });
 
   /**
+   * Hop ceilings. A weighted search scores every candidate tie, so it enumerates
+   * far more of the graph per hop and the Worker budgets it tighter
+   * (GRAPH_LIMITS.MAX_HOPS_WEIGHTED). The console applies the same ceiling in the
+   * UI, in the outgoing request *and* in the offline solver, because the
+   * alternative is two different answers to the same question: live, a 12-hop
+   * weighted search silently comes back as a 4-hop one, while demo mode — which
+   * solves locally — would happily return 12, and nothing on screen says which of
+   * the two spoke. `npm run audit` compares these constants with GRAPH_LIMITS.
+   */
+  const MAX_PATH_HOPS = 12;
+  const MAX_PATH_HOPS_WEIGHTED = 4;
+  const DEFAULT_PATH_HOPS = 6;
+
+  function isWeightedCost(costName) {
+    return costName !== "hops" && Object.prototype.hasOwnProperty.call(PATH_COSTS, costName);
+  }
+  function hopsCeiling(costName) {
+    return isWeightedCost(costName) ? MAX_PATH_HOPS_WEIGHTED : MAX_PATH_HOPS;
+  }
+  function clampHops(value, costName) {
+    return clamp(toNumber(value, DEFAULT_PATH_HOPS), 1, hopsCeiling(costName));
+  }
+
+  /**
+   * Keep the slider honest: its ceiling, its value and the sentence under it all
+   * follow the cost mode. Called on boot, on settings sync and whenever the cost
+   * select changes — a control that offers 12 while the server allows 4 is a
+   * control that lies.
+   */
+  function syncHopsCeiling() {
+    const slider = $("#path-hops");
+    if (!slider) return;
+    const ceiling = hopsCeiling(config.pathCost);
+    slider.max = String(ceiling);
+    if (toNumber(slider.value, DEFAULT_PATH_HOPS) > ceiling) slider.value = String(ceiling);
+    config.pathHops = clamp(toNumber(slider.value, DEFAULT_PATH_HOPS), 1, ceiling);
+    const out = $("#path-hops-out");
+    if (out) out.textContent = String(config.pathHops);
+    const note = $("#path-hops-note");
+    if (note) {
+      note.textContent = isWeightedCost(config.pathCost)
+        ? "Weighted searches are capped at " + ceiling + " hops — scoring every candidate tie costs the "
+          + "database far more per hop, so the API budgets them tighter than hop-count searches."
+        : "Hop-count searches may span up to " + ceiling + " hops.";
+    }
+  }
+
+  /**
    * Dijkstra over an edge list. O((V+E) log V) with a simple binary heap; good
    * to a few thousand nodes, which is far beyond what a canvas should render
    * anyway. Returns the chain plus up to `alternatives` other routes so an
@@ -1727,7 +1776,7 @@
       return top;
     }
 
-    const hopsCap = clamp(toNumber(maxHops, 6), 1, 12);
+    const hopsCap = clampHops(maxHops, costName);
     while (heap.length) {
       const current = pop();
       if (!current || done.has(current.key)) continue;
@@ -2202,7 +2251,7 @@
 
   /** Layout options per algorithm, all derived from current render settings. */
   function layoutOptions(name) {
-    const nodes = cy ? cy.nodes(":visible").length : 0;
+    const nodes = countVisibleNodes();
     const animate = state.render.animate && !document.body.classList.contains("reduce-motion") ? "end" : false;
     const repulsion = clamp(toNumber(state.render.repulsion, 1), 0.5, 2.5);
 
@@ -2406,6 +2455,38 @@
    * a removal: the user can flip a checkbox and get the previous layout back
    * without re-querying or re-laying-out anything.
    */
+  /* ---- visibility ----------------------------------------------------------
+     `.flt-hidden` is the only rule in the stylesheet that sets `display: none`,
+     and applyFilters toggles it inside a batch — so the class, not the computed
+     style, is the truth. Two selector forms were tried and both are wrong here:
+     `:visible` reads the computed style, which can lag a batch until the next
+     flush (the HUD then reported the pre-filter count), and `:not(.flt-hidden)`
+     is rejected outright by this Cytoscape build ("The selector ... is invalid")
+     after which it quietly matches *everything*. One class predicate, shared by
+     the counts, the fit and the neighbour highlight, cannot disagree with the
+     filter that set the classes. */
+  function isVisible(ele) {
+    return !ele.hasClass("flt-hidden");
+  }
+
+  function visibleElements() {
+    return cy ? cy.elements().filter(isVisible) : cy.collection();
+  }
+
+  function countVisibleNodes() {
+    if (!cy) return state.nodes.size;
+    let count = 0;
+    cy.nodes().forEach(function (node) { if (isVisible(node)) count += 1; });
+    return count;
+  }
+
+  function countVisibleEdges() {
+    if (!cy) return state.edges.size;
+    let count = 0;
+    cy.edges().forEach(function (edge) { if (isVisible(edge)) count += 1; });
+    return count;
+  }
+
   function applyFilters() {
     if (!cy) return;
     const filters = state.filters;
@@ -2462,13 +2543,19 @@
 
   function fitView(padding) {
     if (!cy || !cy.elements().length) return;
-    cy.animate({ fit: { eles: cy.elements(":visible"), padding: padding || 52 } }, { duration: document.body.classList.contains("reduce-motion") ? 0 : 320, easing: "ease-out" });
+    cy.animate({ fit: { eles: visibleElements(), padding: padding || 52 } }, { duration: document.body.classList.contains("reduce-motion") ? 0 : 320, easing: "ease-out" });
   }
 
   function zoomBy(factor) {
-    if (!cy) return;
+    if (!cy || !cy.elements().length) return;
     const zoom = clamp(cy.zoom() * factor, cy.minZoom(), cy.maxZoom());
-    cy.animate({ zoom: zoom, center: { eles: cy.elements(":visible").length ? undefined : undefined } }, { duration: 140 });
+    // Zoom only. This used to send `center: { eles: <both branches undefined> }`,
+    // a ternary whose two arms were identical, which asked the renderer to centre
+    // on an empty collection: the +/- buttons (and the +/- keys) could drift the
+    // viewport off the graph instead of zooming about its current centre.
+    // Omitting `center` keeps the pan exactly where the analyst left it, and the
+    // duration honours reduce-motion like every other animated transition here.
+    cy.animate({ zoom: zoom }, { duration: document.body.classList.contains("reduce-motion") ? 0 : 140 });
   }
 
   /* ---- selection & focus ------------------------------------------------- */
@@ -2484,7 +2571,7 @@
       const node = cy.getElementById(key);
       if (node.length) {
         node.addClass("active");
-        node.neighborhood("node:visible").addClass("neighbour");
+        node.neighborhood("node").filter(isVisible).addClass("neighbour");
         node.connectedEdges().addClass("incident");
       }
     }
@@ -3721,8 +3808,8 @@
      ======================================================================== */
 
   function updateHud() {
-    const visibleNodes = cy ? cy.nodes(":visible").length : state.nodes.size;
-    const visibleEdges = cy ? cy.edges(":visible").length : state.edges.size;
+    const visibleNodes = countVisibleNodes();
+    const visibleEdges = countVisibleEdges();
     $("#hud-nodes").textContent = formatNumber(state.nodes.size);
     $("#hud-edges").textContent = formatNumber(state.edges.size);
     $("#hud-shown").textContent = formatNumber(visibleNodes) + "/" + formatNumber(visibleEdges);
@@ -4254,9 +4341,9 @@
       return;
     }
 
-    const maxHops = clamp(toNumber($("#path-hops").value, 6), 1, 12);
     const direction = $("#path-direction").value;
     const costName = $("#path-weight").value;
+    const maxHops = clampHops($("#path-hops").value, costName);
 
     let result = await runQuery("path", function () {
       return state.provider.path(from, to, { maxHops: maxHops, direction: direction, cost: costName });
@@ -4470,7 +4557,7 @@
   function cypherForCurrentView() {
     if (state.path && state.path.found) {
       const from = state.path.from, to = state.path.to;
-      const hops = clamp(toNumber($("#path-hops").value, 6), 1, 12);
+      const hops = clampHops($("#path-hops").value, $("#path-weight").value);
       const direction = $("#path-direction").value;
       const left = direction === "incoming" ? "<-" : "-";
       const right = direction === "outgoing" ? "->" : "-";
@@ -4693,8 +4780,19 @@
   function openModal(id) {
     const modal = $(id);
     if (!modal) return;
+    // One dialog at a time. This used to record the new id without hiding the
+    // previous card, so opening Help while Settings was showing stacked two
+    // dialogs — and because closeModal() only ever hides what state.modalOpen
+    // points at, the first card was stranded on screen with no reachable close
+    // path: Escape, the backdrop and every [data-close] button all acted on the
+    // second one. modals.js compensates for its own links, but the header's
+    // buttons call this function directly, so the invariant has to live here.
+    if (state.modalOpen && state.modalOpen !== id) closeModal();
     modal.hidden = false;
     state.modalOpen = id;
+    // The backdrop is fixed, the page behind it is not: without this a wheel
+    // event over a dialog scrolled the console underneath it.
+    document.body.style.overflow = "hidden";
     const focusable = modal.querySelector("select, input, button");
     if (focusable) setTimeout(function () { focusable.focus(); }, 40);
     if (id === "#modal-settings") syncSettingsForm();
@@ -4705,6 +4803,7 @@
     const modal = $(state.modalOpen);
     if (modal) modal.hidden = true;
     state.modalOpen = null;
+    document.body.style.overflow = "";
   }
 
   function bindModals() {
@@ -4800,6 +4899,7 @@
     setValue("#edge-style", state.render.edgeStyle);
     setValue("#path-direction", config.pathDirection);
     setValue("#path-weight", config.pathCost);
+    syncHopsCeiling();
     setValue("#table-sort", state.table.sort);
     setValue("#page-size", String(state.table.pageSize));
 
@@ -5020,13 +5120,18 @@
       saveHash();
     });
     $("#path-hops").addEventListener("input", function (event) {
-      config.pathHops = clamp(toNumber(event.target.value, 6), 1, 12);
+      config.pathHops = clampHops(event.target.value, config.pathCost);
       syncRange(event.target);
       $("#path-hops-out").textContent = String(config.pathHops);
     });
     $("#path-hops").addEventListener("change", saveConfig);
     $("#path-direction").addEventListener("change", function (event) { config.pathDirection = event.target.value; saveConfig(); });
-    $("#path-weight").addEventListener("change", function (event) { config.pathCost = event.target.value; saveConfig(); });
+    $("#path-weight").addEventListener("change", function (event) {
+      config.pathCost = event.target.value;
+      // The ceiling depends on the cost mode, so the slider has to follow it.
+      syncHopsCeiling();
+      saveConfig();
+    });
     ["#path-a", "#path-b"].forEach(function (selector) {
       $(selector).addEventListener("keydown", function (event) { if (event.key === "Enter") { event.preventDefault(); findPath(); } });
       $(selector).addEventListener("input", function (event) { delete event.target.dataset.key; });

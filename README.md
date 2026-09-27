@@ -530,10 +530,11 @@ The console is tested the same way — the **shipped** `index.html`, `app.js` an
 Cytoscape booted inside jsdom, with the real `worker.js` behind a fake Neo4j:
 
 ```bash
-node tests/web_smoke.mjs        # 24 checks, ~19 s: offline boot and render, escaping on
+node tests/web_smoke.mjs        # 32 checks, ~31 s: offline boot and render, escaping on
                                 # every surface, sizing/colour, filters, expansion,
                                 # handshake, table + CSV, keyboard, deep links, worker
-                                # mode, offline fallback, credentials
+                                # mode, offline fallback, credentials, weighted-hop
+                                # ceilings, dialog exclusivity, HUD honesty, zoom
 npm test                        # syntax check + both smoke suites
 ```
 
@@ -595,13 +596,17 @@ web/
   vendor/                     cytoscape + fcose + layout-base + cose-base + qrcode-generator
                               + tailwind.css, five MIT licence texts and an inventory README
 scripts/vendor-libs.mjs       reproduces web/vendor/ from node_modules, strictly
+scripts/audit.mjs             static whole-repo audit: consistency, cost, SEO (CI-gated)
+scripts/emit-seo-files.mjs    writes sitemap.xml + the robots.txt Sitemap line at deploy
+scripts/screenshots.mjs       Playwright matrix: 4 viewports x 16 states, each asserted
 package.json                  dev tooling only: jsdom, tailwindcss, terser
 .github/workflows/
   daily_ingest.yml            cron 04:00 UTC + manual dispatch
   graph_maintenance.yml       after the ingest: dedupe/prune/centrality + alerts
   ci.yml                      python, worker and web jobs on push/PR
-  pages_deploy.yml            verify, then upload web/ to Cloudflare Pages on main
-tests/                        928 offline tests, worker_smoke.mjs (32), web_smoke.mjs (29)
+  pages_deploy.yml            verify, emit SEO files, upload web/ to Cloudflare Pages
+  screenshots.yml             visual matrix on web/ changes; PNGs as run artefacts
+tests/                        928 offline tests, worker_smoke.mjs (32), web_smoke.mjs (32)
                               and helpers/fake_neo4j.mjs, the stub both suites share
 docs/                         architecture, configuration, schema, NLP, relay, console,
                               operations

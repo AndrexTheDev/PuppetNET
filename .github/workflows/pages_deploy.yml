@@ -114,6 +114,16 @@ jobs:
             pages project create ${{ vars.PAGES_PROJECT_NAME || 'puppetnet-console' }}
             --production-branch=main
 
+      # Sitemap and the Sitemap: line need an absolute origin, which the
+      # repository cannot know. SITE_ORIGIN wins; otherwise the domain is derived
+      # from the very project name this job deploys to, so the two cannot drift.
+      - name: Emit sitemap.xml for this deployment
+        if: steps.creds.outputs.present == 'true'
+        env:
+          SITE_ORIGIN: ${{ vars.SITE_ORIGIN }}
+          PAGES_PROJECT: ${{ vars.PAGES_PROJECT_NAME || 'puppetnet-console' }}
+        run: node scripts/emit-seo-files.mjs --origin "${SITE_ORIGIN:-https://$PAGES_PROJECT.pages.dev}"
+
       - name: Deploy web/ to Cloudflare Pages
         if: steps.creds.outputs.present == 'true'
         uses: cloudflare/wrangler-action@v3

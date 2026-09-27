@@ -20,8 +20,10 @@ finding remains (`--strict` adds `low`).
 | Dimension | What it checks |
 | --- | --- |
 | `security` | HTML sinks (`innerHTML`, `insertAdjacentHTML`, `document.write`), dynamic code execution, inline event handlers, the toast sink and its markup allowlist, the `el({html: …})` sink, Worker CORS/token/method posture, secrets in logs or in the tree, Python hazards (`yaml.load`, `shell=True`, `pickle`, `eval`, `verify=False`, bare `except`), and the **cost perimeter**: paid hosts, CDNs and analytics are forbidden outright, every other external host must have a recorded free-tier budget |
-| `bugs` | Cross-module invariants — the console's clamps versus `GRAPH_LIMITS` in `worker.js`, the Aura caps in `puppetnet/config.py` versus the console's HUD, the canonical-key grammar, the advertised version versus `WORKER_VERSION` — plus duplicate ids, dangling references and leftover debugging |
-| `seo` | Title/description length, keyword and metadata completeness, Open Graph and Twitter cards, the card image's real pixel size versus its declared one, JSON-LD validity, required properties and internal `@id` references, heading outline, and the files a public deployment needs (`robots.txt`, `sitemap.xml`, `404.html`) |
+| `bugs` | Cross-module invariants — the console's clamps versus `GRAPH_LIMITS` in `worker.js`, the Aura caps in `puppetnet/config.py` versus the console's HUD, the canonical-key grammar, the advertised version versus `WORKER_VERSION` — plus duplicate ids, dangling references (including every `data-open-modal` target) and leftover debugging |
+| `bugs` (UI state) | Three pieces of state no single feature test can see drift: `ui/dialogMutualExclusion` (opening a dialog closes the one on screen — otherwise two cards stack and the first becomes undismissable, because `closeModal()` only hides what `state.modalOpen` names), `ui/visibilitySelector` (visibility comes from the `.flt-hidden` class, never from `:visible`, which reads a computed style that can lag a batch, nor from `:not(.flt-hidden)`, which Cytoscape 3.30.4 rejects as an invalid selector and then matches *everything*), and `ui/animationMotionPreference` (every `cy.animate` honours `reduce-motion`) |
+| `a11y` | `ui/dialogScrollLock` (the page neither scrolls behind an open dialog nor stays locked afterwards) alongside the heading-outline and `alt` checks |
+| `seo` | Title/description length, keyword and metadata completeness, Open Graph and Twitter cards, the card image's real pixel size versus its declared one, JSON-LD validity, required properties and internal `@id` references, heading outline, the `robots.txt` directives and its `Sitemap:` line, and the files a public deployment needs (`robots.txt`, `404.html`, and `sitemap.xml` — whose absence is legitimate only while `scripts/emit-seo-files.mjs` exists *and* is wired into `pages_deploy.yml`, because a committed sitemap cannot know the origin it is served from) |
 | `info` | Operational posture: cron schedules, job timeouts, concurrency groups, and the harvest cadence the free tiers have to carry |
 
 ## Severity
@@ -56,6 +58,14 @@ the durable artefacts; CI regenerates the ledger on every run.
 
 ## Wiring into CI
 
-The audit joins `ci.yml` once the open findings below are resolved, so that a green build
-means "green *and* consistent". Until then it is run on demand and reported in the commit
-message.
+The audit runs in the `web` job of [`ci.yml`](../.github/workflows/ci.yml), after both smoke
+suites, so a green build means "green *and* consistent". It exits non-zero on any unresolved
+`high` or `medium` finding, which currently means the pipeline fails on: a client cap that
+drifted from `GRAPH_LIMITS`, a paid host in the source list, a dangling `data-open-modal`,
+a dialog system that stopped closing its predecessor, a visibility count derived from a
+selector again, or a deployment that lost its sitemap emitter.
+
+The checks are mutation-tested, not merely written: each one has been verified to fail when
+the code it protects is broken (remove the `closeModal()` call, drop a `reduce-motion`
+guard, reintroduce `:visible`) and to pass when it is restored. A static gate that cannot
+fail is decoration.

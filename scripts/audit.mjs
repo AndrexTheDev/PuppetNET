@@ -270,6 +270,18 @@ function auditHtml() {
     }
   });
 
+  // `data-open-modal="#id"` is resolved by delegation in modals.js, so a typo
+  // does not throw — the click quietly opens nothing. The footer carries seven
+  // of them and they are the only path to the legal copy.
+  scan(file, /\bdata-open-modal="([^"]+)"/g, (match, where) => {
+    const target = match[1];
+    if (!target.startsWith("#") || !ids.has(target.slice(1))) {
+      finding("html/danglingDialogOpener", dimension, "medium", file, where,
+        `data-open-modal="${target}" has no dialog to open`,
+        "Point it at an existing .modal id, including the leading #.");
+    }
+  });
+
   // Inline handlers and blank-target links.
   scan(file, /\son[a-z]+\s*=\s*"/gi, (match, where) => {
     finding("html/inlineHandler", "security", "high", file, where,
@@ -453,11 +465,134 @@ function auditSeo() {
   // A public, indexable deployment needs these files; their absence means
   // crawlers get a 404 on /robots.txt and no sitemap to follow.
   for (const [relative, why] of [["web/robots.txt", "crawl directives and the sitemap location"],
-    ["web/sitemap.xml", "crawlers discover exactly one URL: the console"],
-    ["web/404.html", "Cloudflare Pages serves this for unknown paths"]]) {
+    ["web/404.html", "what Cloudflare Pages serves for an unknown path"]]) {
     if (!exists(relative)) {
       finding("seo/missingFile", "seo", "medium", relative, relative,
         `${relative} is missing — it carries ${why}`, `Add ${relative}.`);
+    }
+  }
+  // A sitemap needs absolute URLs, and the deployment origin is not known at
+  // commit time, so it is emitted at deploy time — but only if that is wired up.
+  // A committed sitemap with a guessed hostname would be worse than none.
+  if (!exists("web/sitemap.xml")) {
+    const emitter = exists("scripts/emit-seo-files.mjs");
+    const wired = /emit-seo-files\.mjs/.test(read(".github/workflows/pages_deploy.yml") || "");
+    if (!emitter || !wired) {
+      finding("seo/missingFile", "seo", "medium", "web/sitemap.xml", "deploy",
+        "no sitemap, and no emitter wired into the Pages deploy to produce one",
+        "Add scripts/emit-seo-files.mjs and run it before `pages deploy`.");
+    }
+  }
+  if (exists("web/robots.txt")) {
+    const robots = read("web/robots.txt");
+    if (!/^User-agent:\s*\*/m.test(robots)) {
+      finding("seo/robotsDirectives", "seo", "medium", "web/robots.txt", "web/robots.txt",
+        "robots.txt has no User-agent: * block", "Say something to every crawler.");
+    }
+    if (/^Sitemap:/m.test(robots) && !/emit-seo-files/.test(read(".github/workflows/pages_deploy.yml") || "")) {
+      finding("seo/robotsSitemap", "seo", "low", "web/robots.txt", "web/robots.txt",
+        "a Sitemap line is committed but nothing regenerates it per deployment",
+        "Let scripts/emit-seo-files.mjs own that line.");
+    }
+  }
+}
+
+/* ========================================================================== */
+/*  3b. UI state invariants                                                    */
+/* ========================================================================== */
+
+/**
+ * The console keeps three pieces of UI state that no single test can see drift:
+ * which dialog is open, which elements the filter left visible, and whether an
+ * animated transition respects the motion preference. Each of the three has
+ * broken silently at least once, so each gets a static gate here and a runtime
+ * assertion in tests/web_smoke.mjs (checks 31 and 32).
+ */
+function auditUiState() {
+  const file = "web/app.js";
+  const app = read(file);
+  if (!app) return;
+  const dimension = "bugs";
+
+  // Comments are blanked (not removed) so line numbers stay truthful: the prose
+  // below the visibility helpers quotes the very selectors this section forbids.
+  const code = app
+    .replace(/\/\*[\s\S]*?\*\//g, (block) => block.replace(/[^\n]/g, " "))
+    .split("\n")
+    .map((line) => (/^\s*\/\//.test(line) ? "" : line))
+    .join("\n");
+  const lineOf = (index) => code.slice(0, index).split("\n").length;
+  const where = (index) => `${file}:${lineOf(index)}`;
+
+  /**
+   * Balanced extraction: `callText` for a call whose "(" sits at `open`,
+   * `blockText` for a body whose "{" does. Braces inside string literals would
+   * confuse blockText; none of the bodies read here contain any, and a false
+   * negative shows up as a finding rather than as silence.
+   */
+  function span(open, opening, closing) {
+    let depth = 0;
+    for (let i = open; i < code.length; i += 1) {
+      if (code[i] === opening) depth += 1;
+      else if (code[i] === closing) {
+        depth -= 1;
+        if (depth === 0) return code.slice(open, i + 1);
+      }
+    }
+    return code.slice(open);
+  }
+  const callText = (open) => span(open, "(", ")");
+  const blockText = (open) => span(open, "{", "}");
+
+  // One dialog at a time, and a page that does not scroll behind it.
+  const opener = /function openModal\(id\) \{/.exec(code);
+  const closer = /function closeModal\(\) \{/.exec(code);
+  if (!opener || !closer) {
+    finding("ui/dialogPlumbingMissing", dimension, "medium", file, "openModal/closeModal",
+      "app.js no longer exposes the openModal/closeModal pair this section reads",
+      "Keep both functions, or move these invariants to wherever the dialogs live now.");
+  } else {
+    const openBody = blockText(code.indexOf("{", opener.index));
+    const closeBody = blockText(code.indexOf("{", closer.index));
+    if (!/if \(state\.modalOpen && state\.modalOpen !== id\) closeModal\(\);/.test(openBody)) {
+      finding("ui/dialogMutualExclusion", dimension, "medium", file, where(opener.index),
+        "opening a dialog no longer closes the dialog already on screen",
+        "Call closeModal() before showing the new one: two cards stack, and because "
+        + "closeModal() only hides what state.modalOpen points at, the first becomes "
+        + "impossible to dismiss.");
+    }
+    if (!/body\.style\.overflow = "hidden"/.test(openBody)) {
+      finding("ui/dialogScrollLock", "a11y", "low", file, where(opener.index),
+        "the page behind an open dialog can still scroll",
+        'Set document.body.style.overflow = "hidden" while a dialog is open.');
+    }
+    if (!/body\.style\.overflow = ""/.test(closeBody)) {
+      finding("ui/dialogScrollLock", "a11y", "low", file, where(closer.index),
+        "closing a dialog leaves the page scroll locked",
+        'Reset document.body.style.overflow = "" in closeModal.');
+    }
+  }
+
+  // Visibility comes from the class applyFilters toggles — never from a selector.
+  // Cytoscape 3.30.4 rejects `:not(.flt-hidden)` ("The selector ... is invalid")
+  // and then matches *everything*, and `:visible` reads the computed style, which
+  // can lag the batch that set the classes. Either one made the HUD report the
+  // pre-filter count while the canvas had already narrowed.
+  for (const match of code.matchAll(/:visible|:not\(\s*\.flt-hidden/g)) {
+    finding("ui/visibilitySelector", dimension, "medium", file, where(match.index),
+      `visibility is derived from a selector again (${match[0]})`,
+      "Use isVisible()/countVisibleNodes()/countVisibleEdges(): `.flt-hidden` is the "
+      + "only display:none rule, so the class is the truth and the selector is not.");
+  }
+
+  // Every animated viewport transition honours prefers-reduced-motion.
+  for (const match of code.matchAll(/cy\.animate\(/g)) {
+    const call = callText(code.indexOf("(", match.index));
+    if (!/reduce-motion/.test(call)) {
+      finding("ui/animationMotionPreference", "a11y", "low", file, where(match.index),
+        "an animated transition ignores the user's motion preference",
+        "Pass duration: document.body.classList.contains(\"reduce-motion\") ? 0 : <ms>, "
+        + "as fitView, centerOn and zoomBy do.");
     }
   }
 }
@@ -515,7 +650,11 @@ function auditInvariants() {
     { kind: "hops", limit: "MAX_HOPS", label: "handshake hops" },
     { kind: "tableRows", limit: "MAX_TABLE_ROWS", label: "evidence-table row cap" },
   ];
+  // Hops go through clampHops(), which picks the ceiling from the cost mode; its
+  // constants are compared with the Worker's below, so the scan skips them here.
+  const usesClampHops = /function clampHops\(/.test(app) && (app.match(/clampHops\(/g) || []).length >= 4;
   for (const rule of invariants) {
+    if (rule.kind === "hops" && usesClampHops) continue;
     const seen = clamps.filter((clamp) => clamp.kind === rule.kind);
     if (seen.length === 0) {
       finding(`limits/client:${rule.limit}`, "bugs", "medium", "web/app.js", rule.label,
@@ -536,16 +675,35 @@ function auditInvariants() {
     }
   }
 
-  // Weighted path searches are cheaper to run than hop-count searches, so the
-  // Worker caps them lower. If the console does not apply the same cap, a
-  // 12-hop weighted request silently comes back as a 4-hop answer — and the
-  // local (demo/offline) solver disagrees with the live one for identical input.
-  const weightedClient = /MAX_HOPS_WEIGHTED|WEIGHTED_HOPS|weightedHops/.test(app);
-  if (limits.MAX_HOPS_WEIGHTED && !weightedClient) {
-    finding("limits/weightedHops", "bugs", "medium", "web/app.js ↔ worker.js", "weighted handshake",
-      `the Worker caps weighted searches at ${limits.MAX_HOPS_WEIGHTED} hops, the console still offers `
-      + `${Math.max(...clamps.filter((c) => c.kind === "hops").map((c) => c.max), 0)} and clamps locally without it`,
-      "Apply the same cap client-side when cost is weight or confidence, and say so in the UI.");
+  // Weighted path searches enumerate far more of the graph per hop, so the Worker
+  // caps them lower than hop-count searches. If the console does not apply the
+  // same ceiling, a 12-hop weighted request silently comes back as a 4-hop answer
+  // — and the offline solver disagrees with the live API on identical input.
+  const clientCeilings = {
+    MAX_HOPS: /const MAX_PATH_HOPS\s*=\s*(\d+)/.exec(app),
+    MAX_HOPS_WEIGHTED: /const MAX_PATH_HOPS_WEIGHTED\s*=\s*(\d+)/.exec(app),
+  };
+  for (const [name, match] of Object.entries(clientCeilings)) {
+    if (!match) {
+      finding(`limits/weightedHops:${name}`, "bugs", "high", "web/app.js", "hop ceilings",
+        `the console has no named ${name} constant to compare with GRAPH_LIMITS.${name}`,
+        "Name the ceiling so the invariant is checkable.");
+    } else if (limits[name] !== undefined && Number(match[1]) !== limits[name]) {
+      finding(`limits/drift:${name}`, "bugs", "high", "web/app.js ↔ worker.js", "hop ceilings",
+        `the console allows ${match[1]} hops, the Worker ${limits[name]}`,
+        "Make them equal — GRAPH_LIMITS is the source of truth.");
+    }
+  }
+  if (!usesClampHops) {
+    finding("limits/weightedHops", "bugs", "medium", "web/app.js", "weighted handshake",
+      "the console does not route hop clamping through a single cost-aware helper",
+      "Clamp hops where the cost mode is known: UI, request and local solver alike.");
+  }
+  // The ceiling has to reach the analyst, not just the request.
+  if (!/syncHopsCeiling/.test(app) || !/id="path-hops-note"/.test(read("web/index.html") || "")) {
+    finding("limits/weightedHopsUi", "bugs", "medium", "web/app.js ↔ web/index.html", "weighted handshake",
+      "the hop ceiling changes with the cost mode but the UI does not say so",
+      "Move the slider's max with the cost mode and explain the cap next to it.");
   }
 
   // Aura Free's caps are declared in Python and mirrored in the console's HUD.
@@ -695,6 +853,8 @@ const HOST_BUDGET = {
   "example.com": { cost: "n/a", note: "documentation placeholder" },
   "example.invalid": { cost: "n/a", note: "documentation placeholder" },
   "example.dev": { cost: "n/a", note: "documentation placeholder" },
+  "www.sitemaps.org": { cost: "free", note: "sitemap XML namespace identifier, never fetched" },
+  "puppetnet-console.pages.dev": { cost: "free", note: "the deployment's own Cloudflare Pages domain — the emitter's example origin, and the default the workflow derives" },
   "localhost": { cost: "free", note: "local development" },
   "127.0.0.1": { cost: "free", note: "local development" },
 };
@@ -780,7 +940,8 @@ function auditCostAndSupplyChain() {
       // A host that appears only in tests is a fixture, not a dependency: nothing
       // shipped ever resolves it. It is recorded, but it does not need a budget.
       const testOnly = where.every((site) => /(^|\/)tests?\//.test(site));
-      finding("cost/testOnlyHost", "security", testOnly ? "info" : "medium", host, where.join(", "),
+      finding(testOnly ? "cost/testOnlyHost" : "cost/unknownHost", "security",
+        testOnly ? "info" : "medium", host, where.join(", "),
         testOnly
           ? `external host ${host} appears only in tests (fixture)`
           : `external host ${host} has no recorded free-tier budget`,
@@ -979,6 +1140,7 @@ auditBrowserJs();
 auditHtmlSinks();
 auditHtml();
 auditSeo();
+auditUiState();
 auditInvariants();
 auditWorker();
 auditPython();

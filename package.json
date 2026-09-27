@@ -9,12 +9,15 @@
     "build:css:watch": "tailwindcss -c web/tailwind.config.cjs -i web/tailwind.input.css -o web/vendor/tailwind.css --watch",
     "vendor:libs": "node scripts/vendor-libs.mjs",
     "audit": "node scripts/audit.mjs",
+    "emit:seo": "node scripts/emit-seo-files.mjs",
+    "screenshots": "node scripts/screenshots.mjs",
     "check": "node --check worker.js && node --check web/app.js && node --check web/modals.js",
     "test:worker": "node tests/worker_smoke.mjs",
     "test:web": "node tests/web_smoke.mjs",
     "test": "npm run check && npm run test:worker && npm run test:web",
     "serve": "python3 -m http.server 8080 --directory web --bind 0.0.0.0"
   },
+  "//": "playwright is deliberately NOT a devDependency: its postinstall downloads browser binaries on every `npm ci`. The screenshots workflow installs it with --no-save, and `npm run screenshots` prints the one-line local install if it is missing.",
   "devDependencies": {
     "cose-base": "2.2.0",
     "cytoscape": "3.30.4",

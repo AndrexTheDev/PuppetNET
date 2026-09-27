@@ -146,10 +146,13 @@
                 stroke-width="1.4" fill="none" opacity=".7"/>
         </svg>
       </span>
-      <span class="brand-text">
+      <!-- The document's single h1. It is the wordmark rather than a hidden
+           string of keywords: crawlers and screen readers get the same heading a
+           person sees, and the outline stays h1 → h2 (panels, dialogs) → h3. -->
+      <h1 class="brand-text">
         <strong>PUPPET<span class="brand-accent">NET</span></strong>
         <small>graph intelligence console</small>
-      </span>
+      </h1>
     </div>
 
     <!-- search-first header -->
@@ -470,6 +473,7 @@
               <div class="field field-grow">
                 <label class="field-label" for="path-hops">Max hops <output id="path-hops-out" class="field-output">6</output></label>
                 <input id="path-hops" class="range" type="range" min="1" max="12" step="1" value="6">
+                <p class="field-note" id="path-hops-note">Hop-count searches may span up to 12 hops.</p>
               </div>
               <div class="field">
                 <label class="field-label" for="path-direction">Direction</label>

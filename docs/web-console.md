@@ -479,7 +479,7 @@ concatenation will not appear in the compiled CSS — write class names literall
 
 ```bash
 npm run check         # node --check worker.js web/app.js web/modals.js
-npm run test:web      # 29 checks, ~25 s
+npm run test:web      # 32 checks, ~31 s
 npm run test:worker   # 32 checks
 npm test              # all three
 ```
@@ -498,8 +498,13 @@ and hostile parameters; booting without Cytoscape; **worker mode against the rea
 agreement with the Python resolver; the formatting helpers; copy-Cypher injection
 resistance; credential handling; the donation dialog (addresses, QR, tabs, copy, blocked
 clipboard); the footer's legal, guide and contact dialogs; the crawler metadata and
-JSON-LD; SEO hydration against the deployment origin; and a hostile-markup attack on the
-toast sink, which is the one surface that renders emphasis tags on purpose.
+JSON-LD; SEO hydration against the deployment origin; a hostile-markup attack on the
+toast sink, which is the one surface that renders emphasis tags on purpose; the weighted
+handshake ceiling against the Worker's own; **dialog exclusivity** — one card on screen
+whichever of the two dialog systems opened it, and a page that neither scrolls behind it
+nor stays locked after it; the **HUD's honesty** — its visible count is the count the
+filter left, before and after narrowing; and the **zoom controls**, which must change the
+zoom level and leave the pan where the analyst put it.
 
 Repository-wide invariants — the console's clamps versus the Worker's `GRAPH_LIMITS`, the
 cost perimeter, dangling ARIA references, SEO completeness — live in a separate static
@@ -507,6 +512,41 @@ audit: [`docs/audit.md`](audit.md), `npm run audit`.
 
 Both suites stub every upstream, so they cannot pass because a third-party API happened
 to be reachable — and they assert that nothing they ran threw an uncaught error.
+
+### Screenshot matrix
+
+jsdom proves behaviour; it cannot prove that the result is legible. So
+[`scripts/screenshots.mjs`](../scripts/screenshots.mjs) renders the **shipped** console in
+a real Chromium across **four viewports** (360 / 820 / 1280 / 1920 px) and **sixteen
+states** — graph, search suggestions, inspector, a handshake of at least three hops, the
+data table, the donation dialog on both the SOL and the BTC tab, all five legal and help
+dialogs, settings, the unreachable-API fallback, the print stylesheet and both mobile
+drawers — **60 images per run**.
+
+Each state carries a `prepare()` and an in-page `assert()`: a shot is only taken once the
+state it claims to show is verified (a QR path density, a row count, a banner's wording, a
+drawer's open class), and any assertion failure or uncaught page error fails the run. A
+matrix of pretty pictures is not a test; this one has a verdict per pixel set.
+
+```bash
+npm run screenshots -- --list                 # what the matrix covers
+npm run screenshots -- --only donate          # one state, every viewport
+npm run screenshots -- --viewport mobile      # one viewport, every state
+```
+
+Playwright is deliberately **not** a `devDependency`: its postinstall downloads browser
+binaries, which would slow every `npm ci` in every job that never opens a browser. Install
+it when you want pictures —
+
+```bash
+npm install -D playwright && npx playwright install --with-deps chromium
+```
+
+— and in CI [`.github/workflows/screenshots.yml`](../.github/workflows/screenshots.yml)
+installs it with `--no-save`, renders into `.screenshots/` and uploads the directory as the
+`screenshot-matrix` artefact (14 days, uploaded even when the run fails, because a red
+matrix is exactly when the pictures matter). Images are artefacts, never commits: 60 PNGs
+per run would bloat the repository and go stale the first time the CSS moves.
 
 ---
 

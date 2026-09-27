@@ -454,6 +454,12 @@ code { color: var(--cyan); background: rgba(34,211,238,.07); padding: .06em .34e
   font-size: 11px; color: var(--text-dim); margin-bottom: 5px; letter-spacing: .01em;
 }
 .field-output { font-family: var(--font-mono); font-size: 11px; color: var(--cyan); }
+/* One line under a control, for the caveat that belongs to it — e.g. why a
+   weighted handshake is capped at four hops while a hop-count one is not. */
+.field-note {
+  margin: 4px 0 0; font-size: 10.5px; line-height: 1.45;
+  color: var(--text-faint); white-space: normal;
+}
 .field-help { font-size: 10.5px; color: var(--text-faint); margin-top: 5px; line-height: 1.5; }
 .field-help code { font-size: 10px; }
 .field-help.warn { color: var(--amber); }
@@ -1178,7 +1184,14 @@ kbd {
 @media (max-width: 860px) {
   :root { --header-h: 54px; }
   .app-header { grid-template-columns: auto minmax(0,1fr) auto; gap: 10px; padding: 0 10px; }
-  .brand-text { display: none; }
+  /* The wordmark does not fit beside a wrapped tab bar, but it is the document's
+     only h1 — so it is clipped out of sight instead of display:none, which would
+     remove it from the accessibility tree and from the mobile outline as well. */
+  .brand-text {
+    position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+    overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%);
+    white-space: nowrap; border: 0;
+  }
   .view-tabs { grid-column: 1 / -1; grid-row: 2; justify-self: stretch; }
   .app-header { grid-template-rows: auto auto; padding-bottom: 7px; }
   .view-tab span { display: none; }

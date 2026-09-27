@@ -10,7 +10,8 @@ Related: [configuration](configuration.md) · [graph schema](graph-schema.md) ·
 
 ## 1. Automation
 
-Three workflows live in [`.github/workflows/`](../.github/workflows).
+Five workflows live in [`.github/workflows/`](../.github/workflows): the three below, plus
+`pages_deploy.yml` (documented with the console) and `screenshots.yml` (below).
 
 ### `ci.yml` — every push and pull request
 
@@ -18,6 +19,7 @@ Three workflows live in [`.github/workflows/`](../.github/workflows).
 | --- | --- |
 | `python` (matrix 3.10 / 3.11 / 3.12) | install → `ruff check` → byte-compile all modules → CLI smoke tests (`--version`, `--doctor`, `--list-sources`, `--print-config`) → `pytest -q` |
 | `worker` | Node 20 syntax check of `worker.js`, `wrangler.toml` validation, optional `wrangler deploy --dry-run` |
+| `web` | syntax check of `app.js`/`modals.js`/`worker.js` → committed Tailwind build has no drift → vendored libraries and licences present → both smoke suites (`worker_smoke.mjs`, `web_smoke.mjs`) → `npm run audit`, the static whole-repo consistency gate ([`docs/audit.md`](audit.md)) |
 
 CI needs no secrets and writes nothing: the smoke tests run with `DRY_RUN=true`, which is
 why `load_settings()` accepts that flag as an alternative to Neo4j credentials.
@@ -110,6 +112,23 @@ utilisation, `merges_applied`, `homonyms_protected`, `purged`, `escalated`,
 `nodes_scored`, the engine used, the bridge count and the top-5 anomalies.
 
 ---
+
+### `screenshots.yml` — on changes to `web/`, plus manual dispatch
+
+The visual half of the beta test. `scripts/screenshots.mjs` serves `web/` from a local
+`node:http` server (path-traversal guarded) and drives it in a real Chromium: four
+viewports × sixteen states = **60 screenshots**, each one gated by an in-page assertion, so
+a state that does not verify fails the job instead of producing a misleading picture.
+
+* Playwright is installed with `npm install --no-save playwright@1.63.0` **inside this job
+  only** — it is not a `devDependency`, because its postinstall would download browser
+  binaries on every `npm ci` in every other job;
+* `.screenshots/` is uploaded as the `screenshot-matrix` artefact with
+  `if: always()` and a 14-day retention: images are build output, never commits;
+* dispatch inputs (`only`, `viewport`) reach the script through `env` and a bash array,
+  never by interpolation into the command line;
+* `concurrency: screenshots-${{ github.ref }}` with `cancel-in-progress: true` — a superseded
+  render is worthless, and Chromium minutes are the expensive part of this job.
 
 ## 2. Exit codes
 

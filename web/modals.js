@@ -146,16 +146,22 @@
     if (!modal) return;
     var api = consoleApi();
     if (api && api.actions && typeof api.actions.openModal === "function") {
-      // One dialog at a time. The console's openModal only records which dialog is
-      // open — it does not hide a previous one — and the footer's five links sit
-      // next to each other, so "Terms" clicked while "Disclaimer" is showing would
-      // otherwise stack two cards on top of each other.
-      if (api.state && api.state.modalOpen && api.state.modalOpen !== id) api.actions.closeModal();
+      // The console's openModal guarantees one dialog at a time and locks page
+      // scroll while one is open; the footer's five links sit next to each other,
+      // so that guarantee is what keeps "Terms" clicked while "Disclaimer" is
+      // showing from stacking two cards.
       api.actions.openModal(id);
       return;
     }
+    // Without the console (a standalone page including this script) the same two
+    // guarantees have to hold here.
+    if (standaloneOpen && standaloneOpen !== id) {
+      var previous = $(standaloneOpen);
+      if (previous) previous.hidden = true;
+    }
     modal.hidden = false;
     standaloneOpen = id;
+    document.body.style.overflow = "hidden";
     var focusable = modal.querySelector("button, input, select, a[href]");
     if (focusable) setTimeout(function () { focusable.focus(); }, 40);
   }
@@ -170,6 +176,7 @@
       var modal = $(standaloneOpen);
       if (modal) modal.hidden = true;
       standaloneOpen = null;
+      document.body.style.overflow = "";
     }
   }
 

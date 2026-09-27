@@ -1848,12 +1848,12 @@ await check("credentials never travel in a URL, and persistence is honest", asyn
     assert.ok(/Tokens are personal/.test(terms), "tokens are non-transferable");
     assert.ok(/no refund/i.test(terms), "donations are irreversible");
 
-    // Clicking a second link while one dialog is open must not stack two cards:
-    // the console's openModal does not close the previous one, so modals.js does.
+    // Clicking a second link while one dialog is open must not stack two cards —
+    // the console's openModal closes the previous dialog before opening the next.
     click('[data-open-modal="#modal-disclaimer"]');
     assert.equal(q("#modal-terms").hidden, true, "opening the disclaimer closes the terms");
     assert.equal(q("#modal-disclaimer").hidden, false);
-    assert.equal(api.state.modalOpen, "#modal-disclaimer");
+    assert.equal(api.state.modalOpen, "#modal-disclaimer", "the footer link opens the disclaimer");
     click('[data-open-modal="#modal-terms"]');
     assert.equal(q("#modal-disclaimer").hidden, true, "and vice versa");
     assert.equal(q("#modal-terms").hidden, false);
@@ -2109,6 +2109,195 @@ await check("credentials never travel in a URL, and persistence is honest", asyn
     assert.ok(second.querySelector("b"), "while the caller's own emphasis still renders");
 
     assert.deepEqual(jsdomErrors, [], "nothing threw while rendering hostile markup");
+  });
+
+  await check("weighted handshakes stop exactly where the Worker stops them", async () => {
+    const c = await consoleSession();
+    const { api, q, text, win } = c;
+    const nodes = Array.from(api.state.nodes.values());
+    const edges = Array.from(api.state.edges.values());
+
+    // A pair that is further apart than the weighted ceiling allows: without one,
+    // the cap cannot be observed at all.
+    let far = null;
+    for (const a of nodes) {
+      for (const b of nodes) {
+        if (a.key === b.key) continue;
+        const result = api.localShortestPath(nodes, edges, a.key, b.key, 12, "hops");
+        if (result && result.found && result.hops > 4) { far = { a, b, hops: result.hops }; break; }
+      }
+      if (far) break;
+    }
+    assert.ok(far, "the demo network must contain a pair more than four hops apart");
+
+    // The offline solver must apply the same ceiling as the Worker. Asking for 12
+    // weighted hops and getting 6 back is the bug: live, the API would have
+    // answered 4, so demo mode and production would disagree on identical input.
+    const weighted = api.localShortestPath(nodes, edges, far.a.key, far.b.key, 12, "inverse-weight");
+    assert.ok(!weighted || !weighted.found || weighted.hops <= 4,
+      `a weighted search must stop at four hops, got ${weighted && weighted.found ? weighted.hops : "not found"}`);
+    const byHops = api.localShortestPath(nodes, edges, far.a.key, far.b.key, 12, "hops");
+    assert.equal(byHops.found, true, "while a hop-count search still spans the whole graph");
+    assert.equal(byHops.hops, far.hops);
+
+    // The control has to say so: a slider that offers 12 while the API allows 4
+    // is a control that lies about what the analyst just asked for.
+    api.actions.switchView("path");
+    const hops = q("#path-hops");
+    const cost = q("#path-weight");
+    assert.equal(hops.max, "12", "hop-count searches may span the full range");
+    assert.ok(text("#path-hops-note").includes("12 hops"), `note: ${text("#path-hops-note")}`);
+
+    hops.value = "12";
+    hops.dispatchEvent(new win.Event("input", { bubbles: true }));
+    assert.equal(api.config.pathHops, 12);
+
+    cost.value = "inverse-weight";
+    cost.dispatchEvent(new win.Event("change", { bubbles: true }));
+    assert.equal(hops.max, "4", "switching to a weighted cost lowers the ceiling");
+    assert.ok(api.config.pathHops <= 4, `the stored value follows the ceiling, got ${api.config.pathHops}`);
+    assert.equal(text("#path-hops-out"), String(api.config.pathHops), "and the readout agrees");
+    assert.ok(/capped at 4 hops/.test(text("#path-hops-note")),
+      `the note must explain the cap, got: ${text("#path-hops-note")}`);
+
+    // End to end: the same pair, weighted, must come back unfound through the UI
+    // path exactly as the API would answer it.
+    const fromInput = q("#path-a");
+    const toInput = q("#path-b");
+    fromInput.value = far.a.key;
+    toInput.value = far.b.key;
+    fromInput.dispatchEvent(new win.Event("change", { bubbles: true }));
+    toInput.dispatchEvent(new win.Event("change", { bubbles: true }));
+    await api.actions.findPath();
+    await sleep(120);
+    assert.ok(!api.state.path || api.state.path.found === false,
+      "a weighted search beyond the ceiling finds nothing, rather than pretending to span it");
+
+    // Back to hop-count: the chain is there, and copy-Cypher reproduces the
+    // search that actually ran — same ceiling, not the slider's old maximum.
+    cost.value = "hops";
+    cost.dispatchEvent(new win.Event("change", { bubbles: true }));
+    assert.equal(hops.max, "12");
+    hops.value = "6";
+    hops.dispatchEvent(new win.Event("input", { bubbles: true }));
+    await api.actions.findPath();
+    await until(() => Boolean(api.state.path && api.state.path.found), "the chain to resolve", 6000);
+    assert.equal(api.state.path.found, true);
+    assert.ok(api.cypherForCurrentView().includes("[*1..6]"),
+      "copy-Cypher reproduces the ceiling the request used");
+    cost.value = "inverse-confidence";
+    cost.dispatchEvent(new win.Event("change", { bubbles: true }));
+    const weightedCypher = api.cypherForCurrentView();
+    assert.ok(/\[\*1\.\.[1-4]\]/.test(weightedCypher),
+      `a weighted reproduction must stay inside the weighted ceiling: ${weightedCypher.split("\n")[2]}`);
+
+    // Leave the shared session as the next check expects to find it.
+    cost.value = "hops";
+    cost.dispatchEvent(new win.Event("change", { bubbles: true }));
+    api.actions.switchView("graph");
+    q("#btn-path-clear").dispatchEvent(new win.MouseEvent("click", { bubbles: true }));
+    await sleep(40);
+  });
+
+
+  /* ---------------------------------------------------------------------- 31 */
+  await check("one dialog at a time — including the console's own buttons", async () => {
+    const { win, api, q, jsdomErrors } = await bootConsole({ quiet: true });
+    // modals.js owns the footer's delegated openers and calls into app.js.
+    win.eval(readWeb("modals.js"));
+    await sleep(20);
+    const openDialogs = () => Array.from(win.document.querySelectorAll(".modal"))
+      .filter((modal) => !modal.hidden)
+      .map((modal) => modal.id);
+
+    // The header's own buttons never passed through modals.js, so this is the
+    // path where two cards could end up on screen at once.
+    q("#btn-settings").dispatchEvent(new win.MouseEvent("click", { bubbles: true }));
+    assert.deepEqual(openDialogs(), ["modal-settings"]);
+    q("#btn-help").dispatchEvent(new win.MouseEvent("click", { bubbles: true }));
+    assert.deepEqual(openDialogs(), ["modal-help"],
+      "opening Help while Settings is showing must replace it, not stack a second card");
+    assert.equal(api.state.modalOpen, "#modal-help");
+    // A stranded card is worse than two cards: closeModal only ever hides what
+    // state.modalOpen points at, so the first dialog had no reachable close path.
+    api.actions.closeModal();
+    assert.deepEqual(openDialogs(), [], "closeModal dismisses the dialog that is on screen");
+    assert.equal(win.document.body.style.overflow, "", "and the page scrolls again afterwards");
+
+    // Mixed path: a console dialog open, then a footer link.
+    q("#btn-settings").dispatchEvent(new win.MouseEvent("click", { bubbles: true }));
+    q('[data-open-modal="#modal-donate"]').dispatchEvent(new win.MouseEvent("click", { bubbles: true }));
+    await sleep(20);
+    assert.deepEqual(openDialogs(), ["modal-donate"], "a footer dialog replaces a console dialog");
+    assert.equal(win.document.body.style.overflow, "hidden",
+      "the page must not scroll behind an open dialog");
+
+    win.document.dispatchEvent(new win.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await sleep(30);
+    assert.deepEqual(openDialogs(), [], "Escape closes whichever dialog is open");
+    assert.equal(win.document.body.style.overflow, "", "and unlocks scrolling");
+
+    // The HUD is the analyst's only readout of scale, so it has to agree with the
+    // graph model — before and after a filter narrows it.
+    const total = Number(String(q("#hud-nodes").textContent).replace(/,/g, ""));
+    assert.equal(total, api.state.nodes.size, "the HUD node count is the loaded set");
+    const classVisible = () => api.cy.nodes().filter((n) => !n.hasClass("flt-hidden")).length;
+    assert.equal(Number(String(q("#hud-shown").textContent).split("/")[0].replace(/,/g, "")),
+      classVisible(), "an unfiltered graph shows every node it holds");
+
+    const counts = new Map();
+    api.state.nodes.forEach((record) => {
+      const type = record.entity_type || "?";
+      counts.set(type, (counts.get(type) || 0) + 1);
+    });
+    const pick = Array.from(counts.entries()).find(([, count]) => count > 0 && count < total);
+    assert.ok(pick, "the dataset must hold more than one entity type for a type filter to mean anything");
+
+    api.state.filters.types = new Set([pick[0]]);
+    const shown = api.actions.applyFilters();
+    assert.equal(shown, classVisible(), "applyFilters returns exactly the nodes it left visible");
+    assert.equal(Number(String(q("#hud-shown").textContent).split("/")[0].replace(/,/g, "")), shown,
+      `the HUD must follow the filter (${pick[0]} only)`);
+    assert.ok(shown > 0 && shown < total, `a type filter must narrow ${total} nodes, got ${shown}`);
+
+    api.state.filters.types = new Set();
+    api.actions.applyFilters();
+    assert.equal(Number(String(q("#hud-shown").textContent).split("/")[0].replace(/,/g, "")), total,
+      "clearing the filter restores the full count");
+    assert.deepEqual(jsdomErrors, [], `the console threw: ${jsdomErrors[0]}`);
+  });
+
+  /* ---------------------------------------------------------------------- 32 */
+  await check("the zoom controls zoom instead of re-centring on nothing", async () => {
+    const { win, api, q, jsdomErrors } = await bootConsole({ quiet: true });
+    const cy = api.cy;
+    const animations = [];
+    const realAnimate = cy.animate.bind(cy);
+    cy.animate = (opts, params) => { animations.push({ opts, params }); return realAnimate(opts, params); };
+
+    const before = cy.zoom();
+    q("#btn-zoom-in").dispatchEvent(new win.MouseEvent("click", { bubbles: true }));
+    assert.equal(animations.length, 1, "one click, one animation");
+    assert.ok(!("center" in animations[0].opts),
+      `zooming must not move the pan, got: ${JSON.stringify(animations[0].opts)}`);
+    assert.ok(animations[0].opts.zoom > before, `zoom in must grow the view (${before} -> ${animations[0].opts.zoom})`);
+    assert.ok(animations[0].opts.zoom <= cy.maxZoom() + 1e-9, "and stay inside the configured maximum");
+
+    q("#btn-zoom-out").dispatchEvent(new win.MouseEvent("click", { bubbles: true }));
+    assert.ok(animations[1].opts.zoom < animations[0].opts.zoom, "zoom out must shrink the view again");
+    assert.ok(animations[1].opts.zoom >= cy.minZoom() - 1e-9, "and stay inside the configured minimum");
+
+    // The keyboard path shares the function, so it shares the guarantees.
+    win.document.dispatchEvent(new win.KeyboardEvent("keydown", { key: "+", bubbles: true }));
+    assert.equal(animations.length, 3, "the + key drives the same zoom");
+
+    win.document.body.classList.add("reduce-motion");
+    q("#btn-zoom-in").dispatchEvent(new win.MouseEvent("click", { bubbles: true }));
+    assert.equal(animations.at(-1).params.duration, 0,
+      "reduce-motion means the viewport jumps instead of animating");
+    win.document.body.classList.remove("reduce-motion");
+
+    assert.deepEqual(jsdomErrors, [], `the console threw: ${jsdomErrors[0]}`);
   });
 
 clearTimeout(WATCHDOG);
