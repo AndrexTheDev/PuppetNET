@@ -117,7 +117,7 @@ class Settings:
     http_backoff_cap_seconds: float = 45.0
     http_max_response_bytes: int = 12 * 1024 * 1024
     http_user_agent: str = (
-        "PuppetNET-OSINT/1.4 (+https://github.com/AndrexTheDev/PuppetNET; research bot)"
+        "PuppetNET-OSINT/1.5 (+https://github.com/AndrexTheDev/PuppetNET; research bot)"
     )
 
     # -- NLP ----------------------------------------------------------------
@@ -161,6 +161,43 @@ class Settings:
     register_files: list[str] = field(default_factory=list)
     rss_feeds: list[str] = field(default_factory=list)
     extra_headers_json: str = ""
+
+    # -- OSINT endpoints ----------------------------------------------------
+    #: Real target endpoints. Every one is overridable so a mirror, a corporate
+    #: egress proxy or a local dump can be substituted without a code change.
+    wikidata_endpoint: str = "https://query.wikidata.org/sparql"
+    opencorporates_endpoint: str = "https://api.opencorporates.com/v0.4"
+    icij_base_url: str = "https://offshoreleaks.icij.org"
+    #: Page listing the downloadable Offshore Leaks dumps; the adapter reads the
+    #: ``.zip`` links from it when ``ICIJ_DATASET_URLS`` is empty.
+    icij_data_index_url: str = "https://offshoreleaks.icij.org/pages/database"
+    #: FAA monthly registry dump: N-number → registrant (owner) + address.
+    faa_registry_url: str = "https://registry.faa.gov/database/ReleasableAircraft.zip"
+    #: Free community read-through of ADS-B Exchange data.
+    adsbdb_endpoint: str = "https://www.adsbdb.com/api/v1"
+    #: ADS-B Exchange v2 via RapidAPI (needs ``ADSBEXCHANGE_API_KEY``).
+    adsbexchange_endpoint: str = "https://adsbexchange-com1.p.rapidapi.com"
+    adsbexchange_api_key: str = ""
+    rapidapi_host: str = "adsbexchange-com1.p.rapidapi.com"
+    #: Passenger manifests / flight logs (PDF, CSV or plain text).
+    flight_log_urls: list[str] = field(default_factory=list)
+    #: Tail numbers to enrich on every run.
+    aircraft_tail_numbers: list[str] = field(default_factory=list)
+
+    # -- Calculated layer (PUPPET_MASTER_OF + Person.risk_score) ------------
+    analytics_enabled: bool = True
+    #: People scored per run; keeps a pathological graph from stalling the job.
+    analytics_max_persons: int = 5_000
+    #: Previously written edges folded into today's score (0 = in-run data only).
+    analytics_graph_edge_limit: int = 50_000
+    #: Calculated edges not refreshed within this many days are deleted.
+    analytics_prune_days: int = 14
+    #: Minimum ``Person.risk_score`` before a PUPPET_MASTER_OF edge is written.
+    puppet_master_min_score: float = 0.40
+    #: Targets kept per person.
+    puppet_master_top_n: int = 8
+    #: Global cap on calculated edges per run.
+    puppet_master_max_edges: int = 2_000
 
     # -- Runtime behaviour --------------------------------------------------
     dry_run: bool = False
@@ -219,7 +256,7 @@ class Settings:
     def describe(self) -> dict[str, Any]:
         """Redacted snapshot for logs and the run report."""
         sensitive = {"neo4j_password", "worker_token", "opencorporates_api_token",
-                     "companies_house_api_key", "extra_headers_json"}
+                     "companies_house_api_key", "adsbexchange_api_key", "extra_headers_json"}
         out: dict[str, Any] = {}
         for key, value in self.__dict__.items():
             if key in sensitive:
@@ -260,15 +297,17 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
     ``env`` may be supplied for tests; otherwise ``os.environ`` is used.
     """
     if env is not None:
+        # Snapshot first: the caller may hand us ``os.environ`` itself, and
+        # clearing it before reading would silently drop every value.
+        incoming = {k: str(v) for k, v in env.items()}
         previous = dict(os.environ)
         os.environ.clear()
-        os.environ.update({k: str(v) for k, v in env.items()})
+        os.environ.update(incoming)
     try:
         models = _env_list(
             "SPACY_MODELS",
             default=["en_core_web_trf", "en_core_web_lg", "en_core_web_md", "en_core_web_sm"],
         )
-        # A single legacy variable is still honoured.
         # A single legacy variable always wins the preference order, even when
         # it is also listed in SPACY_MODELS.
         single = _env_str("SPACY_MODEL")
@@ -336,13 +375,35 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
             companies_house_api_key=_env_str("COMPANIES_HOUSE_API_KEY", ""),
             wikidata_user_agent=_env_str(
                 "WIKIDATA_USER_AGENT",
-                "PuppetNET-OSINT/1.4 (https://github.com/AndrexTheDev/PuppetNET; contact: ops@example.org)",
+                "PuppetNET-OSINT/1.5 (https://github.com/AndrexTheDev/PuppetNET; contact: ops@example.org)",
             ),
             icij_dataset_urls=_env_list("ICIJ_DATASET_URLS"),
             icij_officer_query_terms=_env_list("ICIJ_QUERY_TERMS"),
             wikidata_queries=[q.lower() for q in _env_list("WIKIDATA_QUERIES")],
             register_files=_env_list("REGISTER_FILES"),
             rss_feeds=_env_list("RSS_FEEDS"),
+            wikidata_endpoint=_env_str("WIKIDATA_ENDPOINT", Settings.wikidata_endpoint),
+            opencorporates_endpoint=_env_str("OPENCORPORATES_ENDPOINT", Settings.opencorporates_endpoint),
+            icij_base_url=_env_str("ICIJ_BASE_URL", Settings.icij_base_url),
+            icij_data_index_url=_env_str("ICIJ_DATA_INDEX_URL", Settings.icij_data_index_url),
+            faa_registry_url=_env_str("FAA_REGISTRY_URL", Settings.faa_registry_url),
+            adsbdb_endpoint=_env_str("ADSDBD_ENDPOINT", Settings.adsbdb_endpoint),
+            adsbexchange_endpoint=_env_str("ADSBEXCHANGE_ENDPOINT", Settings.adsbexchange_endpoint),
+            # ADS-B Exchange is sold through RapidAPI; accept either naming.
+            adsbexchange_api_key=_env_str(
+                "ADSBEXCHANGE_API_KEY",
+                _env_str("X_RAPIDAPI_KEY", _env_str("RAPIDAPI_KEY", "")),
+            ),
+            rapidapi_host=_env_str("RAPIDAPI_HOST", Settings.rapidapi_host),
+            flight_log_urls=_env_list("FLIGHT_LOG_URLS"),
+            aircraft_tail_numbers=[tail.strip().upper() for tail in _env_list("AIRCRAFT_TAIL_NUMBERS") if tail.strip()],
+            analytics_enabled=_env_bool("ANALYTICS_ENABLED", True),
+            analytics_max_persons=_env_int("ANALYTICS_MAX_PERSONS", 5_000),
+            analytics_graph_edge_limit=_env_int("ANALYTICS_GRAPH_EDGE_LIMIT", 50_000),
+            analytics_prune_days=_env_int("ANALYTICS_PRUNE_DAYS", 14),
+            puppet_master_min_score=_env_float("PUPPET_MASTER_MIN_SCORE", 0.40),
+            puppet_master_top_n=_env_int("PUPPET_MASTER_TOP_N", 8),
+            puppet_master_max_edges=_env_int("PUPPET_MASTER_MAX_EDGES", 2_000),
             extra_headers_json=_env_str("EXTRA_HEADERS_JSON", ""),
             dry_run=_env_bool("DRY_RUN", False),
             log_level=_env_str("LOG_LEVEL", "INFO").upper(),

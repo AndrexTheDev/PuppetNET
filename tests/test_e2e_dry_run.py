@@ -11,10 +11,12 @@ only two things are substituted:
   written.
 
 The assertions therefore check the contract the specification asks for:
-structured sources produce weight-1.0 edges, news produces co-occurrence-priced
-edges (0.4 source weight × the 0.2 penalty), CRAFT identifiers survive all the
-way into a ``:Craft`` upsert row, and a replay of the same day writes nothing
-new.
+structured sources produce edges at their declared weight — 1.0 for the official
+registers and leaks, 0.9 for the second-hand aggregators Wikidata and
+OpenCorporates, 0.8 for aviation telemetry — with no method or evidence penalty;
+news produces co-occurrence-priced edges (0.4 source weight × the 0.2 penalty);
+CRAFT identifiers survive all the way into a ``:Craft`` upsert row; and a replay
+of the same day writes nothing new.
 """
 
 from __future__ import annotations
@@ -31,6 +33,7 @@ from puppetnet.graph.neo4j_client import Neo4jClient
 from puppetnet.models import RelationType
 from puppetnet.net.proxy_client import FetchClient, FetchResult
 from puppetnet.pipeline import IngestPipeline, PipelineOptions
+from puppetnet.sources.registry import SOURCE_REGISTRY
 
 # --------------------------------------------------------------------------- #
 # Canned upstream payloads
@@ -299,10 +302,15 @@ def test_structured_edges_keep_full_weight_and_news_edges_are_penalised(env, mon
 
     structured = rows_for(captured_batches, "relations:OWNED_BY") + rows_for(captured_batches, "relations:REGISTERED_IN")
     assert structured, "the structured adapters produced no edges"
+    declared = {spec.id: spec.confidence for spec in SOURCE_REGISTRY}
     for row in structured:
-        assert row["source_weight"] == pytest.approx(1.0)
-        assert row["confidence"] == pytest.approx(1.0), row
         assert row["method"] == "structured"
+        # Wikidata and OpenCorporates are second-hand, so they are declared at
+        # 0.9 rather than the 1.0 an official register gets.
+        assert row["source_weight"] == pytest.approx(declared[row["source_id"]]), row
+        # A structured edge keeps the whole declared weight: method factor 1.0,
+        # evidence score 1.0.
+        assert row["confidence"] == pytest.approx(row["source_weight"]), row
 
     news = [
         row
@@ -414,13 +422,21 @@ def test_the_yaml_overlay_reached_the_adapters(env, monkeypatch, captured_batche
     assert pipeline._resolve_specs.__name__ == "_resolve_specs"
 
 
-def test_sparql_request_carries_the_limit_and_user_agent(env, monkeypatch, captured_batches):
+def test_sparql_is_posted_as_a_form_with_limit_maxlag_and_user_agent(env, monkeypatch, captured_batches):
     _, fetch = run_e2e(env, monkeypatch)
     kwargs = next(k for url, k in fetch.requested if url.startswith(SPARQL_ENDPOINT))
 
-    assert "LIMIT 25" in kwargs["params"]["query"]
-    assert kwargs["params"]["format"] == "json"
+    # POST, not GET: these queries run to kilobytes and a GET URL is truncated
+    # long before WDQS's own limits.
+    assert kwargs["method"] == "POST"
+    assert kwargs["params"] is None
+    assert "LIMIT 25" in kwargs["data"]["query"]
+    assert kwargs["data"]["format"] == "json"
+    # This overlay sets maxlag: 0, which drops the parameter; the default run
+    # sends maxlag=5 (asserted in tests/test_sources.py).
+    assert "maxlag" not in kwargs["data"]
     assert kwargs["headers"]["User-Agent"]
+    assert kwargs["headers"]["Accept"].startswith("application/sparql-results+json")
     assert kwargs["source_id"] == "wikidata"
     assert kwargs["respect_robots"] is False, "Wikidata publishes a UA policy instead"
 
@@ -449,7 +465,7 @@ def test_news_article_provenance_survives_to_the_document_node(env, monkeypatch,
     assert story["run_id"] == "run-e2e-0001"
 
     wikidata_row = next(row for row in documents if row["source_id"] == "wikidata")
-    assert wikidata_row["source_weight"] == pytest.approx(1.0)
+    assert wikidata_row["source_weight"] == pytest.approx(0.9)
 
 
 def test_entity_rows_carry_provenance_and_aliases(env, monkeypatch, captured_batches):

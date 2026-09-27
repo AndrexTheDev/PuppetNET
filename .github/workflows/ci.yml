@@ -95,6 +95,13 @@ jobs:
       - name: Syntax check worker.js
         run: node --check worker.js
 
+      # Runs the exported fetch handler against a stubbed upstream: proves the
+      # host profiles relay WDQS SPARQL as a polite form POST, cap the caller's
+      # rate, inject OpenCorporates/RapidAPI credentials at the edge and never
+      # echo a secret back to the harvester. No network, no wrangler, no bindings.
+      - name: Behavioural smoke test (host profiles)
+        run: node tests/worker_smoke.mjs
+
       - name: Validate wrangler.toml
         run: |
           node -e '

@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import Settings, load_settings, resolve_source_specs
+from .graph.analytics import AnalyticsEngine
 from .graph.neo4j_client import Neo4jClient, Neo4jUnavailable
 from .graph.resolver import EntityResolver
 from .graph.writer import GraphWriter, WriteSummary, summarise_relations
@@ -88,6 +89,8 @@ class RunReport:
     graph: dict[str, Any]
     network: dict[str, Any]
     relations_by_type: dict[str, Any]
+    #: The calculated layer: PUPPET_MASTER_OF scoring for this run.
+    analytics: dict[str, Any] = field(default_factory=dict)
     report_path: str = ""
     markdown_path: str = ""
 
@@ -101,6 +104,7 @@ class RunReport:
             "graph": self.graph,
             "network": self.network,
             "relations_by_type": self.relations_by_type,
+            "analytics": self.analytics,
             "report_path": self.report_path,
             "markdown_path": self.markdown_path,
         }
@@ -138,6 +142,7 @@ class IngestPipeline:
         self._relation_pool: list[Relation] = []
         self._relation_pool_cap = 50_000
         self._cumulative_summary = WriteSummary()
+        self._analytics: dict[str, Any] = {}
 
     # ------------------------------------------------------------------ #
     # Public entry point
@@ -170,6 +175,7 @@ class IngestPipeline:
                 known_hashes = self._load_dedupe_index()
                 self._harvest(specs, known_hashes)
                 self._flush_pending(final=True)
+                self._analyse_graph()
         except Neo4jUnavailable as exc:
             status = "failed"
             self.logger.error("Neo4j unavailable — aborting run: %s", exc)
@@ -515,6 +521,78 @@ class IngestPipeline:
         for key, value in summary.entities_by_type.items():
             self._cumulative_summary.entities_by_type[key] = self._cumulative_summary.entities_by_type.get(key, 0) + value
 
+    def _analyse_graph(self) -> None:
+        """Score the graph and write the calculated ``PUPPET_MASTER_OF`` layer.
+
+        This runs *after* the harvest is written, because influence scoring is
+        only as good as the graph it reads: the engine folds this run's edges
+        together with what Neo4j already holds (earlier runs, other pipelines),
+        so a person whose shells were harvested last week still scores today.
+
+        It is also strictly non-fatal. A scoring bug or a database that went
+        away mid-run must not discard a completed harvest, so every failure is
+        logged, recorded against the run and reported as ``status: failed`` in
+        the analytics section of the report — the exit code stays whatever the
+        harvest decided.
+        """
+        if not self.settings.analytics_enabled:
+            self.logger.info("analytics disabled (ANALYTICS_ENABLED=false) — no calculated layer this run")
+            self._analytics = {"status": "disabled"}
+            return
+        if self.neo4j is None:
+            self._analytics = {"status": "skipped", "reason": "graph not initialised"}
+            return
+
+        self.logger.info(
+            "analytics: scoring %d harvested edge(s) against the graph (min_score=%.2f, top_n=%d)",
+            len(self._relation_pool),
+            self.settings.puppet_master_min_score,
+            self.settings.puppet_master_top_n,
+        )
+        try:
+            engine = AnalyticsEngine(
+                self.neo4j,
+                self.settings,
+                stats=self.stats,
+                writer=self.writer,
+                run_id=self.run_id,
+            )
+            result = engine.analyse(relations=self._relation_pool)
+            edges, risk = engine.write(result)
+        except Exception as exc:  # noqa: BLE001 - see docstring
+            self.logger.exception("analytics pass failed: %s", exc)
+            self.stats.record_error("analytics", f"{exc.__class__.__name__}: {exc}")
+            self._analytics = {"status": "failed", "error": f"{exc.__class__.__name__}: {exc}"[:400]}
+            return
+
+        summary = result.to_dict()
+        summary["status"] = "completed"
+        summary["edges_written"] = edges
+        summary["risk_scores_written"] = risk
+        self._analytics = summary
+        self.stats.bump_source("analytics", "persons_scored", len(result.persons))
+        self.stats.bump_source("analytics", "nodes_considered", result.nodes_considered)
+        self.logger.info(
+            "analytics: %d person(s) scored over %d node(s)/%d edge(s) → %d PUPPET_MASTER_OF, "
+            "%d risk score(s), %d stale edge(s) pruned in %.1fs",
+            len(result.persons),
+            result.nodes_considered,
+            result.edges_considered + result.graph_edges_read,
+            edges,
+            risk,
+            result.pruned,
+            result.seconds,
+        )
+        if result.persons:
+            top = max(result.persons, key=lambda person: person.risk_score)
+            self.logger.info(
+                "analytics: highest score %.3f — %s (%d controlled entit%s)",
+                top.risk_score,
+                top.name,
+                len(top.targets),
+                "y" if len(top.targets) == 1 else "ies",
+            )
+
     def _flush_pending(self, *, final: bool = False) -> None:
         """Nothing is buffered across sources today, but keep the hook explicit."""
         if final and self.writer is not None:
@@ -581,6 +659,7 @@ class IngestPipeline:
             graph=graph_info,
             network=network_info,
             relations_by_type=summarise_relations(self._relation_pool),
+            analytics=self._analytics,
         )
 
     def _write_reports(self, report: RunReport) -> None:

@@ -74,6 +74,8 @@ SOURCE_REGISTRY: tuple[SourceSpec, ...] = (
         cache_ttl_seconds=43200,
         timeout_ms=30_000,
         max_documents=150,
+        # Commercial aggregator over 140+ registries: structured, but second-hand.
+        confidence_override=0.9,
         options={
             "queries": [],
             "jurisdictions": ["gb", "us_de", "hk", "sg", "ch", "lu", "cy", "mt", "vg", "ky", "pa", "sc"],
@@ -98,10 +100,116 @@ SOURCE_REGISTRY: tuple[SourceSpec, ...] = (
         cache_ttl_seconds=86400,
         timeout_ms=120_000,
         max_documents=60,
+        # Crowdsourced and only as current as its last edit.
+        confidence_override=0.9,
         options={
-            "queries": ["ownership", "subsidiaries", "board_members", "aircraft_operators", "vessel_operators", "political_positions"],
+            "queries": [
+                "ownership",
+                "subsidiaries",
+                "board_members",
+                "foundation_trustees",
+                "aircraft_operators",
+                "vessel_operators",
+                "political_positions",
+            ],
             "limit_per_query": 150,
             "maxlag": 5,
+            # People who sit on the same board/foundation are linked to each other
+            # (ASSOCIATED_WITH, 0.2) — bounded so a 400-seat board is skipped.
+            "link_shared_organizations": True,
+            "max_shared_org_members": 24,
+            "max_pairs_per_org": 12,
+        },
+    ),
+    # ------------------------------------------------------------------ #
+    # Aviation: registries, telemetry and passenger manifests — weight 1.0
+    # for the official register, 0.8 for second-hand/self-reported data.
+    # ------------------------------------------------------------------ #
+    SourceSpec(
+        id="faa_registry",
+        name="FAA Aircraft Registry",
+        kind=_STRUCTURED,
+        adapter="faa_registry",
+        base_url="https://registry.faa.gov",
+        description=(
+            "The FAA's monthly Releasable Aircraft dump: every US-registered N-number "
+            "with its registrant, address and airframe data. Produces OWNS edges and "
+            "SHARES_ADDRESS edges between registrants at one normalised address."
+        ),
+        rate_per_sec=0.1,
+        burst=1,
+        respect_robots=True,
+        cache_ttl_seconds=86400,
+        # Bulk ZIP over a slow government host; streaming is direct, not relayed.
+        timeout_ms=180_000,
+        max_documents=20,
+        confidence_override=1.0,
+        options={
+            # Empty → settings.faa_registry_url (FAA_REGISTRY_URL). A local path works too.
+            "dump_url": "",
+            "row_limit": 20_000,
+            # The dump is republished monthly; re-parsing it daily wastes the run.
+            "refresh_days": 30,
+            "tail_numbers": [],
+            "registrant_names": [],
+            "states": [],
+            "min_shared_address_size": 2,
+            "max_shared_address_size": 40,
+            "max_pairs_per_address": 24,
+            "stream_bytes_multiplier": 8,
+        },
+    ),
+    SourceSpec(
+        id="adsb_exchange",
+        name="ADS-B Exchange / adsbdb",
+        kind=_STRUCTURED,
+        adapter="adsb",
+        base_url="https://www.adsbdb.com/api/v1",
+        description=(
+            "Per-tail aircraft enrichment from ADS-B Exchange data: registered owner, "
+            "owner location, airframe type and registry country. Uses adsbdb.com when "
+            "no key is configured and the ADS-B Exchange v2 API on RapidAPI when "
+            "ADSBEXCHANGE_API_KEY is set."
+        ),
+        rate_per_sec=0.5,
+        burst=2,
+        respect_robots=True,
+        cache_ttl_seconds=43200,
+        timeout_ms=30_000,
+        max_documents=200,
+        # Telemetry and registration lookups are self-reported/aggregated.
+        confidence_override=0.8,
+        options={
+            # Empty → settings.aircraft_tail_numbers (AIRCRAFT_TAIL_NUMBERS).
+            "tail_numbers": [],
+            "callsigns": [],
+        },
+    ),
+    SourceSpec(
+        id="flight_logs",
+        name="Flight logs & passenger manifests",
+        kind=_STRUCTURED,
+        adapter="flight_logs",
+        base_url="",
+        description=(
+            "Passenger manifests released as CSV, text or PDF (court exhibits, FOIA "
+            "dumps, operator logs). Tabular manifests become PASSENGER_ON and "
+            "TRAVELED_WITH edges directly; unstructured logs are handed to the NLP "
+            "pipeline as text."
+        ),
+        rate_per_sec=0.5,
+        burst=2,
+        respect_robots=True,
+        cache_ttl_seconds=21600,
+        timeout_ms=60_000,
+        max_documents=100,
+        confidence_override=0.8,
+        options={
+            # Empty → settings.flight_log_urls (FLIGHT_LOG_URLS, comma-separated).
+            "flight_log_urls": [],
+            "link_copassengers": True,
+            "max_copassenger_pairs": 60,
+            "default_tail_numbers": [],
         },
     ),
     SourceSpec(

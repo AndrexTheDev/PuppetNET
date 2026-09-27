@@ -34,17 +34,14 @@ ICIJ link types → PuppetNET predicates::
 
 from __future__ import annotations
 
-import contextlib
 import csv
-import io
 import os
 import re
-import tempfile
-import zipfile
 from collections.abc import Iterable, Iterator, Sequence
 from typing import Any
 
-from ..models import Document, Entity, EntityType, Relation, RelationType
+from ..models import Document, Entity, EntityType, Relation, RelationType, has_organizational_marker
+from .archive import stream_archive_members
 from .base import SourceAdapter
 
 __all__ = ["IcijLeaksAdapter"]
@@ -334,55 +331,26 @@ class IcijLeaksAdapter(SourceAdapter):
         self._save_state(state)
 
     def _iter_dataset_members(self, url: str) -> Iterator[tuple[str, Iterator[str]]]:
-        """Yield ``(member_name, line_iterator)`` for a TSV/CSV/GZ/ZIP dataset URL."""
-        lower = url.lower().split("?")[0]
-        if lower.endswith(".zip"):
-            yield from self._iter_zip_members(url)
-            return
+        """Yield ``(member_name, line_iterator)`` for a TSV/CSV/GZ/ZIP dataset URL.
 
-        lines = self.client.stream_lines(url, source=self.spec, source_id=self.spec.id, mode="bot")
-        if lower.endswith(".gz"):
-            yield (os.path.basename(lower)[:-3], _gunzip_lines_iter(self._read_all(lines)))
-        else:
-            yield (os.path.basename(lower) or "dataset", lines)
+        Delegates to :mod:`puppetnet.sources.archive`, which streams the payload
+        to a temp file rather than holding a multi-hundred-megabyte dump in
+        memory. ``ICIJ_DATASET_URLS`` may also point at a local path, which is
+        how an operator feeds a dump they already downloaded.
+        """
+        max_bytes = self._stream_max_bytes()
+        yield from stream_archive_members(
+            self.client,
+            url,
+            spec=self.spec,
+            max_bytes=max_bytes,
+            member_filter=lambda name: "edges" in name.lower() or "nodes" in name.lower() or name.lower().endswith((".tsv", ".csv")),
+        )
 
-    def _read_all(self, lines: Iterator[str]) -> Iterator[bytes]:
-        for line in lines:
-            yield (line + "\n").encode("utf-8", "replace")
-
-    def _iter_zip_members(self, url: str) -> Iterator[tuple[str, Iterator[str]]]:
-        """Stream a ZIP to a temp file, then yield its TSV/CSV members."""
-        max_bytes = int(self.settings.http_max_response_bytes)
-        buffer = io.BytesIO()
-        total = 0
-        for line in self.client.stream_lines(url, source=self.spec, source_id=self.spec.id, mode="bot", max_bytes=max_bytes * 4):
-            chunk = line.encode("utf-8", "replace")
-            buffer.write(chunk)
-            total += len(chunk)
-            if total > max_bytes * 4:
-                self.log.warning("ZIP payload exceeded the %d-byte cap; processing what was received", max_bytes * 4)
-                break
-
-        buffer.seek(0)
-        tmp_path = ""
-        try:
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".zip") as handle:
-                handle.write(buffer.getvalue())
-                tmp_path = handle.name
-            with zipfile.ZipFile(tmp_path) as archive:
-                for info in archive.infolist():
-                    if info.is_dir() or not info.filename.lower().endswith((".tsv", ".csv", ".txt")):
-                        continue
-                    with archive.open(info) as member:
-                        wrapper = io.TextIOWrapper(member, encoding="utf-8", errors="replace")
-                        yield (info.filename, wrapper)
-        except (zipfile.BadZipFile, OSError, ValueError) as exc:
-            self.log.warning("could not process ICIJ ZIP %s: %s", url, exc)
-            self.stats.bump_source(self.spec.id, "errors")
-        finally:
-            if tmp_path:
-                with contextlib.suppress(OSError):
-                    os.unlink(tmp_path)
+    def _stream_max_bytes(self) -> int:
+        """Payload ceiling for a bulk dump (default: 8× the HTTP response cap)."""
+        multiplier = float(self.option("stream_bytes_multiplier", 8))
+        return int(max(1, multiplier) * int(self.settings.http_max_response_bytes))
 
     def _iter_tsv_rows(self, lines: Iterator[str]) -> Iterator[dict[str, str]]:
         """Parse a TSV/CSV stream into dicts using canonicalised column names."""
@@ -576,43 +544,40 @@ def first_present(row: dict[str, str], keys: Iterable[str]) -> str:
 
 
 def _gunzip_lines_iter(chunks: Iterator[bytes]) -> Iterator[str]:
-    """Incremental gzip → text lines."""
-    decompressor = None
-    try:
-        import zlib
+    """Incremental gzip → text lines (kept as a thin alias for tests)."""
+    from .archive import gunzip_lines
 
-        decompressor = zlib.decompressobj(16 + zlib.MAX_WBITS)
-    except Exception:  # pragma: no cover
-        decompressor = None
-    if decompressor is None:  # pragma: no cover
-        for chunk in chunks:
-            yield chunk.decode("utf-8", "replace")
-        return
-    buffer = b""
-    for chunk in chunks:
-        try:
-            buffer += decompressor.decompress(chunk)
-        except Exception:  # noqa: BLE001 - malformed gzip
-            break
-        while b"\n" in buffer:
-            line, buffer = buffer.split(b"\n", 1)
-            yield line.decode("utf-8", "replace")
-    if buffer:
-        yield buffer.decode("utf-8", "replace")
+    return gunzip_lines(chunks)
+
+
+#: ICIJ officer rows are frequently corporate vehicles in ALL CAPS ("TRIDENT
+#: TRUST LIMITED", "MOSSACK FONSECA & CO"). Matching is done on token
+#: boundaries: a naive substring test reads "Lincoln" as "inc" and "Prince" as
+#: "inc" too, which is exactly the kind of error that turns a person into a
+#: shell company in the graph.
+_CORPORATE_MARKERS: tuple[str, ...] = (
+    "ltd", "limited", "inc", "incorporated", "llc", "llp", "lp", "plc", "gmbh", "ag",
+    "corp", "corporation", "company", "co", "holdings", "holding", "group", "bank",
+    "trust", "trustee", "trustees", "foundation", "stichting", "stiftung", "anstalt",
+    "est", "pte", "pvt", "pty", "bv", "b v", "nv", "s a", "sa", "sarl", "srl", "sas",
+    "sca", "spa", "ooo", "oao", "pjsc", "ojsc", "jsc", "cjsc", "pao", "as", "asa",
+    "oy", "ab", "oyj", "partners", "partnership", "international", "overseas",
+    "enterprises", "enterprise", "investments", "investment", "capital", "services",
+    "shipping", "maritime", "airlines", "airways", "aviation", "nominees", "nominee",
+    "associates", "consultants", "consulting", "management", "ventures", "assets",
+)
 
 
 def _looks_corporate(name: str) -> bool:
-    if not name:
+    """True when an ICIJ "officer" row is really a corporate vehicle."""
+    text = str(name or "").strip()
+    if not text:
         return False
-    lowered = name.lower()
-    markers = (
-        " ltd", " limited", " inc", " incorporated", " llc", " llp", " plc", " gmbh", " s.a.", " sa ",
-        " corporation", " corp", " company", " co.", " holdings", " group", " international", " bank",
-        " trust", " foundation", " partners", " enterprises", " trading", " investments", " capital",
-        " pte", " pvt", " b.v.", " nv", " ag ", " oy", " ab ", " ojsc", " pjsc", " oao", " zao", " ooo",
-        " s.r.l.", " srl", " sas", " consulting", " logistics", " shipping", " offshore", " services",
-    )
-    return any(marker in f" {lowered} " for marker in markers) or lowered.endswith(("ltd", "inc", "llc", "plc", "gmbh", "sa"))
+    if has_organizational_marker(text):
+        return True
+    tokens = re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
+    padded = f" {tokens} "
+    return any(f" {marker} " in padded for marker in _CORPORATE_MARKERS)
 
 
 def _looks_like_address(name: str) -> bool:

@@ -1047,11 +1047,136 @@ def test_write_entities_groups_one_statement_per_type(writer):
     assert written == 4
     assert len(resolved) == 4
     assert writer.stats.entities_written == 4
-    assert writer.summary.entities_by_type == {"Organization": 2, "Person": 1, "Craft": 1}
+    # Grouping is per (entity type, domain labels), so the type counters are
+    # unchanged and the domain labels are reported alongside them.
+    assert writer.summary.entities_by_type["Organization"] == 2
+    assert writer.summary.entities_by_type["Person"] == 1
+    assert writer.summary.entities_by_type["Craft"] == 1
+    assert writer.summary.entities_by_type["Company"] == 2
+    assert writer.summary.entities_by_type["Aircraft"] == 1
     queries = [entry["query_preview"] for entry in recorded(writer.client)]
     assert any(":Organization" in query for query in queries)
     assert any(":Person" in query for query in queries)
     assert any(":Craft" in query for query in queries)
+
+
+class CapturingClient(Neo4jClient):
+    """Dry-run client that keeps the *full* query and rows of every batch."""
+
+    def __init__(self, settings, **kwargs) -> None:
+        super().__init__(settings, **kwargs)
+        self.batches: list[dict] = []
+
+    def execute_batches(self, query, rows, *, label: str = "", **kwargs):
+        self.batches.append({"label": label, "query": query, "rows": list(rows)})
+        return super().execute_batches(query, rows, label=label, **kwargs)
+
+
+@pytest.fixture()
+def capturing_writer(dry_settings):
+    client = CapturingClient(dry_settings)
+    return GraphWriter(client, dry_settings, stats=IngestStats(run_id=dry_settings.run_id))
+
+
+def _entity_batch(writer, entity_node):
+    """Run one entity through the writer and return the batch it produced."""
+    before = len(writer.client.batches)
+    writer.write_entities([entity_node])
+    added = [b for b in writer.client.batches[before:] if b["label"].startswith("entities:")]
+    assert len(added) == 1, f"expected exactly one entity statement, got {len(added)}"
+    return added[0]
+
+
+def test_write_entities_sets_domain_labels(capturing_writer):
+    """A leaked BVI vehicle becomes :Entity:Organization:Company:ShellCompany:Offshore."""
+    shell = entity(
+        "Kerimov Holdings Ltd",
+        properties={
+            "jurisdiction": "British Virgin Islands",
+            "status": "Dormant",
+            "nominee": True,
+            "service_provider": "Trident Trust",
+            "icij_node_id": "node/120483",
+        },
+    )
+    batch = _entity_batch(capturing_writer, shell)
+
+    # The MERGE key stays the immutable type label; the mutable domain labels are
+    # SET/REMOVE'd after it so a reclassification converges instead of
+    # duplicating the node (which would trip the canonical_key constraint).
+    assert "MERGE (e:Entity:Organization {canonical_key: row.canonical_key})" in batch["query"]
+    assert "SET e:Company" in batch["query"]
+    assert "SET e:ShellCompany" in batch["query"]
+    assert "SET e:Offshore" in batch["query"]
+    assert "REMOVE e:Foundation" in batch["query"]
+
+    props = batch["rows"][0]["properties"]
+    assert props["is_shell"] is True
+    assert props["shell_risk"] >= 0.5
+    assert "secrecy jurisdiction" in props["shell_risk_reasons"]
+    assert props["jurisdiction_class"] == "secrecy"
+
+
+def test_write_entities_keeps_trading_companies_out_of_the_shell_label(capturing_writer):
+    trading = entity(
+        "Rolls-Royce plc",
+        properties={"jurisdiction_code": "gb", "reg_number": "07185010", "website": "https://rolls-royce.com"},
+    )
+    batch = _entity_batch(capturing_writer, trading)
+    assert "SET e:Company" in batch["query"]
+    assert "ShellCompany" not in batch["query"]
+    assert batch["rows"][0]["properties"].get("is_shell") in (None, False)
+
+
+def test_write_entities_stamps_aircraft_properties(capturing_writer):
+    aircraft = entity(
+        "N707WA",
+        EntityType.CRAFT,
+        properties={"craft_kind": "Aircraft", "registration": "N707WA", "owner": "WWL Aircraft LLC"},
+    )
+    batch = _entity_batch(capturing_writer, aircraft)
+    assert "MERGE (e:Entity:Craft" in batch["query"]
+    assert "SET e:Aircraft" in batch["query"]
+    assert "REMOVE e:Vessel" in batch["query"] and "REMOVE e:Vehicle" in batch["query"]
+    props = batch["rows"][0]["properties"]
+    assert props["tail_number"] == "N707WA"
+    assert props["owner"] == "WWL Aircraft LLC"
+
+
+def test_write_entities_stamps_person_alias_and_location_address(capturing_writer):
+    person = entity("Suleiman Kerimov", EntityType.PERSON, aliases={"S. Kerimov", "Suleiman Kerimov"})
+    batch = _entity_batch(capturing_writer, person)
+    assert batch["rows"][0]["properties"]["alias"] == "S. Kerimov"
+
+    place = entity(
+        "Vistra Corporate Services, Road Town, Tortola",
+        EntityType.LOCATION,
+        properties={"address": "Vistra Corporate Services, Road Town, Tortola, British Virgin Islands", "gps": "18.4286 -64.6185"},
+    )
+    place_batch = _entity_batch(capturing_writer, place)
+    props = place_batch["rows"][0]["properties"]
+    assert props["address_key"], "a comparable address key must survive to the node"
+    assert props["gps"] == "18.428600,-64.618500"
+
+
+def test_write_entities_refuses_an_unsafe_domain_label(dry_settings):
+    """Labels are interpolated into Cypher, so the allowlist is load-bearing."""
+    with pytest.raises(ValueError, match="Unsafe domain label"):
+        build_entity_upsert(EntityType.ORGANIZATION, labels=["Company} DETACH DELETE n //"])
+
+
+def test_write_entities_groups_identical_shapes_into_one_statement(capturing_writer):
+    nodes = [
+        entity("Alpha Holdings Ltd", properties={"jurisdiction": "Panama", "status": "Dissolved"}),
+        entity("Beta Holdings Ltd", properties={"jurisdiction": "Panama", "status": "Dissolved"}),
+        entity("Gamma Trading plc", properties={"jurisdiction_code": "gb", "reg_number": "1"}),
+    ]
+    written, _ = capturing_writer.write_entities(nodes)
+    assert written == 3
+    batches = capturing_writer.client.batches
+    assert len(batches) == 2, "two label shapes (shell + trading) → two statements"
+    shell_batch = next(b for b in batches if "SET e:ShellCompany" in b["query"])
+    assert len(shell_batch["rows"]) == 2
 
 
 def test_write_entities_batches_on_the_configured_size(writer):

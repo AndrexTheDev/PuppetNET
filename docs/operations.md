@@ -209,6 +209,42 @@ gh workflow run daily_ingest.yml -f log_level=DEBUG -f skip_nlp=true
 python ingest.py --sources icij_offshore --limit 10 --dry-run --log-level DEBUG --report-dir /tmp/reports
 ```
 
+**Check sources without touching the graph** — stage 1 only: no spaCy, no Neo4j
+connection is ever opened. This is the fastest way to confirm credentials, relay
+reachability and what each API actually returned today.
+
+```bash
+python ingest.py --fetch-only wikidata,opencorporates --limit 25
+python ingest.py --fetch-only                       # every enabled source
+```
+
+**Put an API token on the relay** — the Worker's host profiles inject credentials on the
+outgoing request, so a runner needs none of them when it goes through the relay:
+
+```bash
+wrangler secret put OPENCORPORATES_API_TOKEN
+wrangler secret put ADSBEXCHANGE_API_KEY        # ADS-B Exchange v2 via RapidAPI
+wrangler secret put COMPANIES_HOUSE_API_KEY
+curl -s "$PROXY_WORKER_URL/health" | jq '.host_profiles'   # booleans only, never values
+```
+
+`/health` reports *whether* each profile's credential is configured; the value never
+leaves the Worker, and a URL-injected token is stripped from every URL the relay returns
+or caches.
+
+**Read the calculated layer**
+
+```cypher
+MATCH (p:Person)-[m:PUPPET_MASTER_OF]->(t)
+WHERE m.score >= 0.4
+RETURN p.name, p.risk_score, m.score, m.depth, m.components, m.reasons, labels(t), t.name
+ORDER BY m.score DESC LIMIT 25
+```
+
+If it is empty, check `analytics.status` in the run report first (`disabled`,
+`failed`, or `ok` with `persons_scored`/`puppet_master_rows` counts), then
+`PUPPET_MASTER_MIN_SCORE`.
+
 **Rotate the relay token** — set the new token in `PROXY_AUTH_TOKENS` (comma-separated
 list on the Worker) *and* the GitHub secret, deploy, then drop the old value from the
 Worker var. `PROXY_AUTH_TOKEN` (singular) still works for a hard cutover.
@@ -245,6 +281,13 @@ sources stay at 0.4 unless the publisher is a primary register.
 | `401 unauthorized` from the relay, harvest falls back to direct | `PROXY_AUTH_TOKEN` differs from the Worker secret | re-`wrangler secret put PROXY_AUTH_TOKEN` and update the repo secret |
 | `403 robots_disallowed` | path genuinely disallowed | change the URL pattern; the refusal is recorded and never retried by design |
 | `429` + growing `seconds_throttled` | host bucket too tight for the volume | lower `TOKEN_BUCKET_RATE_PER_SEC`, or raise `queue_on_limit` delay instead of hammering |
+| Relay answer shows a slower rate than you asked for | the host profile capped it (`rate_limit.policy.ratePerSec`) | by design — e.g. Wikidata is pinned at 0.25 req/s, burst 1. Raise `queue_on_limit` delay, not the rate |
+| `credential:opencorporates-missing` in the response | the Worker has no `OPENCORPORATES_API_TOKEN` secret | `wrangler secret put OPENCORPORATES_API_TOKEN`, or set it runner-side for direct fetches |
+| `credential:rapidapi-missing` | no `ADSBEXCHANGE_API_KEY` | set the secret; without it only the free `adsbdb.com` mirror answers |
+| Wikidata `400`/`HTML` where JSON was expected | the query went as a GET, or the form body lost `format=json` | the relay fills in `format` and `maxlag`; send SPARQL as `data={...}` so it becomes a form POST |
+| `analytics.status = failed` in the report | the calculated layer raised | the run is still valid and still exits 0; read `analytics.error`, then `errors` for the `analytics` entry |
+| No `:PUPPET_MASTER_OF` edges though persons were scored | nobody cleared the threshold | lower `PUPPET_MASTER_MIN_SCORE` (0.40) or check `ANALYTICS_MAX_PERSONS` / `ANALYTICS_GRAPH_EDGE_LIMIT` |
+| `adsb_exchange` yields nothing | no `tail_numbers` / `callsigns` configured | set `AIRCRAFT_TAIL_NUMBERS` — without a subject the adapter has nothing to ask for |
 | `nlp.backend = spacy:blank+gazetteer` in CI | `spacy download` failed (network/CDN) | the cascade already retried; if it persists, pin a wheel in the workflow or vendor the model |
 | Few entities, many `documents_skipped_duplicate` | feed unchanged | expected — `ONLY_NEW_DOCUMENTS` + content-hash cache |
 | Entities extracted but `entities_written = 0` | dry run, or node cap already reached | check `graph.summary` and `entities_capped_node_budget` |
@@ -266,3 +309,7 @@ sources stay at 0.4 unless the publisher is a primary register.
 | Global relay RPM | 900 (600 in `production`) | hard 429 once exceeded |
 | Response size | 8 MiB per body | truncated with `"truncated": true` |
 | Report retention | 14 days | `retention-days` on the artefact upload |
+| Analytics persons / edges | `ANALYTICS_MAX_PERSONS` = 5 000, `ANALYTICS_GRAPH_EDGE_LIMIT` = 50 000 | scored set and neighbourhood graph are bounded before any walking starts |
+| Calculated edges | `PUPPET_MASTER_TOP_N` = 8 per person, `PUPPET_MASTER_MAX_EDGES` = 2 000 per run | hard truncation, logged when it binds; stale edges pruned after `ANALYTICS_PRUNE_DAYS` |
+| Shared-organisation ties | `max_shared_org_members` = 24, `max_pairs_per_org` = 12 | a bigger board is skipped rather than squared |
+| Co-passenger ties | `max_copassenger_pairs` = 60 | per manifest |

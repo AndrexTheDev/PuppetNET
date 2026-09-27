@@ -119,7 +119,7 @@ same clause.
 ### 7. Deciding the predicate
 
 `RelationMapper` holds the rule table — **33 verb rules, 18 noun/apposition rules,
-9 preposition rules**, covering **35** of the 38 predicates:
+9 preposition rules**, covering **35** of the 46 predicates:
 
 * `from_verb(lemma, subject_type, object_type, preposition=…)` — `owns` → `OWNS`,
   `founded` → `FOUNDED`, `met`+`with` → `MET_WITH`, `sailed`+`from` → `ARRIVED_FROM`,

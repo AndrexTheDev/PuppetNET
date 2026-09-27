@@ -9,13 +9,14 @@ from __future__ import annotations
 import base64
 import json
 import logging
+from urllib.parse import parse_qsl
 
 import pytest
 
 from puppetnet.config import load_settings
 from puppetnet.models import SourceSpec, SourceType
 from puppetnet.net.headers import HeaderFactory, parse_extra_headers
-from puppetnet.net.proxy_client import CircuitBreaker, FetchClient, FetchError, Transport
+from puppetnet.net.proxy_client import CircuitBreaker, FetchClient, FetchError, Transport, _encode_form_body
 from puppetnet.net.token_bucket import DelayQueue, TokenBucket
 
 logging.disable(logging.CRITICAL)
@@ -233,7 +234,7 @@ def test_browser_headers_look_like_a_browser():
 
 
 def test_bot_mode_declares_the_research_bot():
-    factory = HeaderFactory(bot_user_agent="PuppetNET-OSINT/1.4 (+https://example.test)")
+    factory = HeaderFactory(bot_user_agent="PuppetNET-OSINT/1.5 (+https://example.test)")
     headers = factory.build("https://example.test/robots.txt", mode="bot")
     assert headers["User-Agent"].startswith("PuppetNET-OSINT")
 
@@ -622,3 +623,88 @@ def test_client_describe_is_serialisable():
     summary = client.describe()
     json.dumps(summary, default=str)
     assert "worker_url" in summary or "transport" in json.dumps(summary, default=str).lower()
+
+
+# --------------------------------------------------------------------------- #
+# Form bodies — how a SPARQL query actually travels
+# --------------------------------------------------------------------------- #
+#
+# WDQS is the motivating case: a query in a GET URL runs into proxy and CDN
+# length limits (and shows up in access logs), so the relay must be able to carry
+# an urlencoded POST body. These tests pin that contract on both transports.
+def test_encode_form_body_urlencodes_mappings():
+    body, content_type = _encode_form_body({"query": "SELECT ?p WHERE { ?p wdt:P31 wd:Q5 }", "format": "json"})
+    assert content_type == "application/x-www-form-urlencoded"
+    assert dict(parse_qsl(body)) == {"query": "SELECT ?p WHERE { ?p wdt:P31 wd:Q5 }", "format": "json"}
+
+
+def test_encode_form_body_drops_none_and_rejects_empty():
+    assert _encode_form_body({"query": "SELECT * WHERE {}", "maxlag": None})[0] == "query=SELECT+%2A+WHERE+%7B%7D"
+    assert _encode_form_body({"maxlag": None}) == (None, None)
+    assert _encode_form_body(None) == (None, None)
+
+
+def test_encode_form_body_passes_strings_through_without_a_declared_type():
+    # A caller that encodes its own body keeps control of Content-Type.
+    assert _encode_form_body("query=SELECT+%2A+WHERE+%7B%7D") == ("query=SELECT+%2A+WHERE+%7B%7D", None)
+    assert _encode_form_body("") == (None, None)
+
+
+def test_encode_form_body_supports_pairs_and_repeated_keys():
+    body, content_type = _encode_form_body([("jurisdiction_code", "gb"), ("jurisdiction_code", "im"), ("q", "a b")])
+    assert content_type == "application/x-www-form-urlencoded"
+    assert parse_qsl(body) == [("jurisdiction_code", "gb"), ("jurisdiction_code", "im"), ("q", "a b")]
+
+
+def test_relay_payload_carries_a_form_body_for_post():
+    client, session, _ = make_client(worker=True, responses=[relay_ok("https://query.wikidata.org/sparql", "{}", content_type="application/json")])
+    client.post("https://query.wikidata.org/sparql", data={"query": "SELECT ?x WHERE { ?x wdt:P31 wd:Q1664720 }", "format": "json", "maxlag": 5})
+
+    payload = json.loads(session.calls[0]["data"])
+    assert payload["method"] == "POST"
+    assert payload["content_type"] == "application/x-www-form-urlencoded"
+    fields = dict(parse_qsl(payload["body_text"]))
+    assert fields["query"] == "SELECT ?x WHERE { ?x wdt:P31 wd:Q1664720 }"
+    assert fields["format"] == "json"
+    assert fields["maxlag"] == "5", "non-string values are stringified, not dropped"
+
+
+def test_direct_post_sends_an_encoded_form_body():
+    client, session, _ = make_client(responses=[FakeResponse(status=200, body=b"{}", headers={"content-type": "application/json"}, url="u")])
+    client.post("https://query.wikidata.org/sparql", data={"query": "SELECT ?x WHERE {}", "format": "json"})
+
+    call = session.calls[0]
+    assert call["method"] == "POST"
+    assert dict(parse_qsl(call["data"])) == {"query": "SELECT ?x WHERE {}", "format": "json"}
+    assert call["headers"]["Content-Type"] == "application/x-www-form-urlencoded"
+
+
+def test_a_long_query_survives_the_relay_intact():
+    # The whole point of POSTing: no URL length cliff, and the special characters
+    # a SPARQL query is made of must come back unchanged.
+    query = (
+        "SELECT ?person ?personLabel ?org WHERE { "
+        + " ".join(f"?person wdt:P3320 wd:Q{i} . ?org wdt:P31 wd:Q1664720 ." for i in range(60))
+        + " SERVICE wikibase:label { bd:serviceParam wikibase:language \"en,ru,uz\" } }"
+    )
+    client, session, _ = make_client(worker=True, responses=[relay_ok("https://query.wikidata.org/sparql", "{}", content_type="application/json")])
+    client.post("https://query.wikidata.org/sparql", data={"query": query, "format": "json"})
+
+    payload = json.loads(session.calls[0]["data"])
+    assert dict(parse_qsl(payload["body_text"]))["query"] == query
+    assert len(payload["body_text"]) > len(query)
+
+
+def test_get_and_post_to_one_url_do_not_share_a_cache_entry():
+    client, session, _ = make_client(
+        responses=[
+            FakeResponse(status=200, body=b'{"via": "get"}', headers={"content-type": "application/json"}, url="u"),
+            FakeResponse(status=200, body=b'{"via": "post"}', headers={"content-type": "application/json"}, url="u"),
+        ]
+    )
+    spec = make_spec(cache_ttl_seconds=3600)
+    first = client.get("https://query.wikidata.org/sparql", source=spec)
+    second = client.post("https://query.wikidata.org/sparql", data={"query": "SELECT * WHERE {}"}, source=spec)
+    assert first.transport is Transport.DIRECT
+    assert second.transport is Transport.DIRECT, "a POST must not be served from the GET's cache entry"
+    assert len([c for c in session.calls if c["kind"] == "request"]) == 2

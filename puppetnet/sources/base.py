@@ -255,9 +255,23 @@ class SourceAdapter(abc.ABC):
         kwargs.setdefault("cache_ttl_seconds", self.spec.cache_ttl_seconds)
         return self.client.request(url, **kwargs)
 
-    def fetch_json(self, url: str, *, params: dict[str, Any] | None = None, mode: str = "bot", headers: dict[str, str] | None = None) -> Any | None:
-        """Fetch + parse JSON, returning ``None`` (and counting) on failure."""
-        result = self.fetch(url, params=params, mode=mode, headers=headers or {}, accept="application/json")
+    def fetch_json(
+        self,
+        url: str,
+        *,
+        params: dict[str, Any] | None = None,
+        data: Any = None,
+        method: str = "GET",
+        mode: str = "bot",
+        headers: dict[str, str] | None = None,
+        accept: str = "application/json",
+    ) -> Any | None:
+        """Fetch + parse JSON, returning ``None`` (and counting) on failure.
+
+        ``data`` sends a form body (a mapping is urlencoded), which is how a
+        SPARQL query is posted; ``method`` defaults to GET.
+        """
+        result = self.fetch(url, method=method, params=params, data=data, mode=mode, headers=headers or {}, accept=accept)
         if not result.ok:
             self.stats.documents_failed += 1
             self.stats.bump_source(self.spec.id, "errors")
@@ -345,7 +359,15 @@ class SourceAdapter(abc.ABC):
         evidence: str = "",
         evidence_score: float = 1.0,
         extra: dict[str, Any] | None = None,
+        method: ExtractionMethod = ExtractionMethod.STRUCTURED,
     ) -> Relation:
+        """Build a source-attributed edge.
+
+        ``method`` defaults to STRUCTURED (a direct field mapping, full weight).
+        Adapters that *derive* an edge — a regex over a manifest, a gazetteer
+        hit — pass PATTERN/GAZETTEER so the evidence scoring reflects how the
+        fact was obtained rather than overstating it.
+        """
         return build_relation(
             subject,
             predicate,
@@ -353,7 +375,7 @@ class SourceAdapter(abc.ABC):
             source_id=self.spec.id,
             doc_id=doc_id,
             source_weight=self.source_weight,
-            method=ExtractionMethod.STRUCTURED,
+            method=method,
             evidence=evidence,
             evidence_score=evidence_score,
             extra=extra,

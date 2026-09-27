@@ -49,7 +49,7 @@
  */
 
 const WORKER_NAME = "puppetnet-edge-relay";
-const WORKER_VERSION = "1.4.0";
+const WORKER_VERSION = "1.5.0";
 
 /* -------------------------------------------------------------------------- */
 /*  Tunables (env-overridable)                                                */
@@ -336,6 +336,318 @@ function readConfig(env) {
       .map((s) => s.trim().toLowerCase())
       .filter(Boolean),
   };
+}
+
+/* -------------------------------------------------------------------------- */
+/*  OSINT host profiles                                                       */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * What this relay knows about the APIs it exists to serve.
+ *
+ * A profile can set four kinds of thing:
+ *
+ *  1. **Presentation** (`api: true`) — send an honest, stable API client instead
+ *     of a rotating browser fingerprint. Wikidata, OpenCorporates, Companies
+ *     House and RapidAPI all publish "identify your tool" policies; spoofing a
+ *     browser at an API is how a project gets its whole IP range banned, and a
+ *     Cloudflare Worker's IP range is shared. Fingerprint rotation stays on for
+ *     genuine websites (the ICIJ search UI, news).
+ *  2. **Politeness ceiling** (`ratePerSec`/`burst`) — a *maximum* the caller
+ *     cannot raise. The Python side already sends per-source rates, but a bug or
+ *     a hand-run loop must not be able to hammer a host into a 429 ban from the
+ *     edge. The caller can always ask for less.
+ *  3. **Credentials** (`credential`) — injected from Worker secrets at the last
+ *     possible moment (inside `performFetch`, never into a queued task or a KV
+ *     cache key). An authenticated OpenCorporates call also carries a far higher
+ *     daily quota, which is the difference between "rate limited" and "harvested".
+ *  4. **Shape** (`timeoutMs`, `accept`, `cacheTtlSeconds`, `sparqlForm`) — the
+ *     contract of endpoints that are not plain GETs: SPARQL is a form POST and
+ *     WDQS wants `maxlag` so it can say "I am behind, come back" instead of
+ *     queueing our query on a lagging cluster.
+ *
+ * Matching is by longest host suffix, so `www.adsbdb.com` inherits `adsbdb.com`
+ * and `adsbexchange-com1.p.rapidapi.com` inherits `p.rapidapi.com`.
+ */
+const HOST_PROFILES = Object.freeze({
+  "query.wikidata.org": Object.freeze({
+    label: "wikidata-sparql",
+    api: true,
+    // Wikidata's policy: identify yourself, keep well under 1 req/s, use maxlag.
+    ratePerSec: 0.25,
+    burst: 1,
+    timeoutMs: 120_000,
+    accept: "application/sparql-results+json;q=0.9,application/json;q=0.8",
+    userAgentEnv: "WIKIDATA_USER_AGENT",
+    userAgentFallback: "PuppetNET/1.5 (OSINT research harvester; github.com/AndrexTheDev/PuppetNET) edge-relay",
+    // Wikidata publishes a User-Agent + rate policy instead of a robots policy.
+    respectRobots: false,
+    sparqlForm: true,
+    maxlag: 5,
+    cacheTtlSeconds: 3600,
+  }),
+  "api.opencorporates.com": Object.freeze({
+    label: "opencorporates",
+    api: true,
+    ratePerSec: 0.5,
+    burst: 2,
+    timeoutMs: 30_000,
+    accept: "application/json",
+    // Anonymous quota is a handful of calls a day; OPENCORPORATES_API_TOKEN lifts it.
+    credential: "opencorporates",
+    cacheTtlSeconds: 21600,
+  }),
+  "adsbdb.com": Object.freeze({
+    label: "adsbdb",
+    api: true,
+    // A community read-through of ADS-B Exchange data: be a good guest.
+    ratePerSec: 0.5,
+    burst: 2,
+    timeoutMs: 20_000,
+    accept: "application/json",
+    cacheTtlSeconds: 43200,
+  }),
+  "p.rapidapi.com": Object.freeze({
+    label: "rapidapi-adsbexchange",
+    api: true,
+    ratePerSec: 1,
+    burst: 2,
+    timeoutMs: 20_000,
+    accept: "application/json",
+    // ADS-B Exchange v2 lives on RapidAPI and bills per call — cache hard.
+    credential: "rapidapi",
+    cacheTtlSeconds: 300,
+  }),
+  "registry.faa.gov": Object.freeze({
+    label: "faa-registry",
+    api: true,
+    ratePerSec: 0.1,
+    burst: 1,
+    timeoutMs: 180_000,
+    accept: "application/zip,application/octet-stream;q=0.9,*/*;q=0.5",
+    cacheTtlSeconds: 86400,
+    // The Releasable Aircraft ZIP is tens of megabytes, so the harvester streams
+    // it directly (the relay buffers a whole response before returning it and the
+    // free tier caps CPU time). This profile covers the small pages and any
+    // caller that does try the dump through the edge.
+  }),
+  "api.company-information.service.gov.uk": Object.freeze({
+    label: "companies-house",
+    api: true,
+    ratePerSec: 2,
+    burst: 5,
+    timeoutMs: 30_000,
+    accept: "application/json",
+    credential: "companiesHouse",
+    cacheTtlSeconds: 21600,
+  }),
+  "offshoreleaks.icij.org": Object.freeze({
+    label: "icij-offshore-leaks",
+    // A public website in front of Cloudflare: read it like a reader, not an API.
+    api: false,
+    ratePerSec: 0.25,
+    burst: 2,
+    timeoutMs: 60_000,
+    cacheTtlSeconds: 21600,
+  }),
+});
+
+/** Hostname → profile, longest-suffix match, memoised per isolate. */
+const profileCache = new Map();
+
+function profileFor(hostname) {
+  const host = String(hostname || "").toLowerCase().replace(/:\d+$/, "").trim();
+  if (!host) return null;
+  if (profileCache.has(host)) return profileCache.get(host);
+
+  let best = null;
+  let bestLength = -1;
+  for (const [suffix, profile] of Object.entries(HOST_PROFILES)) {
+    if (host === suffix || host.endsWith(`.${suffix}`)) {
+      if (suffix.length > bestLength) {
+        best = profile;
+        bestLength = suffix.length;
+      }
+    }
+  }
+  profileCache.set(host, best);
+  return best;
+}
+
+/**
+ * Apply a host profile's *non-secret* policy to a task, in place.
+ *
+ * Credentials are deliberately NOT applied here: `handleFetch` may go on to
+ * enqueue the task or hash it into a cache key, and a secret must not be written
+ * into a Queue message or a KV entry. `injectCredentials` runs inside
+ * `performFetch`, on the copy that actually leaves the isolate.
+ *
+ * Returns the list of adjustments, which is echoed (without values) in the
+ * response meta so an operator can see why a request was slowed down.
+ */
+function applyHostProfile(task, url, env, cfg) {
+  const profile = profileFor(url.hostname);
+  if (!profile) return { profile: null, notes: [] };
+
+  const notes = [`profile:${profile.label}`];
+  if (profile.api) {
+    task.api_mode = true;
+    notes.push("api-mode");
+  }
+
+  // 1) Politeness ceiling: min(what the caller asked for, what the host allows).
+  const requested = task.rate_limit || {};
+  const askedRate = num(requested.rate_per_sec, cfg.hostRatePerSec, cfg.minHostRatePerSec, cfg.hostRatePerSec * 10);
+  const askedBurst = Math.round(num(requested.burst, cfg.hostBurst, 1, cfg.maxHostBurst));
+  const ratePerSec = Math.min(askedRate, profile.ratePerSec);
+  const burst = Math.max(1, Math.min(askedBurst, profile.burst));
+  task.rate_limit = { ...requested, rate_per_sec: ratePerSec, burst };
+  if (ratePerSec < askedRate) notes.push(`rate-capped:${ratePerSec}/s`);
+  if (burst < askedBurst) notes.push(`burst-capped:${burst}`);
+
+  // 2) Timeout: the longer of the two, never above the Worker's own ceiling.
+  if (profile.timeoutMs) {
+    const timeoutMs = Math.min(Math.max(task.timeout_ms, profile.timeoutMs), cfg.maxTimeoutMs);
+    if (timeoutMs !== task.timeout_ms) notes.push(`timeout:${timeoutMs}ms`);
+    task.timeout_ms = timeoutMs;
+  }
+
+  // 3) Presentation defaults — the caller's explicit values always win.
+  if (!task.user_agent) {
+    const fromEnv = String((profile.userAgentEnv && env[profile.userAgentEnv]) || "").trim();
+    task.user_agent = fromEnv || profile.userAgentFallback || "";
+    if (task.user_agent) notes.push(fromEnv ? "ua:env" : "ua:profile");
+  }
+  if (!task.accept && profile.accept) {
+    task.accept = profile.accept;
+    notes.push("accept:profile");
+  }
+
+  // 4) robots.txt can only be turned ON by a profile, never off.
+  if (profile.respectRobots === true && !task.respect_robots) {
+    task.respect_robots = true;
+    notes.push("robots:on");
+  }
+
+  // 5) Cache TTL default for hosts whose data changes slowly.
+  if (!task.cache_ttl_seconds && profile.cacheTtlSeconds) {
+    task.cache_ttl_seconds = Math.min(profile.cacheTtlSeconds, cfg.maxCacheTtlSeconds);
+    notes.push(`cache:${task.cache_ttl_seconds}s`);
+  }
+
+  // 6) SPARQL is a form POST; make sure it looks like one.
+  if (profile.sparqlForm) {
+    const note = ensureSparqlForm(task, profile);
+    if (note) notes.push(note);
+  }
+
+  return { profile, notes };
+}
+
+/**
+ * WDQS accepts `application/x-www-form-urlencoded` (and a JSON POST is silently
+ * wrong), so a caller that sent the query as JSON is converted here, and
+ * `format`/`maxlag` are filled in when missing.
+ */
+function ensureSparqlForm(task, profile) {
+  if (String(task.method || "GET").toUpperCase() !== "POST") return "";
+
+  if (task.json && typeof task.json === "object" && typeof task.json.query === "string") {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(task.json)) {
+      if (value === null || value === undefined) continue;
+      params.set(key, String(value));
+    }
+    if (!params.has("format")) params.set("format", "json");
+    if (profile.maxlag && !params.has("maxlag")) params.set("maxlag", String(profile.maxlag));
+    task.body_text = params.toString();
+    task.json = null;
+    task.content_type = "application/x-www-form-urlencoded";
+    return "sparql:json-to-form";
+  }
+
+  if (typeof task.body_text === "string" && task.body_text.length > 0) {
+    let params;
+    try {
+      params = new URLSearchParams(task.body_text);
+    } catch (_) {
+      return "";
+    }
+    if (!params.has("query")) return "";
+    let changed = false;
+    if (!params.has("format")) {
+      params.set("format", "json");
+      changed = true;
+    }
+    if (profile.maxlag && !params.has("maxlag")) {
+      params.set("maxlag", String(profile.maxlag));
+      changed = true;
+    }
+    if (changed) task.body_text = params.toString();
+    if (!task.content_type) task.content_type = "application/x-www-form-urlencoded";
+    return changed ? "sparql:defaults-added" : "sparql:form";
+  }
+  return "";
+}
+
+/**
+ * Strip a URL-injected credential before the URL is reported anywhere.
+ *
+ * `injectCredentials` puts the token on the request that leaves the isolate, but
+ * the response envelope, the attempts log, the stored task result and the KV
+ * cache entry are all read back by the harvester — and by whoever reads its
+ * logs. Header credentials never reach a URL, so there is nothing to strip.
+ */
+function redactUrl(rawUrl, profile) {
+  if (!profile || !profile.credential) return String(rawUrl);
+  try {
+    const url = new URL(String(rawUrl));
+    if (profile.credential === "opencorporates") url.searchParams.delete("api_token");
+    return url.toString();
+  } catch (_) {
+    return String(rawUrl);
+  }
+}
+
+/**
+ * Attach this host's credentials at the moment of egress.
+ *
+ * Called from `performFetch` on the outgoing copy only, so a secret is never
+ * written into a deferred Queue task, a KV cache key or a response body. The
+ * returned note names what happened without naming the value.
+ */
+function injectCredentials(task, url, profile, env) {
+  if (!profile || !profile.credential) return "";
+  const headers = task.headers && typeof task.headers === "object" ? { ...task.headers } : {};
+  const has = (name) => Object.keys(headers).some((key) => key.toLowerCase() === name);
+
+  if (profile.credential === "opencorporates") {
+    const token = String(env.OPENCORPORATES_API_TOKEN || "").trim();
+    if (!token) return "credential:opencorporates-missing";
+    if (url.searchParams.has("api_token")) return "";
+    url.searchParams.set("api_token", token);
+    task.url = url.toString();
+    return "credential:opencorporates-applied";
+  }
+
+  if (profile.credential === "rapidapi") {
+    const key = String(env.ADSBEXCHANGE_API_KEY || env.X_RAPIDAPI_KEY || env.RAPIDAPI_KEY || "").trim();
+    if (!key) return "credential:rapidapi-missing";
+    if (!has("x-rapidapi-key")) headers["x-rapidapi-key"] = key;
+    if (!has("x-rapidapi-host")) headers["x-rapidapi-host"] = String(env.RAPIDAPI_HOST || url.hostname);
+    task.headers = headers;
+    return "credential:rapidapi-applied";
+  }
+
+  if (profile.credential === "companiesHouse") {
+    const key = String(env.COMPANIES_HOUSE_API_KEY || "").trim();
+    if (!key) return "credential:companies-house-missing";
+    if (!has("authorization")) headers.Authorization = `Basic ${toBase64(encoder.encode(`${key}:`))}`;
+    task.headers = headers;
+    return "credential:companies-house-applied";
+  }
+
+  return "";
 }
 
 /* -------------------------------------------------------------------------- */
@@ -651,9 +963,25 @@ function validateTargetUrl(rawUrl, cfg) {
 /* -------------------------------------------------------------------------- */
 
 function buildOutboundHeaders(task, url, attempt, cfg) {
-  const fp = pickFingerprint(url.hostname, attempt, task.fingerprint_salt || "");
+  const method = String(task.method || "GET").toUpperCase();
   const headers = new Headers();
 
+  if (task.api_mode) {
+    // An API host gets one stable, self-identifying client: no rotating
+    // fingerprint, no Sec-Fetch-* navigation hints, no DNT. These endpoints ask
+    // for a descriptive User-Agent and answer JSON; pretending to be Chrome is
+    // both rude and detectable.
+    headers.set("User-Agent", task.user_agent || `PuppetNET/${WORKER_VERSION} (edge-relay)`);
+    headers.set("Accept", task.accept || "application/json");
+    headers.set("Accept-Encoding", "gzip, deflate, br");
+    if (method === "POST" || method === "PUT" || method === "PATCH") {
+      headers.set("Content-Type", task.content_type || "application/json");
+    }
+    if (task.referer) headers.set("Referer", task.referer);
+    return applyCallerHeaders(task, headers);
+  }
+
+  const fp = pickFingerprint(url.hostname, attempt, task.fingerprint_salt || "");
   headers.set("User-Agent", task.user_agent || fp.ua);
   headers.set("Accept", task.accept || "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,*/*;q=0.7");
   headers.set("Accept-Language", fp.acceptLanguage);
@@ -674,14 +1002,17 @@ function buildOutboundHeaders(task, url, attempt, cfg) {
   if (task.referer) headers.set("Referer", task.referer);
   if (task.origin) headers.set("Origin", task.origin);
 
-  const method = String(task.method || "GET").toUpperCase();
   if (method === "POST" || method === "PUT" || method === "PATCH") {
     if (!headers.has("Content-Type")) {
       headers.set("Content-Type", task.content_type || "application/json");
     }
   }
 
-  // Caller overrides (API keys, custom Accept, cookies for authenticated feeds)
+  return applyCallerHeaders(task, headers);
+}
+
+/** Caller overrides (API keys, custom Accept, cookies for authenticated feeds). */
+function applyCallerHeaders(task, headers) {
   const overrides = task.headers || {};
   for (const [key, value] of Object.entries(overrides)) {
     const lower = key.toLowerCase();
@@ -692,8 +1023,7 @@ function buildOutboundHeaders(task, url, attempt, cfg) {
     }
     headers.set(key, String(value));
   }
-
-  return { headers, fingerprint: fp.ua };
+  return { headers, fingerprint: headers.get("User-Agent") || "" };
 }
 
 /** Append/rotate a cache-buster so CDNs in front of the origin do not serve a
@@ -766,7 +1096,17 @@ async function readBodyCapped(response, maxBytes) {
  */
 async function performFetch(task, env, cfg, meta = {}) {
   const method = String(task.method || "GET").toUpperCase();
-  const targetRaw = maybeAddCacheBuster(new URL(task.url), task);
+  // Credentials are attached to a per-call copy at the moment of egress: a
+  // secret must never be written into a deferred Queue task, a KV cache key, a
+  // stored task result or a log line.
+  const outgoing = { ...task, headers: { ...(task.headers || {}) } };
+  const targetUrl = new URL(task.url);
+  const hostProfile = profileFor(targetUrl.hostname);
+  const credentialNote = injectCredentials(outgoing, targetUrl, hostProfile, env);
+  const profileLabel = outgoing.host_profile || (hostProfile && hostProfile.label) || null;
+  const targetRaw = maybeAddCacheBuster(targetUrl, outgoing);
+  // What we send upstream may carry a credential; what we report back never does.
+  const reportUrl = redactUrl(targetRaw, hostProfile);
   const startedAt = nowMs();
 
   let lastError = null;
@@ -776,13 +1116,13 @@ async function performFetch(task, env, cfg, meta = {}) {
   for (let attempt = 1; attempt <= task.max_attempts; attempt += 1) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), task.timeout_ms);
-    const { headers, fingerprint } = buildOutboundHeaders(task, new URL(targetRaw), attempt, cfg);
+    const { headers, fingerprint } = buildOutboundHeaders(outgoing, new URL(targetRaw), attempt, cfg);
 
     let body;
-    if (task.body_b64) body = fromBase64(task.body_b64);
-    else if (task.body_text !== undefined && task.body_text !== null) body = String(task.body_text);
-    else if (task.json !== undefined && task.json !== null) {
-      body = JSON.stringify(task.json);
+    if (outgoing.body_b64) body = fromBase64(outgoing.body_b64);
+    else if (outgoing.body_text !== undefined && outgoing.body_text !== null) body = String(outgoing.body_text);
+    else if (outgoing.json !== undefined && outgoing.json !== null) {
+      body = JSON.stringify(outgoing.json);
       if (!headers.has("Content-Type")) headers.set("Content-Type", "application/json");
     }
 
@@ -792,21 +1132,21 @@ async function performFetch(task, env, cfg, meta = {}) {
       scrapeShield: false,
       minify: false,
     };
-    if (task.resolve_override) cfOptions.resolveOverride = task.resolve_override;
+    if (outgoing.resolve_override) cfOptions.resolveOverride = outgoing.resolve_override;
 
     try {
       const upstream = await fetch(targetRaw, {
         method,
         headers,
         body: method === "GET" || method === "HEAD" ? undefined : body,
-        redirect: task.follow_redirects === false ? "manual" : "follow",
+        redirect: outgoing.follow_redirects === false ? "manual" : "follow",
         signal: controller.signal,
         cf: cfOptions,
       });
       clearTimeout(timer);
       lastStatus = upstream.status;
 
-      if (shouldRetryStatus(upstream.status) && attempt < task.max_attempts) {
+      if (shouldRetryStatus(upstream.status) && attempt < outgoing.max_attempts) {
         const retryAfterHeader = Number(upstream.headers.get("retry-after") || 0);
         const wait = retryAfterHeader > 0 ? Math.min(retryAfterHeader * 1000, 30000) : jitter(DEFAULTS.BACKOFF_BASE_MS * 2 ** (attempt - 1));
         attemptsLog.push({ attempt, status: upstream.status, retried_in_ms: wait, ua: fingerprint });
@@ -828,8 +1168,8 @@ async function performFetch(task, env, cfg, meta = {}) {
         ok: upstream.ok,
         status: upstream.status,
         status_text: upstream.statusText,
-        url: upstream.url || targetRaw,
-        request_url: targetRaw,
+        url: redactUrl(upstream.url || targetRaw, hostProfile),
+        request_url: reportUrl,
         method,
         content_type: contentType,
         headers: responseHeaders,
@@ -841,6 +1181,8 @@ async function performFetch(task, env, cfg, meta = {}) {
         attempts_log: attemptsLog,
         elapsed_ms: elapsedMs,
         fingerprint_used: fingerprint,
+        host_profile: profileLabel,
+        credential: credentialNote || null,
         colo: meta.colo || null,
         client_country: meta.country || null,
         served_from: "origin",
@@ -858,13 +1200,15 @@ async function performFetch(task, env, cfg, meta = {}) {
   return {
     ok: false,
     status: lastStatus || 0,
-    url: targetRaw,
-    request_url: targetRaw,
+    url: reportUrl,
+    request_url: reportUrl,
     method,
     error: lastError ? String(lastError.message) : `upstream returned ${lastStatus}`,
     attempts: task.max_attempts,
     attempts_log: attemptsLog,
     elapsed_ms: nowMs() - startedAt,
+    host_profile: profileLabel,
+    credential: credentialNote || null,
     colo: meta.colo || null,
     served_from: "origin",
   };
@@ -937,6 +1281,9 @@ function normaliseTask(input, cfg, defaults = {}) {
     source_id: String(input.source_id || defaults.source_id || "unknown"),
     request_id: String(input.request_id || defaults.request_id || crypto.randomUUID()),
     rate_limit: input.rate_limit || defaults.rate_limit || {},
+    // Set by applyHostProfile: an API host gets an honest client identity.
+    api_mode: Boolean(input.api_mode ?? defaults.api_mode ?? false),
+    host_profile: String(input.host_profile || defaults.host_profile || ""),
     // Queue behaviour
     queue_on_limit: Boolean(input.queue_on_limit ?? defaults.queue_on_limit ?? false),
     queue_delay_seconds: num(input.queue_delay_seconds ?? defaults.queue_delay_seconds, 0, 0, cfg.maxQueueDelaySeconds),
@@ -1019,6 +1366,17 @@ async function handleFetch(request, env, cfg, ctx) {
     colo: request.cf ? request.cf.colo : null,
     country: request.cf ? request.cf.country : null,
   };
+
+  // 0) Host profile: politeness ceiling, API-mode presentation, timeout, cache
+  //    TTL and SPARQL body defaults. Applied before the cache/robots/rate-limit
+  //    steps because all three read what it sets. Credentials are deliberately
+  //    not applied here — see injectCredentials.
+  const profiled = applyHostProfile(task, targetUrl, env, cfg);
+  if (profiled.profile) {
+    task.host_profile = profiled.profile.label;
+    meta.host_profile = profiled.profile.label;
+    meta.profile_notes = profiled.notes;
+  }
 
   // 1) Response cache
   const cKey = await cacheKeyFor(task.url, task.method, task.headers);
@@ -1151,6 +1509,16 @@ async function handleCachePurge(request, env) {
   return jsonResponse({ ok: true, purged: url, key }, 200, {}, env);
 }
 
+/** Whether the Worker secret behind a profile's credential is present. */
+function credentialConfigured(kind, env) {
+  if (kind === "opencorporates") return Boolean(String(env.OPENCORPORATES_API_TOKEN || "").trim());
+  if (kind === "rapidapi") {
+    return Boolean(String(env.ADSBEXCHANGE_API_KEY || env.X_RAPIDAPI_KEY || env.RAPIDAPI_KEY || "").trim());
+  }
+  if (kind === "companiesHouse") return Boolean(String(env.COMPANIES_HOUSE_API_KEY || "").trim());
+  return false;
+}
+
 function handleHealth(request, env, cfg) {
   return jsonResponse(
     {
@@ -1164,6 +1532,17 @@ function handleHealth(request, env, cfg) {
         queue: Boolean(env.FETCH_QUEUE),
         auth_configured: Boolean(env.PROXY_AUTH_TOKEN || env.PROXY_AUTH_TOKENS),
       },
+      host_profiles: Object.values(HOST_PROFILES).map((profile) => ({
+        label: profile.label,
+        api_mode: Boolean(profile.api),
+        rate_per_sec: profile.ratePerSec,
+        burst: profile.burst,
+        timeout_ms: profile.timeoutMs || cfg.defaultTimeoutMs,
+        cache_ttl_seconds: profile.cacheTtlSeconds || 0,
+        // Booleans only: /health is unauthenticated, so it reports whether a
+        // credential exists, never what it is.
+        credential: profile.credential ? credentialConfigured(profile.credential, env) : null,
+      })),
       limits: {
         global_rpm: cfg.globalRpm,
         host_rate_per_sec: cfg.hostRatePerSec,

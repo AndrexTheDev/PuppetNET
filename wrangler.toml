@@ -10,6 +10,9 @@
 #     wrangler queues create puppetnet-fetch-queue
 #     -> paste the ids/preview ids below, then:
 #     wrangler secret put PROXY_AUTH_TOKEN
+#     wrangler secret put OPENCORPORATES_API_TOKEN     # optional, see below
+#     wrangler secret put ADSBEXCHANGE_API_KEY         # optional (RapidAPI)
+#     wrangler secret put COMPANIES_HOUSE_API_KEY      # optional
 #     wrangler deploy
 #
 #  `wrangler dev --local` works without any binding: the relay degrades to a
@@ -65,6 +68,30 @@ TASK_RESULT_TTL_SECONDS = "3600"
 
 # Queue deferral
 MAX_QUEUE_DELAY_SECONDS = "300"
+
+# -----------------------------------------------------------------------------
+# Host profiles — the per-API politeness and credential policy in worker.js
+# -----------------------------------------------------------------------------
+#
+# `HOST_PROFILES` in worker.js pins a rate ceiling, an API-mode User-Agent, a
+# timeout and a cache TTL per upstream host (Wikidata SPARQL, OpenCorporates,
+# ADS-B Exchange, RapidAPI, FAA, Companies House, ICIJ). A caller may ask for a
+# *slower* rate, never a faster one, and profile timeouts are themselves capped
+# by MAX_TIMEOUT_MS above (raise it to 180000 if you want the FAA dump relayed
+# rather than streamed directly by the harvester).
+#
+# Identifying the tool is a requirement of Wikidata's API policy, not a courtesy:
+# set a contactable agent so an operator can reach you before blocking you.
+WIKIDATA_USER_AGENT = "PuppetNET/1.5 (OSINT research harvester; github.com/AndrexTheDev/PuppetNET) edge-relay"
+
+# Credentials are Worker *secrets*, never [vars], so they cannot be committed or
+# read back over /health (which reports only whether one is configured):
+#   OPENCORPORATES_API_TOKEN  -> appended as ?api_token= and stripped from every
+#                                URL the relay reports or caches
+#   ADSBEXCHANGE_API_KEY      -> x-rapidapi-key (+ x-rapidapi-host) for RapidAPI
+#   COMPANIES_HOUSE_API_KEY   -> HTTP Basic for api.company-information.service.gov.uk
+# They are injected on the outgoing request only, so a deferred Queue task, a KV
+# cache key and a stored task result never contain them.
 
 # Security
 ENFORCE_HTTPS = "true"             # refuse plaintext http:// targets

@@ -57,7 +57,7 @@ FINGERPRINTS: tuple[dict[str, Any], ...] = (
 #: ask for a descriptive UA with contact details, and lying to them is both
 #: pointless and a terms-of-service violation.
 BOT_USER_AGENTS: tuple[str, ...] = (
-    "PuppetNET-OSINT/1.4 (+https://github.com/AndrexTheDev/PuppetNET; research bot)",
+    "PuppetNET-OSINT/1.5 (+https://github.com/AndrexTheDev/PuppetNET; research bot)",
     "PuppetNET-Research/1.4 (contact: ops@puppetnet.example.org)",
 )
 

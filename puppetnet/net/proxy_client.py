@@ -171,6 +171,28 @@ class CircuitBreaker:
         }
 
 
+def _encode_form_body(data: Any) -> tuple[str | None, str | None]:
+    """``{"query": "..."} `` → ``("query=...", "application/x-www-form-urlencoded")``.
+
+    Returns ``(body, content_type)``. A string body is passed through with no
+    declared type (the caller's own ``Content-Type`` header wins); anything else
+    means "no body".
+    """
+    if data is None:
+        return None, None
+    if isinstance(data, (str, bytes)):
+        text = data if isinstance(data, str) else data.decode("utf-8", "replace")
+        return (text, None) if text else (None, None)
+    if isinstance(data, Mapping):
+        fields = {key: value for key, value in data.items() if value is not None}
+        if not fields:
+            return None, None
+        return urlencode(fields, doseq=True), "application/x-www-form-urlencoded"
+    if isinstance(data, (list, tuple)):
+        return urlencode(list(data), doseq=True), "application/x-www-form-urlencoded"
+    return str(data), None
+
+
 def _decode_body(content: bytes, headers: Mapping[str, str], content_type: str) -> tuple[str, bytes]:
     """Decode (and transparently gunzip/inflate) a body into text + bytes."""
     encoding = (headers.get("content-encoding") or "").lower().strip()
@@ -365,6 +387,12 @@ class FetchClient:
             bucket_policy.setdefault("rate_per_sec", source.rate_per_sec)
             bucket_policy.setdefault("burst", source.burst)
 
+        # ``data`` follows the requests convention: a mapping becomes a
+        # urlencoded form body (which is how a SPARQL query travels — a GET URL
+        # would truncate anything but the smallest query), a string is sent
+        # verbatim.
+        body_text, body_type = _encode_form_body(data)
+
         task: dict[str, Any] = {
             "url": url,
             "method": method.upper(),
@@ -379,7 +407,8 @@ class FetchClient:
             "source_id": source_id,
             "rate_limit": bucket_policy,
             "json": json_body,
-            "body_text": data if isinstance(data, str) else None,
+            "body_text": body_text,
+            "content_type": body_type,
         }
 
         last_error = ""
@@ -561,6 +590,9 @@ class FetchClient:
             payload["json"] = task["json"]
         if task.get("body_text"):
             payload["body_text"] = task["body_text"]
+        if task.get("content_type"):
+            # Without this the Worker would label a SPARQL form POST as JSON.
+            payload["content_type"] = task["content_type"]
 
         # Headers the caller needs to control (API keys, Accept, UA policy).
         outbound_headers = self.headers_factory.worker_payload_headers(
@@ -833,6 +865,8 @@ class FetchClient:
             headers.setdefault("Content-Type", "application/json")
         elif task.get("body_text"):
             kwargs["data"] = task["body_text"]
+            if task.get("content_type"):
+                headers.setdefault("Content-Type", str(task["content_type"]))
 
         try:
             with self._session.request(str(task.get("method", "GET")), url, **kwargs) as response:

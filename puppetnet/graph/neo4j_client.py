@@ -291,14 +291,19 @@ class Neo4jClient:
         kind: str = "write",
         label: str = "",
     ) -> int:
-        """Execute ``query`` once per chunk of ``rows``; return rows submitted."""
+        """Execute ``query`` once per chunk of ``rows``; return rows submitted.
+
+        ``kind`` is forwarded to every batch so the dry-run recorder can tell a
+        harvested write from a computed one (the analytics layer passes
+        ``kind="analytics"``); ``label`` only decorates the log lines.
+        """
         if not rows:
             return 0
         size = batch_size or self.batch_size
         submitted = 0
         total_batches = (len(rows) + size - 1) // size
         for index, batch in enumerate(chunked(rows, size), start=1):
-            self.write(query, {"rows": batch}, rows=len(batch))
+            self.write(query, {"rows": batch}, rows=len(batch), kind=kind)
             submitted += len(batch)
             logger.debug("%sbatch %d/%d (%d rows)", f"{label} " if label else "", index, total_batches, len(batch))
         self.rows_written += submitted

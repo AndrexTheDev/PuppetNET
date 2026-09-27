@@ -31,6 +31,7 @@ from puppetnet.models import (
 )
 from puppetnet.pipeline import IngestPipeline, PipelineOptions, RunReport, run_pipeline
 from puppetnet.sources import ADAPTERS, SourceAdapter
+from puppetnet.sources.base import build_relation
 
 # --------------------------------------------------------------------------- #
 # Stub source
@@ -684,3 +685,194 @@ def test_options_dry_run_overrides_settings(settings, use_registry, tmp_path):
     assert pipeline.settings.dry_run is True
     stats = pipeline.run()
     assert stats.documents_fetched == 1
+
+
+# --------------------------------------------------------------------------- #
+# Calculated layer: PUPPET_MASTER_OF scoring runs after the harvest
+# --------------------------------------------------------------------------- #
+
+
+def archetype_document() -> Document:
+    """The pattern the scorer exists for: a sanctioned person behind a shell chain.
+
+    Person → BVI shell → Panama shell, one shared address with an associate who
+    also flies on the same jet, and an OFAC sanctions edge for context.
+    """
+    person = Entity(name="Ivan Volkov", entity_type=EntityType.PERSON, confidence=1.0)
+    associate = Entity(name="Pyotr Sokolov", entity_type=EntityType.PERSON, confidence=1.0)
+    ofac = Entity(name="Office of Foreign Assets Control", entity_type=EntityType.ORGANIZATION, confidence=1.0)
+    shell = Entity(
+        name="Nordgate Holdings Ltd",
+        entity_type=EntityType.ORGANIZATION,
+        confidence=1.0,
+        properties={"jurisdiction": "vg", "current_status": "dormant", "registered_address": "Craigmuir Chambers, Road Town, Tortola"},
+    )
+    subshell = Entity(
+        name="Meridian Trading SA",
+        entity_type=EntityType.ORGANIZATION,
+        confidence=1.0,
+        properties={"jurisdiction": "pa", "current_status": "dissolved"},
+    )
+    place = Entity(
+        name="Craigmuir Chambers, Road Town, Tortola",
+        entity_type=EntityType.LOCATION,
+        confidence=1.0,
+        properties={"address": "Craigmuir Chambers, Road Town, Tortola", "jurisdiction": "vg"},
+    )
+    jet = Entity(
+        name="N707WA",
+        entity_type=EntityType.CRAFT,
+        confidence=1.0,
+        properties={"craft_kind": "Aircraft", "tail_number": "N707WA", "registration": "N707WA"},
+    )
+
+    def edge(subject, predicate, obj, *, evidence="", extra=None) -> Relation:
+        return build_relation(
+            subject,
+            predicate,
+            obj,
+            source_id="icij",
+            source_weight=1.0,
+            method=ExtractionMethod.STRUCTURED,
+            evidence=evidence or f"{subject.name} {predicate.value} {obj.name}",
+            extra=extra,
+        )
+
+    return document(
+        "icij",
+        "https://example.test/offshore/structure",
+        title="Offshore structure",
+        entities=[person, associate, ofac, shell, subshell, place, jet],
+        relations=[
+            edge(person, RelationType.SANCTIONED_BY, ofac),
+            edge(person, RelationType.OWNS, shell, extra={"weight": 1.0}),
+            edge(shell, RelationType.OWNS, subshell, extra={"weight": 1.0}),
+            edge(subshell, RelationType.LOCATED_IN, place),
+            edge(person, RelationType.SHARES_ADDRESS, associate, extra={"weight": 0.8}),
+            edge(person, RelationType.PASSENGER_ON, jet, extra={"weight": 0.8}),
+            edge(associate, RelationType.PASSENGER_ON, jet, extra={"weight": 0.8}),
+        ],
+    )
+
+
+def archetype_registry(use_registry) -> None:
+    use_registry(stub_spec("icij", SourceType.STRUCTURED, documents=[archetype_document()]))
+
+
+def test_analytics_scores_the_harvest_and_writes_the_calculated_layer(env, use_registry):
+    archetype_registry(use_registry)
+    pipeline = make_pipeline(env)
+    stats = pipeline.run()
+
+    assert stats.errors == [], "scoring must not add errors to a clean run"
+    analytics = pipeline._analytics
+    assert analytics["status"] == "completed"
+    assert analytics["persons_scored"] >= 1
+    assert analytics["nodes_considered"] >= 6
+    assert analytics["edges_considered"] >= 7
+    assert analytics["edges_written"] >= 1, "the archetype must clear the puppet-master threshold"
+    assert analytics["top_persons"][0]["name"] == "Ivan Volkov"
+    assert analytics["top_persons"][0]["risk_score"] >= env.puppet_master_min_score
+    assert analytics["top_persons"][0]["components"], "scores must be explainable"
+    assert analytics["top_persons"][0]["reasons"]
+
+    kinds = pipeline.neo4j.recorder.summary()["by_kind"]
+    # The calculated layer is recorded under its own kind, so an operator reading
+    # a dry run can tell harvested writes from computed ones.
+    assert kinds.get("analytics", 0) == 2, "one PUPPET_MASTER_OF batch + one risk-score batch"
+    assert stats.per_source["analytics"]["puppet_master_edges"] >= 1
+    assert stats.per_source["analytics"]["persons_scored"] >= 1
+
+
+def test_analytics_runs_after_the_harvest_is_written(env, use_registry):
+    """Ordering matters: the calculated layer reads back what the run wrote."""
+    archetype_registry(use_registry)
+    pipeline = make_pipeline(env)
+    pipeline.run()
+
+    kinds = [entry["kind"] for entry in pipeline.neo4j.recorder.statements]
+    assert "write" in kinds and "analytics" in kinds
+    assert min(i for i, kind in enumerate(kinds) if kind == "analytics") > max(i for i, kind in enumerate(kinds) if kind == "write")
+
+
+def test_a_low_signal_harvest_produces_no_puppet_masters(env, use_registry):
+    """Two legitimate directorships are not a puppeteering network."""
+    person = Entity(name="Anne Director", entity_type=EntityType.PERSON, confidence=1.0)
+    company = Entity(
+        name="Rolls-Royce plc",
+        entity_type=EntityType.ORGANIZATION,
+        confidence=1.0,
+        properties={"jurisdiction": "gb", "reg_number": "00710072", "website": "https://www.rolls-royce.com"},
+    )
+    relation = build_relation(
+        person, RelationType.DIRECTOR_OF, company, source_id="opencorporates", source_weight=0.9, evidence="directorship"
+    )
+    use_registry(
+        stub_spec(
+            "opencorporates",
+            SourceType.STRUCTURED,
+            documents=[document("opencorporates", "https://example.test/officer/1", entities=[person, company], relations=[relation])],
+        )
+    )
+    pipeline = make_pipeline(env)
+    pipeline.run()
+
+    analytics = pipeline._analytics
+    assert analytics["status"] == "completed"
+    assert analytics["persons_scored"] >= 1
+    assert analytics["edges_written"] == 0, "a single real directorship must not be flagged"
+    assert analytics["top_persons"][0]["risk_score"] < env.puppet_master_min_score
+
+
+def test_analytics_can_be_switched_off(env, use_registry):
+    archetype_registry(use_registry)
+    env.analytics_enabled = False
+    pipeline = make_pipeline(env)
+    pipeline.run()
+
+    assert pipeline._analytics == {"status": "disabled"}
+    assert "analytics" not in pipeline.neo4j.recorder.summary()["by_kind"]
+
+
+def test_analytics_failure_never_fails_the_run(env, use_registry, monkeypatch):
+    """A scoring bug must not discard a completed harvest."""
+
+    class Broken:
+        def __init__(self, *args, **kwargs) -> None:
+            raise RuntimeError("scoring exploded")
+
+    archetype_registry(use_registry)
+    monkeypatch.setattr(pipeline_module, "AnalyticsEngine", Broken)
+    pipeline = make_pipeline(env)
+    stats = pipeline.run()
+
+    assert pipeline._analytics["status"] == "failed"
+    assert "scoring exploded" in pipeline._analytics["error"]
+    assert any("analytics" in error for error in stats.errors)
+    assert stats.documents_fetched == 1, "the harvest itself still completed"
+    assert stats.entities_written >= 5, "and was still written to the graph"
+
+
+def test_analytics_survives_a_graph_that_goes_away_mid_run(env, use_registry, monkeypatch):
+    archetype_registry(use_registry)
+    pipeline = make_pipeline(env)
+
+    real_run = pipeline.run
+
+    def run_then_break():
+        monkeypatch.setattr(pipeline_module.AnalyticsEngine, "write", lambda self, result: (_ for _ in ()).throw(Neo4jUnavailable("gone")))
+        return real_run()
+
+    stats = run_then_break()
+    assert pipeline._analytics["status"] == "failed"
+    assert stats.documents_fetched == 1
+
+
+def test_the_analytics_section_is_serialised_into_the_report(env, use_registry, tmp_path):
+    archetype_registry(use_registry)
+    make_pipeline(env).run()
+
+    payload = json.loads((tmp_path / "reports" / "run-test-0001.json").read_text(encoding="utf-8"))
+    assert payload["analytics"]["status"] == "completed"
+    assert payload["analytics"]["persons_scored"] >= 1
+    assert payload["analytics"]["top_persons"][0]["targets"], "edges carry the evidence chain that justified them"

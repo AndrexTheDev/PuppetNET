@@ -69,13 +69,24 @@ sources:
     options:
       maxlag: 5                 # back off when the replica lag is high
       limit_per_query: 150
+      # The relay pins its own ceiling for this host (0.25 req/s, burst 1) and
+      # sends the query as a form POST; a value here can only be *slower*.
       queries:
         - ownership
         - subsidiaries
         - board_members
+        - foundation_trustees   # P3320 board / P488 chair / P112 founder / P169 CEO
         - aircraft_operators
         - vessel_operators
         - political_positions
+        # Others available: employer, sanctioned_entities, state_owned, custom
+      # Link people who sit on the *same* board or foundation: Person -
+      # [:ASSOCIATED_WITH]-> Person, with the shared organisation in `evidence`.
+      # Quadratic in board size, so both caps exist — a 400-member board is
+      # skipped rather than turned into 80k edges.
+      link_shared_organizations: true
+      max_shared_org_members: 24
+      max_pairs_per_org: 12
 
   - id: companies_house
     enabled: false              # needs COMPANIES_HOUSE_API_KEY (free tier: 600/5min)
@@ -86,6 +97,57 @@ sources:
       include_officers: true
       queries: []
       company_numbers: []
+
+  # ---------------------------------------------------------------------------
+  # AVIATION (edge confidence weight = 0.8, structured where the feed is)
+  #
+  # `faa_registry` streams the official Releasable Aircraft ZIP directly (it is
+  # far too large to buffer through the Worker); `adsb_exchange` and
+  # `flight_logs` are relayed and rate-capped by the host profiles in worker.js.
+  # ---------------------------------------------------------------------------
+
+  - id: faa_registry
+    enabled: true
+    rate_per_sec: 0.1           # one ZIP a month; do not re-download it per run
+    burst: 1
+    cache_ttl_seconds: 86400
+    options:
+      dump_url: ""              # empty = the registry default (faa.gov monthly ZIP)
+      row_limit: 20000
+      refresh_days: 30          # reuse the cached dump while it is this fresh
+      tail_numbers: []          # N-numbers of interest, e.g. ["N897RC"]
+      registrant_names: []      # owner-name substrings, e.g. ["Kerimov"]
+      states: []
+      # Registrants sharing one address: Person -[:SHARES_ADDRESS]-> Person, so a
+      # mail drop that fronts five owners becomes visible as a cluster.
+      min_shared_address_size: 2
+      max_shared_address_size: 40
+      max_pairs_per_address: 24
+
+  - id: adsb_exchange
+    enabled: true
+    rate_per_sec: 0.5
+    burst: 2
+    cache_ttl_seconds: 43200
+    options:
+      # Tail numbers and callsigns to look up. Without one of these the adapter
+      # has nothing to ask for and yields nothing.
+      tail_numbers: []
+      callsigns: []
+
+  - id: flight_logs
+    enabled: true
+    rate_per_sec: 0.5
+    burst: 2
+    cache_ttl_seconds: 21600
+    options:
+      # CSV/TSV/JSON manifests (e.g. released "Amadea"/"Kerimov" flight logs).
+      # Parsed from the raw text before any NLP, because tabular structure is
+      # destroyed by the readability pass.
+      flight_log_urls: []
+      link_copassengers: true   # Person -[:TRAVELED_WITH]-> Person per flight
+      max_copassenger_pairs: 60
+      default_tail_numbers: []
 
   - id: register_files
     enabled: false              # opt-in: local CSV/JSON sanctions & registry dumps

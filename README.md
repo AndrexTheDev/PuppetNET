@@ -23,7 +23,7 @@ There is no server to run. The whole system is three moving parts:
                     │      │            ├─ 2. Neo4j: verify → ensure schema → open :IngestRun               │
                     │      │            ├─ 3. dedupe index (graph hashes + .state cache)                    │
                     │      │            ├─ 4. per source: adapter ─► Document                               │
-                    │      │            │        │             └─► Entity / Relation (structured, w = 1.0)  │
+                    │      │            │        │             └─► Entity / Relation (structured, w ≤ 1.0)  │
                     │      │            │        └─ unstructured ─► NLPEngine (spaCy) ─► entities, SVO       │
                     │      │            │                              triples, CRAFT ids  (w = 0.4)        │
                     │      │            ├─ 5. merge (noisy-OR) → GraphWriter → batched MERGE Cypher         │
@@ -56,7 +56,7 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
 python ingest.py --doctor          # 6 checks: config, relay, neo4j, nlp, credentials, filesystem
-python ingest.py --list-sources    # the 11 registered sources as JSON
+python ingest.py --list-sources    # the 14 registered sources as JSON
 python ingest.py --print-config    # resolved config, secrets redacted
 
 DRY_RUN=true python ingest.py --dry-run --sources news_world --limit 5
@@ -130,10 +130,15 @@ confidence = source_weight × method_factor × evidence_score        (clamped to
 | Source family | Adapter(s) | `source_weight` |
 | --- | --- | --- |
 | ICIJ Offshore Leaks | `icij` | **1.0** |
-| OpenCorporates | `opencorporates` | **1.0** |
-| Wikidata (SPARQL) | `wikidata` | **1.0** |
-| Official registers (Companies House, CSV/TSV/JSON register files) | `companies_house`, `register_files` | **1.0** |
+| Official registers — Companies House, sanctions/registry dumps | `companies_house`, `register_files` | **1.0** |
+| FAA Releasable Aircraft registry (owner ↔ tail number) | `faa_registry` | **1.0** |
+| Wikidata SPARQL (ownerships, boards, foundations, political posts) | `wikidata` | **0.9** |
+| OpenCorporates (directorships, groupings, shared addresses) | `opencorporates` | **0.9** |
+| ADS-B Exchange / adsbdb.com telemetry, flight-log manifests | `adsb_exchange`, `flight_logs` | **0.8** |
 | News / blogs / RSS | `rss` | **0.4** |
+
+`source_weight` is the *authority of the source*; the number on each edge is the
+*authority of the claim type*.
 
 | Extraction method | `method_factor` |
 | --- | --- |
@@ -147,6 +152,48 @@ row is `1.0`. Repeated independent observations of the same edge merge with a no
 (`1 − (1 − a)(1 − b)`), so corroboration accumulates without ever reaching certainty —
 but two readings of the *same clause* never stack. Edges below `MIN_EDGE_CONFIDENCE`
 (0.05) are dropped before they reach Neo4j.
+
+### Edge weights
+
+Every relationship type also carries a domain weight
+([`DOMAIN_EDGE_WEIGHTS`](puppetnet/models.py), 46 predicates), exposed as
+`Relation.weight` and written as `r.weight`:
+
+| Relationship | `weight` | Comes from |
+| --- | --- | --- |
+| `CONTROLS` | **1.0** | ICIJ/OpenCorporates officer & PSC rows |
+| `TRUSTEE_OF` | **0.9** | Wikidata foundation boards (P3320/P488/P112/P169) |
+| `SHARES_ADDRESS` | **0.8** | FAA registrant addresses, OpenCorporates registered offices |
+| `PASSENGER_ON` | **0.8** | flight-log manifests |
+| `DONATED_TO` | **0.7** | funding disclosures, news |
+| `TRAVELED_WITH` | **0.6** | co-passenger pairs on the same manifest |
+| `MENTIONED_WITH` | **0.4** | news co-occurrence (Person → Person) |
+| `ASSOCIATED_WITH` | **0.3** | two people on the *same* board or foundation |
+| `PUPPET_MASTER_OF` | *calculated* | the analytics pass — see below |
+
+Adapters never set a weight by hand: `Relation.weight` falls back to the table, so
+the vocabulary cannot drift per source. The one exception is the analytics pass,
+which overrides it with a computed score.
+
+### Influence scoring (`PUPPET_MASTER_OF`)
+
+After the graph is written, [`puppetnet/graph/analytics.py`](puppetnet/graph/analytics.py)
+walks each person's neighbourhood and derives
+`(:Person)-[:PUPPET_MASTER_OF {score}]->(:Entity)` edges — additive components,
+decayed by `0.7` per hop, capped at four hops:
+
+| Component | Weight | Signal |
+| --- | --- | --- |
+| `control_breadth` | 0.30 | how many entities the person controls, chain-weighted |
+| `opacity` | 0.25 | shell-company markers (no website/staff, mailbox address, secrecy jurisdiction) |
+| `layering` | 0.20 | depth of the ownership chain beneath them |
+| `convergence` | 0.10 | unrelated associates converging on the same assets |
+| `adversarial` | 0.10 | sanctions, leaks and litigation signals |
+| `movement` | 0.05 | aircraft/vessel movement around the same person |
+
+Candidates scoring under `PUPPET_MASTER_MIN_SCORE` (0.40) are dropped. The pass is
+idempotent, writes only its own `:PUPPET_MASTER_OF` edges, and can never fail a run:
+an exception is recorded as an error and the run still exits 0.
 
 ### NLP
 
@@ -172,19 +219,27 @@ Full detail in [docs/nlp-pipeline.md](docs/nlp-pipeline.md).
 
 ## Graph model
 
-Four node labels, one closed relationship vocabulary (38 predicates).
+Four storage labels plus domain labels, one closed relationship vocabulary
+(46 predicates).
 
 ```
 (:Source {source_id, kind, confidence})
 (:Document {doc_id, url, content_hash, source_weight, word_count, published_at})
 (:Entity:Person|Organization|Location|Craft {canonical_key, name, aliases[], confidence, …})
+     // domain labels are SET/REMOVEd on the same node, never MERGEd separately:
+     //   :ShellCompany (opacity markers) · :Company {jurisdiction, reg_number}
+     //   :Foundation {name, country} · :Aircraft {tail_number, owner}
+     //   :Location {address, gps}
 (:IngestRun {run_id, started_at, status, documents_fetched, entities_written, …})
 
 (:Document)-[:FROM_SOURCE]->(:Source)
 (:IngestRun)-[:PROCESSED]->(:Document)
 (:Document)-[:MENTIONS {count, confidence, surface_forms[]}]->(:Entity)
-(:Entity)-[:OWNS|OWNED_BY|DIRECTOR_OF|… {confidence, source_weight, method, evidence,
-                                          observations, doc_id, source_id, run_id}]->(:Entity)
+(:Entity)-[:OWNS|CONTROLS|TRUSTEE_OF|SHARES_ADDRESS|… {confidence, weight, source_weight,
+                                          method, evidence, observations, doc_id,
+                                          source_id, run_id}]->(:Entity)
+(:Person)-[:PUPPET_MASTER_OF {score, control_breadth, opacity, layering,
+                              convergence, adversarial, movement, archetype}]->(:Entity)
 ```
 
 Example queries:
@@ -203,6 +258,19 @@ RETURN path
 // Corroboration: the same claim seen by several sources
 MATCH (a:Entity)-[r:OWNS]->(b:Entity) WHERE r.observations > 1
 RETURN a.name, b.name, r.confidence, r.observations ORDER BY r.observations DESC
+
+// Two trustees of the same foundation, and which foundation it was
+MATCH (a:Person)-[r:ASSOCIATED_WITH]->(b:Person)
+RETURN a.name, b.name, r.weight, r.evidence ORDER BY r.confidence DESC
+
+// Who moved with whom, and on whose aircraft
+MATCH (p:Person)-[:PASSENGER_ON]->(ac:Aircraft)<-[:OWNS|CONTROLS]-(owner:Person)
+RETURN p.name, ac.tail_number, owner.name, ac.owner ORDER BY ac.tail_number
+
+// The calculated influence ranking
+MATCH (p:Person)-[m:PUPPET_MASTER_OF]->(e)
+WHERE m.score >= 0.4
+RETURN p.name, m.score, m.archetype, labels(e), e.name ORDER BY m.score DESC LIMIT 25
 ```
 
 Schema, properties and idempotency rules: [docs/graph-schema.md](docs/graph-schema.md).
@@ -212,10 +280,18 @@ Schema, properties and idempotency rules: [docs/graph-schema.md](docs/graph-sche
 ## CLI
 
 ```
-python ingest.py [--sources a,b] [--limit N] [--dry-run] [--skip-nlp] [--skip-graph]
+python ingest.py [--sources a,b] [--limit N] [--fetch-only] [--dry-run] [--skip-nlp] [--skip-graph]
                  [--fail-on-error] [--log-level DEBUG|INFO|WARNING|ERROR] [--log-json]
                  [--report-dir DIR] [--run-id ID] [--max-runtime SECONDS] [--no-report]
                  [--doctor] [--list-sources] [--print-config] [--version]
+```
+
+`--fetch-only [SOURCES]` runs stage 1 alone — fetch, extract and report what each
+source yielded, without touching spaCy or Neo4j. It is the cheapest way to check
+credentials, relay reachability and source health:
+
+```bash
+python ingest.py --fetch-only wikidata,opencorporates --limit 25
 ```
 
 | Exit code | Meaning |
@@ -245,7 +321,7 @@ Field reference: [docs/configuration.md](docs/configuration.md).
 
 ```bash
 pip install -r requirements.txt pytest
-pytest tests/ -q          # 621 tests, ~10s
+pytest tests/ -q          # 740 tests, ~11s
 ```
 
 The suite is fully hermetic: **no network, no database, no spaCy model download**.
@@ -264,19 +340,29 @@ and asserts the exact rows that would be written.
 | `test_relations.py` | SVO → predicate rule table |
 | `test_nlp_dependency.py` | parse-tree triples (fake token tree) |
 | `test_nlp_degraded.py` | blank-pipeline fallback, 0.2 penalty, caps |
-| `test_net.py` | token bucket, delay queue, header rotation, relay + fallback client |
+| `test_net.py` | token bucket, delay queue, header rotation, relay + fallback client, form bodies |
 | `test_sources.py` | adapter framework, registry invariants, RSS/Wikidata/OpenCorporates |
+| `test_aviation.py` | FAA registry parsing, ADS-B lookups, flight-log manifests, co-travel edges |
 | `test_graph.py` | client retries/batching, writer ordering, resolver, node budget |
 | `test_pipeline.py` | harvest orchestration, dedupe, budgets, failure isolation, reports |
 | `test_ingest_cli.py` | argument handling, doctor, exit codes, GitHub annotations |
 | `test_e2e_dry_run.py` | full rehearsal with scripted HTTP |
+
+`worker.js` has its own behavioural test, in plain Node with the upstream stubbed —
+no wrangler, no network, no bindings:
+
+```bash
+node --check worker.js          # syntax
+node tests/worker_smoke.mjs     # host profiles: SPARQL form POST, rate ceiling,
+                                # credential injection, secret redaction, /health
+```
 
 ---
 
 ## Repository layout
 
 ```
-worker.js                     Cloudflare Worker: edge relay, rate limiting, queue
+worker.js                     Cloudflare Worker: edge relay, host profiles, queue
 wrangler.toml                 Worker bindings, politeness tunables, cron
 ingest.py                     CLI entry point (also the workflow's command)
 requirements.txt              runtime dependencies (Python 3.10+)
@@ -297,19 +383,22 @@ puppetnet/
     relations.py              SVO → RelationType rule table
     nlp_engine.py             spaCy orchestration, degraded fallback, provenance
   sources/
-    registry.py               the 11 registered sources and their weights
+    registry.py               the 14 registered sources and their weights
     base.py                   adapter framework: budget, dedupe, politeness, errors
-    icij.py opencorporates.py wikidata.py registers.py rss.py
+    icij.py opencorporates.py wikidata.py registers.py rss.py adsb.py
+    archive.py                monthly-dump freshness cache + delimited-row iterator
   graph/
     schema.py                 constraints, indexes, MERGE Cypher templates
     neo4j_client.py           retries, batching, dry-run recorder
     resolver.py               cross-run alias resolution
     writer.py                 ordered, idempotent, batched writes + node budget
+    analytics.py              PUPPET_MASTER_OF scoring pass over the written graph
+  domain.py                   domain labels (ShellCompany/Foundation/Aircraft), jurisdictions
   pipeline.py                 the daily run
 .github/workflows/
   daily_ingest.yml            cron 04:00 UTC + manual dispatch
   ci.yml                      lint + test on push/PR
-tests/                        621 offline tests
+tests/                        740 offline tests + tests/worker_smoke.mjs (Node)
 docs/                         architecture, configuration, schema, NLP, relay, operations
 ```
 

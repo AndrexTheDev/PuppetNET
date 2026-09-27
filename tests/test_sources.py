@@ -20,7 +20,9 @@ from typing import Any
 
 import pytest
 
+from puppetnet.domain import domain_labels
 from puppetnet.models import (
+    DOMAIN_EDGE_WEIGHTS,
     Document,
     EntityType,
     ExtractionMethod,
@@ -212,16 +214,41 @@ def test_unstructured_sources_weigh_four_tenths(env):
     assert adapter.method is ExtractionMethod.DEPENDENCY
 
 
-def test_every_registered_source_carries_its_family_weight():
+def test_every_registered_source_carries_its_declared_weight():
+    """Family default, unless the spec overrides it for second-hand structured data."""
     for source in SOURCE_REGISTRY:
-        expected = 1.0 if source.kind is SourceType.STRUCTURED else 0.4
-        assert source.confidence == expected, source.id
+        family = 1.0 if source.kind is SourceType.STRUCTURED else 0.4
+        expected = family if source.confidence_override is None else source.confidence_override
+        assert source.confidence == pytest.approx(expected), source.id
+        assert 0.0 < source.confidence <= 1.0
 
 
-def test_the_four_structured_families_are_present():
-    """ICIJ, OpenCorporates, Wikidata and official registers — all at 1.0."""
+def test_the_osint_weight_ladder_matches_the_source_brief():
+    """Official registers 1.0 · Wikidata/OpenCorporates 0.9 · aviation 0.8 · news 0.4."""
+    weights = {spec.id: spec.confidence for spec in SOURCE_REGISTRY}
+    assert weights["icij_leaks"] == pytest.approx(1.0)
+    assert weights["faa_registry"] == pytest.approx(1.0)
+    assert weights["companies_house"] == pytest.approx(1.0)
+    assert weights["wikidata"] == pytest.approx(0.9)
+    assert weights["opencorporates"] == pytest.approx(0.9)
+    assert weights["adsb_exchange"] == pytest.approx(0.8)
+    assert weights["flight_logs"] == pytest.approx(0.8)
+    assert all(weights[sid] == pytest.approx(0.4) for sid in ("occrp_rss", "news_world", "aviation_news"))
+
+
+def test_the_structured_families_are_present():
+    """Leaks, aggregators, official registers and aviation are all structured."""
     structured = {s.id for s in SOURCE_REGISTRY if s.kind is SourceType.STRUCTURED}
-    assert {"icij_leaks", "opencorporates", "wikidata", "companies_house", "register_files"} <= structured
+    assert {
+        "icij_leaks", "opencorporates", "wikidata", "companies_house", "register_files",
+        "faa_registry", "adsb_exchange", "flight_logs",
+    } <= structured
+
+
+def test_every_registered_adapter_name_resolves_to_a_class():
+    """A spec naming an adapter that does not exist fails only at runtime — check it now."""
+    for source in SOURCE_REGISTRY:
+        assert source.adapter in ADAPTERS, f"{source.id} → unknown adapter {source.adapter!r}"
 
 
 def test_news_and_rss_sources_are_unstructured():
@@ -720,10 +747,12 @@ def test_wikidata_maps_bindings_to_weighted_triples(env):
     assert gazprom.properties["wikidata_id"] == "Q1"
     assert gazprom.properties["lei"] == "1234LEI"
 
-    # SPARQL text must carry the query, the limit and the declared UA.
+    # SPARQL travels as a POSTed form carrying the query, limit, maxlag and UA.
     sent = client.kwargs_for("https://query.wikidata.org/sparql")
-    assert "LIMIT 50" in sent["params"]["query"]
-    assert sent["params"]["maxlag"] == 5
+    assert sent["method"] == "POST"
+    assert "LIMIT 50" in sent["data"]["query"]
+    assert sent["data"]["format"] == "json"
+    assert sent["data"]["maxlag"] == 5
     assert sent["headers"]["User-Agent"]
 
 
@@ -954,3 +983,128 @@ def test_opencorporates_can_be_disabled_without_a_token(env):
     adapter = OpenCorporatesAdapter(source_spec, context(env, client, source_spec=source_spec))
     assert list(adapter.run()) == []
     assert client.calls == []
+
+
+# --------------------------------------------------------------------------- #
+# Wikidata: foundation trustees and shared-organisation ties
+# --------------------------------------------------------------------------- #
+
+
+def trustee_payload(rows, *, subject_var="trustee", object_var="foundation", country="Uzbekistan"):
+    """SPARQL results shaped like the foundation_trustees/board_members queries."""
+    bindings = []
+    for person_qid, person, org_qid, org in rows:
+        bindings.append(
+            {
+                subject_var: {"type": "uri", "value": f"http://www.wikidata.org/entity/{person_qid}"},
+                f"{subject_var}Label": {"type": "literal", "value": person},
+                object_var: {"type": "uri", "value": f"http://www.wikidata.org/entity/{org_qid}"},
+                f"{object_var}Label": {"type": "literal", "value": org},
+                "countryLabel": {"type": "literal", "value": country},
+            }
+        )
+    return {"head": {"vars": [subject_var, object_var]}, "results": {"bindings": bindings}}
+
+
+FOUNDATION_ROWS = [
+    ("Q10", "Alisher Usmanov", "Q20", "Usmanov Family Foundation"),
+    ("Q11", "Irina Viner", "Q20", "Usmanov Family Foundation"),
+    ("Q12", "Oleg Deripaska", "Q21", "Volnoe Delo Foundation"),
+]
+
+
+def test_wikidata_harvests_foundation_trustees(env):
+    adapter, _ = wikidata_adapter(env, trustee_payload(FOUNDATION_ROWS), queries=("foundation_trustees",))
+    documents = list(adapter.run())
+
+    assert len(documents) == 1
+    document = documents[0]
+    trustees = [r for r in document.relations if r.predicate is RelationType.TRUSTEE_OF]
+    assert {r.subject.name for r in trustees} == {"Alisher Usmanov", "Irina Viner", "Oleg Deripaska"}
+    assert {r.obj.name for r in trustees} == {"Usmanov Family Foundation", "Volnoe Delo Foundation"}
+    for relation in trustees:
+        assert relation.subject.entity_type is EntityType.PERSON
+        assert relation.obj.entity_type is EntityType.ORGANIZATION
+        assert relation.weight == pytest.approx(DOMAIN_EDGE_WEIGHTS[RelationType.TRUSTEE_OF])
+        # This harness builds its own spec (no confidence_override); the shipped
+        # registry declares Wikidata at 0.9 — asserted by the weight-ladder test.
+        assert relation.source_weight == pytest.approx(document.source_weight)
+
+    foundation = next(e for e in document.entities if e.name == "Usmanov Family Foundation")
+    assert foundation.properties["country"] == "Uzbekistan", "Foundation(name, country) in the graph model"
+    assert foundation.properties["wikidata_id"] == "Q20"
+    assert "Foundation" in domain_labels(foundation), "the domain layer must label it :Foundation"
+
+
+def test_shared_trusteeships_link_the_people(env):
+    """Two trustees of one foundation move in the same circle — worth an edge."""
+    adapter, _ = wikidata_adapter(env, trustee_payload(FOUNDATION_ROWS), queries=("foundation_trustees",))
+    document = list(adapter.run())[0]
+
+    shared = [r for r in document.relations if r.predicate is RelationType.ASSOCIATED_WITH]
+    # Only the Usmanov foundation has two trustees; Volnoe Delo has one.
+    assert {frozenset((r.subject.name, r.obj.name)) for r in shared} == {frozenset(("Alisher Usmanov", "Irina Viner"))}
+    for relation in shared:
+        assert relation.weight == pytest.approx(DOMAIN_EDGE_WEIGHTS[RelationType.ASSOCIATED_WITH])
+        assert relation.weight < DOMAIN_EDGE_WEIGHTS[RelationType.SHARES_ADDRESS], (
+            "co-membership is proximity, not a shared desk"
+        )
+        assert relation.extra["shared_organization"] == "Usmanov Family Foundation"
+        assert "both sit on" in relation.evidence
+
+
+def test_the_board_members_query_derives_shared_ties_too(env):
+    rows = [
+        ("Q30", "Anna Director", "Q40", "Nord Stream AG"),
+        ("Q31", "Boris Deputy", "Q40", "Nord Stream AG"),
+        ("Q32", "Cyril Observer", "Q41", "Gazprombank"),
+    ]
+    adapter, _ = wikidata_adapter(
+        env, trustee_payload(rows, subject_var="person", object_var="org"), queries=("board_members",)
+    )
+    document = list(adapter.run())[0]
+
+    assert {r.predicate for r in document.relations} == {RelationType.DIRECTOR_OF, RelationType.ASSOCIATED_WITH}
+    shared = [r for r in document.relations if r.predicate is RelationType.ASSOCIATED_WITH]
+    assert {frozenset((r.subject.name, r.obj.name)) for r in shared} == {frozenset(("Anna Director", "Boris Deputy"))}
+
+
+def test_a_huge_board_is_not_squared(env):
+    """A 400-seat board would fan out quadratically into meaningless edges."""
+    rows = [(f"Q{100 + i}", f"Trustee {i:03d}", "Q900", "National Endowment") for i in range(30)]
+    adapter, _ = wikidata_adapter(env, trustee_payload(rows), queries=("foundation_trustees",))
+    document = list(adapter.run())[0]
+
+    assert len([r for r in document.relations if r.predicate is RelationType.TRUSTEE_OF]) == 30
+    assert [r for r in document.relations if r.predicate is RelationType.ASSOCIATED_WITH] == []
+
+
+def test_the_pair_cap_bounds_a_medium_board(env):
+    rows = [(f"Q{200 + i}", f"Trustee {i:03d}", "Q901", "Medium Foundation") for i in range(10)]
+    adapter, _ = wikidata_adapter(
+        env, trustee_payload(rows), queries=("foundation_trustees",), max_pairs_per_org=5, max_shared_org_members=40
+    )
+    document = list(adapter.run())[0]
+
+    shared = [r for r in document.relations if r.predicate is RelationType.ASSOCIATED_WITH]
+    assert len(shared) == 5, "10 members would be 45 pairs without the cap"
+
+
+def test_shared_org_ties_can_be_switched_off(env):
+    adapter, _ = wikidata_adapter(
+        env, trustee_payload(FOUNDATION_ROWS), queries=("foundation_trustees",), link_shared_organizations=False
+    )
+    document = list(adapter.run())[0]
+    assert [r for r in document.relations if r.predicate is RelationType.ASSOCIATED_WITH] == []
+    assert len([r for r in document.relations if r.predicate is RelationType.TRUSTEE_OF]) == 3
+
+
+def test_the_foundation_query_is_registered_and_enabled_by_default():
+    from puppetnet.sources.registry import get_spec
+    from puppetnet.sources.wikidata import WIKIDATA_QUERIES
+
+    assert "foundation_trustees" in WIKIDATA_QUERIES
+    assert WIKIDATA_QUERIES["foundation_trustees"].predicate is RelationType.TRUSTEE_OF
+    assert WIKIDATA_QUERIES["foundation_trustees"].link_co_members is True
+    spec = get_spec("wikidata")
+    assert "foundation_trustees" in spec.options["queries"]

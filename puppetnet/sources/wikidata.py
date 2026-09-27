@@ -26,10 +26,10 @@ query every ~10 s with ``maxlag=5`` so it never competes with interactive use.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from typing import Any
 
-from ..models import Document, Entity, EntityType, RelationType, has_organizational_marker
+from ..models import Document, Entity, EntityType, Relation, RelationType, has_organizational_marker
 from .base import SourceAdapter
 
 __all__ = ["WikidataAdapter", "WIKIDATA_QUERIES", "WikidataQuery"]
@@ -50,9 +50,11 @@ class WikidataQuery:
         predicate: RelationType,
         label_vars: Sequence[str] = (),
         extra_vars: Sequence[str] = (),
+        object_properties: Mapping[str, str] | None = None,
         description: str = "",
         default_limit: int = 150,
         reverse: bool = False,
+        link_co_members: bool = False,
     ) -> None:
         self.name = name
         self.sparql = sparql
@@ -63,9 +65,15 @@ class WikidataQuery:
         self.predicate = predicate
         self.label_vars = list(label_vars)
         self.extra_vars = list(extra_vars)
+        #: Binding variable → property name for facts about the *object*
+        #: (``{"countryLabel": "country"}`` gives a Foundation its country).
+        self.object_properties = dict(object_properties or {})
         self.description = description
         self.default_limit = default_limit
         self.reverse = reverse
+        #: When true, people who appear on the same object (a board, a foundation)
+        #: are also linked to each other — the "shared organisation" tie.
+        self.link_co_members = link_co_members
 
 
 WIKIDATA_QUERIES: dict[str, WikidataQuery] = {
@@ -117,6 +125,7 @@ LIMIT %LIMIT%
         object_var="org",
         object_type=EntityType.ORGANIZATION,
         predicate=RelationType.DIRECTOR_OF,
+        link_co_members=True,
         label_vars=("personLabel", "orgLabel"),
         sparql="""
 SELECT DISTINCT ?person ?personLabel ?org ?orgLabel WHERE {
@@ -249,6 +258,44 @@ SELECT DISTINCT ?entity ?entityLabel ?authority ?authorityLabel WHERE {
 LIMIT %LIMIT%
 """,
     ),
+    "foundation_trustees": WikidataQuery(
+        name="foundation_trustees",
+        description=(
+            "Foundations, charitable organisations and research institutes with their "
+            "trustees, board members, founders and chief executives (P3320/P488/P112/P169). "
+            "A foundation is the classic way to keep influence while giving away "
+            "ownership, so its trustees are harvested as control edges."
+        ),
+        sparql="""
+SELECT ?trustee ?trusteeLabel ?foundation ?foundationLabel ?countryLabel WHERE {
+  {
+    { ?foundation wdt:P31/wdt:P279* wd:Q157031 }
+    UNION { ?foundation wdt:P31/wdt:P279* wd:Q708677 }
+    UNION { ?foundation wdt:P31/wdt:P279* wd:Q1664720 }
+  }
+  {
+    { ?foundation wdt:P3320 ?trustee }
+    UNION { ?foundation wdt:P488 ?trustee }
+    UNION { ?foundation wdt:P112 ?trustee }
+    UNION { ?foundation wdt:P169 ?trustee }
+  }
+  OPTIONAL { ?foundation wdt:P17 ?country }
+  SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
+}
+LIMIT %LIMIT%
+""",
+        subject_var="trustee",
+        subject_type=EntityType.PERSON,
+        object_var="foundation",
+        object_type=EntityType.ORGANIZATION,
+        predicate=RelationType.TRUSTEE_OF,
+        label_vars=("trusteeLabel", "foundationLabel"),
+        # The graph model wants Foundation(name, country), so the country label
+        # lands on the foundation rather than on its trustee.
+        object_properties={"countryLabel": "country"},
+        default_limit=150,
+        link_co_members=True,
+    ),
     "custom": WikidataQuery(
         name="custom",
         description="Ad-hoc SPARQL supplied via options.custom_sparql (must SELECT ?subject ?subjectLabel ?object ?objectLabel).",
@@ -299,18 +346,23 @@ class WikidataAdapter(SourceAdapter):
 
     # ------------------------------------------------------------------ #
     def _run_query(self, query: WikidataQuery, sparql: str, *, limit: int) -> Document | None:
-        endpoint = str(self.spec.base_url or "https://query.wikidata.org/sparql")
-        params = {"query": sparql, "format": "json"}
+        endpoint = str(self.settings.wikidata_endpoint or self.spec.base_url or "https://query.wikidata.org/sparql")
+        # POST, not GET: these queries run to several kilobytes and a GET URL is
+        # truncated long before WDQS's own limits. ``maxlag`` makes the endpoint
+        # answer "I am behind, come back later" instead of adding to the lag —
+        # the politeness knob Wikidata actually asks clients to use.
+        form: dict[str, Any] = {"query": sparql, "format": "json"}
         maxlag = self.option("maxlag", 5)
         if maxlag:
-            params["maxlag"] = int(maxlag)
+            form["maxlag"] = int(maxlag)
 
+        accept = "application/sparql-results+json;q=0.9,application/json;q=0.8"
         headers = {
             "User-Agent": str(self.settings.wikidata_user_agent or self.settings.http_user_agent),
-            "Accept": "application/sparql-results+json;q=0.9,application/json;q=0.8",
+            "Accept": accept,
         }
-        self.log.info("running Wikidata query %r (limit=%d)", query.name, limit)
-        payload = self.fetch_json(endpoint, params=params, mode="bot", headers=headers)
+        self.log.info("running Wikidata query %r (limit=%d, POST)", query.name, limit)
+        payload = self.fetch_json(endpoint, data=form, method="POST", mode="bot", headers=headers, accept=accept)
         if not payload:
             return None
 
@@ -321,6 +373,7 @@ class WikidataAdapter(SourceAdapter):
 
         entities: dict[str, Entity] = {}
         relations = []
+        co_members: dict[str, dict[str, Any]] = {}
         rows_kept = 0
         text_lines = [
             f"Wikidata structured extract — {query.name}",
@@ -363,7 +416,16 @@ class WikidataAdapter(SourceAdapter):
             obj = self.entity(
                 object_label,
                 object_type,
-                properties=_compact({"wikidata_id": _qid(object_uri), "wikidata_url": object_uri}),
+                properties=_compact(
+                    {
+                        "wikidata_id": _qid(object_uri),
+                        "wikidata_url": object_uri,
+                        **{
+                            name: self._binding_value(binding, var)
+                            for var, name in query.object_properties.items()
+                        },
+                    }
+                ),
             )
             entities[subject.canonical_key] = subject
             entities[obj.canonical_key] = obj
@@ -378,9 +440,18 @@ class WikidataAdapter(SourceAdapter):
                     extra={"wikidata_query": query.name, "sparql_limit": limit},
                 )
             )
+            if query.link_co_members and subject.entity_type is EntityType.PERSON and obj.entity_type is not EntityType.PERSON:
+                bucket = co_members.setdefault(obj.canonical_key, {"org": obj, "people": {}})
+                bucket["people"].setdefault(subject.canonical_key, subject)
+
             rows_kept += 1
             if rows_kept <= 200:
                 text_lines.append(f"{first.name} — {query.predicate.value} → {second.name}")
+
+        shared = self._co_member_relations(co_members, entities, query)
+        if shared:
+            relations.extend(shared)
+            text_lines += ["", f"Shared-organisation ties derived: {len(shared)}"]
 
         if not relations:
             self.log.info("Wikidata query %r produced no usable triples", query.name)
@@ -399,6 +470,60 @@ class WikidataAdapter(SourceAdapter):
         )
 
     # ------------------------------------------------------------------ #
+    def _co_member_relations(
+        self,
+        co_members: dict[str, dict[str, Any]],
+        entities: dict[str, Entity],
+        query: WikidataQuery,
+    ) -> list[Relation]:
+        """Link people who sit on the same board or trusteeship (shared-org ties).
+
+        Two trustees of the same foundation already move in the same circle, and
+        that is worth an edge — but as ``ASSOCIATED_WITH``, the weakest
+        person-to-person predicate, because co-membership is proximity, not
+        control. The analytics pass agrees: it scores a co-membership at 0.2 of a
+        convergence point against 1.0 for a shared address.
+
+        Bounded on both sides: an organisation with more than
+        ``max_shared_org_members`` people is skipped (a 400-seat board produces a
+        quadratic fan-out of edges that mean nothing) and each organisation
+        contributes at most ``max_pairs_per_org`` edges.
+        """
+        if not co_members or not self.option("link_shared_organizations", True):
+            return []
+        max_members = int(self.option("max_shared_org_members", 24))
+        max_pairs = int(self.option("max_pairs_per_org", 12))
+        if max_pairs <= 0 or max_members < 2:
+            return []
+
+        out: list[Relation] = []
+        for key in sorted(co_members):
+            bucket = co_members[key]
+            org = bucket.get("org")
+            people = sorted(bucket.get("people", {}).values(), key=lambda person: person.name)
+            if org is None or len(people) < 2 or len(people) > max_members:
+                continue
+            pairs = 0
+            for index, left in enumerate(people):
+                for right in people[index + 1 :]:
+                    if pairs >= max_pairs:
+                        break
+                    entities[left.canonical_key] = left
+                    entities[right.canonical_key] = right
+                    out.append(
+                        self.relation(
+                            left,
+                            RelationType.ASSOCIATED_WITH,
+                            right,
+                            evidence=f"Wikidata {query.name}: both sit on {org.name}",
+                            extra={"wikidata_query": query.name, "shared_organization": org.name},
+                        )
+                    )
+                    pairs += 1
+                if pairs >= max_pairs:
+                    break
+        return out
+
     @staticmethod
     def _binding_value(binding: dict[str, Any], variable: str) -> str:
         node = binding.get(variable)

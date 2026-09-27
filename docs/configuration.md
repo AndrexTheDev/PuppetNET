@@ -73,7 +73,7 @@ direct fallback must be available; `MAX_RUNTIME_SECONDS ≥ 60`; `NEO4J_BATCH_SI
 | `HTTP_BACKOFF_BASE_SECONDS` | `http_backoff_base_seconds` | `1.2` | |
 | `HTTP_BACKOFF_CAP_SECONDS` | `http_backoff_cap_seconds` | `45` | |
 | `HTTP_MAX_RESPONSE_BYTES` | `http_max_response_bytes` | `12582912` | 12 MiB; larger bodies are truncated and flagged. |
-| `HTTP_USER_AGENT` | `http_user_agent` | `PuppetNET-OSINT/1.4 (…; research bot)` | Used on the direct path only; the Worker rotates real browser fingerprints. |
+| `HTTP_USER_AGENT` | `http_user_agent` | `PuppetNET-OSINT/1.5 (…; research bot)` | Used on the direct path only; the Worker rotates real browser fingerprints. |
 | `EXTRA_HEADERS_JSON` | `extra_headers_json` | *(empty)* | Static extra headers as JSON, e.g. `{"X-Api-Key":"…"}`. Redacted. |
 
 ## NLP
@@ -110,16 +110,44 @@ direct fallback must be available; `MAX_RUNTIME_SECONDS ≥ 60`; `NEO4J_BATCH_SI
 
 ## Source credentials & queries
 
+Every credential below can instead live **on the Worker** (`wrangler secret put …`),
+where the host profiles inject it on the outgoing request and strip it from every URL
+they report or cache. Runner-side values are only needed for direct, non-relayed fetches
+— and keeping them Worker-side keeps them out of the Actions log.
+
 | Env var | Field | Notes |
 | --- | --- | --- |
-| `OPENCORPORATES_API_TOKEN` | `opencorporates_api_token` | Without it the adapter uses anonymous access unless `allow_anonymous: false`. |
-| `COMPANIES_HOUSE_API_KEY` | `companies_house_api_key` | UK register. |
-| `WIKIDATA_USER_AGENT` | `wikidata_user_agent` | Wikidata requires a descriptive UA; falls back to `HTTP_USER_AGENT`. |
+| `OPENCORPORATES_API_TOKEN` | `opencorporates_api_token` | Without it the adapter uses anonymous access unless `allow_anonymous: false`. Anonymous quota is a handful of calls a day. |
+| `OPENCORPORATES_ENDPOINT` | `opencorporates_endpoint` | Default `https://api.opencorporates.com/v0.4`. |
+| `COMPANIES_HOUSE_API_KEY` | `companies_house_api_key` | UK register (free key, 600 calls / 5 min). |
+| `WIKIDATA_USER_AGENT` | `wikidata_user_agent` | Wikidata *requires* a descriptive UA with contact details; falls back to `HTTP_USER_AGENT`. Also read by the Worker's `wikidata-sparql` profile. |
+| `WIKIDATA_ENDPOINT` | `wikidata_endpoint` | Default `https://query.wikidata.org/sparql`. Queried by **POST** with a form body. |
+| `WIKIDATA_QUERIES` | `wikidata_queries` | Subset of `ownership, subsidiaries, board_members, foundation_trustees, aircraft_operators, vessel_operators, political_positions, employer, sanctioned_entities, state_owned, custom`. |
 | `ICIJ_QUERY_TERMS` | `icij_officer_query_terms` | Free-text searches against Offshore Leaks. |
 | `ICIJ_DATASET_URLS` | `icij_dataset_urls` | Bulk dumps (CSV/TSV, zip/gzip aware). |
-| `WIKIDATA_QUERIES` | `wikidata_queries` | Subset of `ownership, subsidiaries, board_members, aircraft_operators, vessel_operators, political_positions`. |
+| `FAA_REGISTRY_URL` | `faa_registry_url` | Default `https://registry.faa.gov/database/ReleasableAircraft.zip`; a local path works too. |
+| `AIRCRAFT_TAIL_NUMBERS` | `aircraft_tail_numbers` | N-numbers that switch `faa_registry` and `adsb_exchange` on. |
+| `ADSDBD_ENDPOINT` | `adsbdb_endpoint` | Default `https://www.adsbdb.com/api/v1` — free, no key. |
+| `ADSBEXCHANGE_ENDPOINT` | `adsbexchange_endpoint` | Default `https://adsbexchange-com1.p.rapidapi.com`. |
+| `ADSBEXCHANGE_API_KEY` | `adsbexchange_api_key` | Falls back to `X_RAPIDAPI_KEY` / `RAPIDAPI_KEY`. Required for ADS-B Exchange v2 (billed per call). |
+| `RAPIDAPI_HOST` | `rapidapi_host` | Sent as `x-rapidapi-host`; defaults to the endpoint hostname. |
+| `FLIGHT_LOG_URLS` | `flight_log_urls` | CSV/TSV/JSON passenger manifests → `PASSENGER_ON` + `TRAVELED_WITH`. |
 | `REGISTER_FILES` | `register_files` | Declarative CSV/TSV/JSON register exports. |
 | `RSS_FEEDS` | `rss_feeds` | Replaces the `news_world` feed list. |
+
+## Calculated layer (analytics)
+
+Runs after the graph is written; see [docs/graph-schema.md](graph-schema.md#calculated--puppet_master_of).
+
+| Env var | Field | Default | Notes |
+| --- | --- | --- | --- |
+| `ANALYTICS_ENABLED` | `analytics_enabled` | `true` | `false` ⇒ the hook reports `{"status": "disabled"}` and does nothing. |
+| `ANALYTICS_MAX_PERSONS` | `analytics_max_persons` | `5000` | Persons scored per run. |
+| `ANALYTICS_GRAPH_EDGE_LIMIT` | `analytics_graph_edge_limit` | `50000` | Edges pulled into the in-memory neighbourhood graph. |
+| `ANALYTICS_PRUNE_DAYS` | `analytics_prune_days` | `14` | Deletes `PUPPET_MASTER_OF` edges not refreshed for this long. |
+| `PUPPET_MASTER_MIN_SCORE` | `puppet_master_min_score` | `0.40` | Below this a person gets no calculated edges. |
+| `PUPPET_MASTER_TOP_N` | `puppet_master_top_n` | `8` | Targets written per person. |
+| `PUPPET_MASTER_MAX_EDGES` | `puppet_master_max_edges` | `2000` | Hard cap on calculated rows per run. |
 
 ## Run behaviour & metadata
 
@@ -166,9 +194,25 @@ sources:
 
   - id: wikidata
     options:
-      queries: [ownership, board_members, vessel_operators]
+      queries: [ownership, board_members, foundation_trustees, vessel_operators]
       limit_per_query: 150
       maxlag: 5
+      link_shared_organizations: true   # Person-[:ASSOCIATED_WITH]->Person per shared board
+      max_shared_org_members: 24        # above this the board is skipped (quadratic)
+      max_pairs_per_org: 12
+
+  - id: faa_registry
+    options:
+      tail_numbers: [N897RC]
+      registrant_names: [Kerimov]
+      refresh_days: 30                  # reuse the cached monthly dump while fresh
+      min_shared_address_size: 2        # co-located registrants → :SHARES_ADDRESS
+      max_pairs_per_address: 24
+
+  - id: adsb_exchange
+    options:
+      tail_numbers: [N897RC]
+      callsigns: []
 
   - id: opencorporates
     options:
@@ -179,9 +223,11 @@ sources:
       include_groupings: true
 ```
 
-`kind` may be overridden (`structured` / `unstructured`) but the edge confidence weight
-is always derived from it — **1.0** for structured, **0.4** for unstructured — and can
-never be set by hand.
+`kind` may be overridden (`structured` / `unstructured`), and per-source authority comes
+from `confidence_override` in the registry — **1.0** ICIJ, official registers and the FAA
+registry; **0.9** Wikidata and OpenCorporates; **0.8** ADS-B and flight logs; **0.4**
+news/RSS. It is derived from the source, never set by hand, and `kind` still decides
+whether a document goes through spaCy at all.
 
 ### Adapter options reference
 
@@ -189,7 +235,10 @@ never be set by hand.
 | --- | --- |
 | `icij` | `node_ids`, `dataset_urls`, `search_terms`, `row_limit`, `jurisdictions` |
 | `opencorporates` | `queries`, `jurisdictions`, `per_page`, `include_officers`, `include_groupings`, `allow_anonymous` |
-| `wikidata` | `queries`, `limit_per_query`, `maxlag`, `custom_sparql` |
+| `wikidata` | `queries`, `limit_per_query`, `maxlag`, `custom_sparql`, `link_shared_organizations`, `max_shared_org_members`, `max_pairs_per_org` |
+| `faa_registry` | `dump_url`, `row_limit`, `refresh_days`, `tail_numbers`, `registrant_names`, `states`, `min_shared_address_size`, `max_shared_address_size`, `max_pairs_per_address`, `stream_bytes_multiplier` |
+| `adsb` | `tail_numbers`, `callsigns` |
+| `flight_logs` | `flight_log_urls`, `link_copassengers`, `max_copassenger_pairs`, `default_tail_numbers` |
 | `companies_house` | `queries`, `company_numbers`, `include_psc`, `include_officers` |
 | `register_files` | `files` (declarative column→entity/relation mappings), `row_limit` |
 | `rss` | `feeds`, `fetch_full_articles`, `entry_content_max_chars`, `per_feed_limit`, `recent_days`, `language` |

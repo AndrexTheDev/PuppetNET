@@ -8,6 +8,7 @@ dry-run, and no spaCy model is required.
 
 from __future__ import annotations
 
+import dataclasses
 import importlib.util
 import json
 import sys
@@ -254,9 +255,10 @@ def test_doctor_passes_in_dry_run_without_credentials(cli_env, capsys):
     assert ingest.command_doctor(settings) == ingest.EXIT_OK
 
     output = capsys.readouterr().out
-    for component in ("config", "edge-relay", "neo4j", "nlp", "credentials", "filesystem"):
+    for component in ("config", "edge-relay", "neo4j", "nlp", "registry", "credentials", "filesystem"):
         assert f"[PASS] {component}" in output, output
-    assert "6/6 checks passed" in output
+    assert "7/7 checks passed" in output
+    assert "fetchers:" in output, "the doctor lists the stage-1 fetchers it can run"
 
 
 def test_doctor_reports_the_blank_nlp_backend(cli_env, capsys):
@@ -331,7 +333,7 @@ def test_probe_worker_reports_bindings_when_healthy(cli_env, monkeypatch):
         def json():
             return {
                 "worker": "puppetnet-relay",
-                "version": "1.4.0",
+                "version": "1.5.0",
                 "colo": "CDG",
                 "bindings": {
                     "rate_limit_kv": "RATE_LIMIT_KV",
@@ -553,3 +555,277 @@ def test_final_summary_flags_recorded_errors(cli_env, capsys):
 def test_exit_codes_are_distinct():
     codes = {ingest.EXIT_OK, ingest.EXIT_CONFIG, ingest.EXIT_RUNTIME, ingest.EXIT_PARTIAL}
     assert codes == {0, 1, 2, 3}
+
+
+# --------------------------------------------------------------------------- #
+# Stage 1: the modular API fetchers
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture()
+def fetch_registry(monkeypatch):
+    """Install stub specs into the registry ``ingest.py`` itself resolves."""
+
+    def _install(*specs: SourceSpec) -> None:
+        monkeypatch.setattr(ingest, "SOURCE_REGISTRY", tuple(specs))
+
+    return _install
+
+
+def fake_document(source_id: str, url: str, *, entities=(), relations=(), text: str = ""):
+    from puppetnet.models import Document
+
+    return Document(
+        doc_id=f"{source_id}:{url}",
+        source_id=source_id,
+        url=url,
+        title=url,
+        text=text,
+        entities=list(entities),
+        relations=list(relations),
+    )
+
+
+class NoSocketClient:
+    """Stands in for FetchClient; proves the fetch stage opens no sockets."""
+
+    def __init__(self) -> None:
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+@pytest.fixture()
+def session(cli_env, fetch_registry):
+    """A FetcherSession over one structured and one unstructured stub source."""
+    settings = settings_for(cli_env)
+    fetch_registry(
+        stub_spec(
+            "wikidata",
+            SourceType.STRUCTURED,
+            documents=[fake_document("wikidata", "https://example.test/w/1", text="Nord Stream AG is owned by Gazprom.")],
+        ),
+        stub_spec("news_world", documents=[fake_document("news_world", "https://example.test/n/1", text="Gazprom owns Rosneft.")]),
+    )
+    return ingest.FetcherSession.create(settings, client=NoSocketClient(), run_id="run-fetch-0001")
+
+
+def test_a_session_binds_settings_client_and_budget(session):
+    assert session.run_id == "run-fetch-0001"
+    assert session.stats.run_id == "run-fetch-0001"
+    assert session.deadline > 0
+    assert [spec.id for spec in session.specs()] == ["wikidata", "news_world"]
+    assert session.spec_for("wikidata").id == "wikidata"
+    assert session.spec_for("stub").adapter == "stub", "an adapter name resolves too"
+    assert session.spec_for("nope") is None
+
+    context = session.context(session.spec_for("wikidata"))
+    assert context.client is session.client
+    assert context.stats is session.stats
+    assert context.run_id == "run-fetch-0001"
+
+
+def test_a_session_closes_its_client(session):
+    with session as active:
+        assert active is session
+    assert session.client.closed is True
+
+
+def test_fetch_source_runs_one_adapter(session):
+    documents = ingest.fetch_source(session, "wikidata")
+    assert [document.url for document in documents] == ["https://example.test/w/1"]
+    assert session.stats.per_source["wikidata"]["documents"] == 1
+
+
+def test_an_unknown_source_is_reported_not_harvested(session):
+    assert ingest.fetch_source(session, "does_not_exist") == []
+    assert any("unknown or disabled source" in error for error in session.stats.errors)
+    assert session.stats.per_source == {}, "a typo must not harvest the whole registry"
+
+
+def test_a_failing_adapter_is_contained(session, fetch_registry):
+    fetch_registry(stub_spec("wikidata", SourceType.STRUCTURED, error=RuntimeError("sparql endpoint down")))
+    assert ingest.fetch_source(session, "wikidata") == []
+    assert any("sparql endpoint down" in error for error in session.stats.errors)
+
+
+def test_fetcher_options_override_the_spec_without_losing_it(session, monkeypatch):
+    """A fetcher narrows a query set without editing config/sources.yaml."""
+    seen: dict = {}
+
+    class Recording(StubAdapter):
+        def harvest(self):
+            seen.update(dict(self.spec.options))
+            yield from super().harvest()
+
+    monkeypatch.setitem(ADAPTERS, "stub", Recording)
+    ingest.fetch_wikidata(session, queries=["ownership"], limit_per_query=7)
+    assert seen["queries"] == ["ownership"]
+    assert seen["limit_per_query"] == 7
+    assert seen["documents"], "the spec's own options survive the override"
+
+
+def test_every_named_fetcher_targets_its_own_source(session, monkeypatch):
+    calls: list[tuple[str, dict]] = []
+
+    def fake_fetch_source(sess, source, *, limit=None, options=None):
+        calls.append((source, dict(options or {})))
+        return []
+
+    monkeypatch.setattr(ingest, "fetch_source", fake_fetch_source)
+    ingest.fetch_icij(session, search_terms=["Gazprom"])
+    ingest.fetch_wikidata(session, queries=["ownership"])
+    ingest.fetch_opencorporates(session, jurisdictions=["gb"])
+    ingest.fetch_faa_registry(session, tail_numbers=["N707WA"], force_refresh=True)
+    ingest.fetch_adsb_exchange(session, tail_numbers=["9H-VUC"])
+    ingest.fetch_flight_logs(session, urls=["https://example.test/log.csv"])
+
+    assert [source for source, _ in calls] == [
+        "icij_leaks",
+        "wikidata",
+        "opencorporates",
+        "faa_registry",
+        "adsb_exchange",
+        "flight_logs",
+    ]
+    assert calls[0][1] == {"search_terms": ["Gazprom"]}
+    assert calls[3][1] == {"tail_numbers": ["N707WA"], "force_refresh": True}
+    assert calls[5][1] == {"flight_log_urls": ["https://example.test/log.csv"]}
+
+
+def test_fetch_news_sweeps_every_rss_spec(session, fetch_registry, monkeypatch):
+    def rss_spec(source_id: str) -> SourceSpec:
+        return dataclasses.replace(stub_spec(source_id), adapter="rss")
+
+    monkeypatch.setitem(ADAPTERS, "rss", StubAdapter)
+    fetch_registry(rss_spec("occrp_rss"), rss_spec("news_world"), stub_spec("wikidata", SourceType.STRUCTURED))
+    calls: list[str] = []
+    monkeypatch.setattr(ingest, "fetch_source", lambda sess, source, **kwargs: calls.append(source) or [])
+    ingest.fetch_news(session, feeds=["https://example.test/feed.xml"])
+    assert calls == ["occrp_rss", "news_world"]
+
+
+def test_harvest_documents_puts_structured_sources_first(session):
+    documents = list(ingest.harvest_documents(session))
+    assert [document.source_id for document in documents] == ["wikidata", "news_world"]
+
+
+def test_harvest_documents_honours_an_explicit_order(session):
+    documents = list(ingest.harvest_documents(session, ["news_world", "wikidata"], structured_first=False))
+    assert [document.source_id for document in documents] == ["news_world", "wikidata"]
+
+
+def test_harvest_documents_filters_to_the_requested_sources(session):
+    assert [d.source_id for d in ingest.harvest_documents(session, ["wikidata"])] == ["wikidata"]
+
+
+def test_harvest_documents_expands_an_adapter_name(session, fetch_registry):
+    fetch_registry(
+        stub_spec("occrp_rss", documents=[fake_document("occrp_rss", "https://example.test/a", text="first story")]),
+        stub_spec("news_world", documents=[fake_document("news_world", "https://example.test/b", text="second story")]),
+    )
+    documents = list(ingest.harvest_documents(session, ["stub"], structured_first=False))
+    assert {document.source_id for document in documents} == {"occrp_rss", "news_world"}
+
+
+def test_summarise_fetch_counts_documents_entities_and_predicates(session):
+    from puppetnet.models import Entity, EntityType, Relation, RelationType
+
+    person = Entity(name="Igor Sechin", entity_type=EntityType.PERSON)
+    company = Entity(name="Gazprom", entity_type=EntityType.ORGANIZATION)
+    edge = Relation(subject=person, predicate=RelationType.OWNS, obj=company, confidence=0.9)
+    documents = [
+        fake_document("wikidata", "https://example.test/w/1", entities=[person, company], relations=[edge], text="one two three"),
+        fake_document("news_world", "https://example.test/n/1", text="four five"),
+    ]
+
+    summary = ingest.summarise_fetch(documents, session.stats)
+    assert summary["documents"] == 2
+    assert summary["entities"] == 2
+    assert summary["relations"] == 1
+    assert summary["relations_by_type"] == {"OWNS": 1}
+    assert summary["per_source"]["wikidata"]["words"] == 3
+
+
+def test_fetch_only_reports_and_writes_nothing(cli_env, fetch_registry, capsys):
+    fetch_registry(
+        stub_spec(
+            "wikidata",
+            SourceType.STRUCTURED,
+            documents=[fake_document("wikidata", "https://example.test/w/1", text="Nord Stream AG is owned by Gazprom.")],
+        )
+    )
+    assert ingest.main(["--fetch-only", "wikidata"]) == ingest.EXIT_OK
+
+    output = capsys.readouterr().out
+    assert "fetch stage" in output
+    assert '"documents": 1' in output
+    assert "wikidata" in output
+
+
+def test_fetch_only_without_a_list_takes_every_enabled_source(cli_env, fetch_registry, capsys):
+    fetch_registry(
+        stub_spec(
+            "wikidata",
+            SourceType.STRUCTURED,
+            documents=[fake_document("wikidata", "https://example.test/w/1", text="Nord Stream AG is owned by Gazprom.")],
+        ),
+        stub_spec("news_world", documents=[fake_document("news_world", "https://example.test/n/1", text="Gazprom owns Rosneft.")]),
+    )
+    assert ingest.main(["--fetch-only"]) == ingest.EXIT_OK
+    output = capsys.readouterr().out
+    assert "wikidata" in output and "news_world" in output
+
+
+def test_fetch_only_is_partial_when_a_source_fails(cli_env, fetch_registry, capsys):
+    fetch_registry(stub_spec("wikidata", SourceType.STRUCTURED, error=RuntimeError("endpoint down")))
+    assert ingest.main(["--fetch-only", "wikidata"]) == ingest.EXIT_PARTIAL
+    output = capsys.readouterr().out
+    assert "::warning" in output and "endpoint down" in output
+
+
+def test_fetch_only_never_constructs_a_graph_client(cli_env, fetch_registry, monkeypatch):
+    fetch_registry(stub_spec("wikidata", SourceType.STRUCTURED, documents=[]))
+
+    def explode(*args, **kwargs):  # pragma: no cover - only on misuse
+        raise AssertionError("the fetch stage must not open a Neo4j connection")
+
+    monkeypatch.setattr("puppetnet.graph.neo4j_client.Neo4jClient.__init__", explode)
+    assert ingest.main(["--fetch-only", "wikidata"]) == ingest.EXIT_OK
+
+
+def test_the_registry_probe_catches_a_spec_with_no_adapter(cli_env, monkeypatch):
+    settings = settings_for(cli_env)
+    monkeypatch.setattr(ingest, "SOURCE_REGISTRY", (stub_spec("wikidata", SourceType.STRUCTURED),))
+    ok, detail = ingest._probe_registry(settings)
+    assert ok, detail
+
+    orphan = SourceSpec(id="mystery", name="Mystery", kind=SourceType.STRUCTURED, adapter="no_such_adapter")
+    monkeypatch.setattr(ingest, "SOURCE_REGISTRY", (orphan,))
+    ok, detail = ingest._probe_registry(settings)
+    assert not ok and "no_such_adapter" in detail
+
+
+def test_the_registry_probe_fails_when_nothing_is_enabled(cli_env, monkeypatch):
+    settings = settings_for(cli_env)
+    monkeypatch.setattr(ingest, "SOURCE_REGISTRY", ())
+    ok, detail = ingest._probe_registry(settings)
+    assert not ok and "no sources enabled" in detail
+
+
+def test_the_shipped_registry_matches_the_source_brief(cli_env):
+    """The real registry: every adapter resolves and the weight ladder is as briefed."""
+    settings = settings_for(cli_env)
+    ok, detail = ingest._probe_registry(settings)
+    assert ok, detail
+    assert "14 enabled source(s)" in detail
+
+    weights = {spec.id: spec.confidence for spec in ingest.SOURCE_REGISTRY}
+    assert weights["icij_leaks"] == 1.0 and weights["faa_registry"] == 1.0
+    assert weights["wikidata"] == 0.9 and weights["opencorporates"] == 0.9
+    assert weights["adsb_exchange"] == 0.8 and weights["flight_logs"] == 0.8
+    assert weights["news_world"] == 0.4 and weights["aviation_news"] == 0.4
+    assert set(ingest.FETCHERS) == {
+        "icij_leaks", "faa_registry", "wikidata", "opencorporates", "adsb_exchange", "flight_logs", "news",
+    }

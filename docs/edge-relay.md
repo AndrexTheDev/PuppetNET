@@ -35,14 +35,24 @@ every authenticated route is rejected, because an unauthenticated relay is an op
 {
   "ok": true,
   "worker": "puppetnet-edge-relay",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "time": "2026-09-27T04:00:00.000Z",
   "bindings": {"rate_limit_kv": true, "result_kv": true, "queue": true, "auth_configured": true},
   "limits": {"global_rpm": 900, "host_rate_per_sec": 0.5, "host_burst": 4,
              "max_response_bytes": 8388608, "max_timeout_ms": 90000, "max_queue_delay_seconds": 300},
+  "host_profiles": [
+    {"label": "wikidata-sparql", "api_mode": true, "rate_per_sec": 0.25, "burst": 1,
+     "timeout_ms": 120000, "cache_ttl_seconds": 3600, "credential": null},
+    {"label": "opencorporates", "api_mode": true, "rate_per_sec": 0.5, "burst": 2,
+     "timeout_ms": 30000, "cache_ttl_seconds": 21600, "credential": true}
+  ],
   "colo": "CDG"
 }
 ```
+
+`host_profiles` is the effective per-API policy (see below). `credential` is a
+**boolean** — `/health` is unauthenticated, so it reports whether a token exists,
+never the token.
 
 `ingest.py --doctor` probes this endpoint and reports the bindings, so a Worker deployed
 without its KV namespaces is caught before a scheduled run.
@@ -52,7 +62,7 @@ without its KV namespaces is caught before a scheduled run.
 ```json
 {
   "ok": true,
-  "version": "1.4.0",
+  "version": "1.5.0",
   "global": {"minute": 1790000000, "count": 42, "rpm_limit": 900},
   "local_buckets": [{"host": "example.test", "tokens": 2.413, "age_ms": 1820}],
   "bindings": {"rate_limit_kv": true, "result_kv": true, "queue": true}
@@ -91,6 +101,9 @@ authoritative cross-colo counters live in `RATE_LIMIT_KV` and are reconciled eve
 }
 ```
 
+`api_mode` and `host_profile` are also accepted, but callers never need to send
+them: the Worker sets both from its host profiles.
+
 Every field is optional except `url`. Values are clamped to the Worker's own limits
 (`MIN_HOST_RATE_PER_SEC`/`MAX_HOST_BURST`, `MAX_TIMEOUT_MS`, `MAX_MAX_ATTEMPTS`,
 `MAX_CACHE_TTL_SECONDS`, `MAX_QUEUE_DELAY_SECONDS`), so a misconfigured client cannot
@@ -114,9 +127,17 @@ make the relay impolite. A `robots.txt` `Crawl-delay` **lowers** the requested r
   "attempts_log": [{"attempt": 1, "status": 503, "retried_in_ms": 1400, "ua": "…"}],
   "elapsed_ms": 1830,
   "fingerprint_used": {"ua": "…", "secChUa": "…", "platform": "…"},
+  "host_profile": "opencorporates",
+  "credential": "credential:opencorporates-applied",
+  "rate_limit": {"allowed": true, "remaining": 1.5,
+                 "policy": {"host": "api.opencorporates.com", "ratePerSec": 0.5, "burst": 2, "cost": 1}},
   "colo": "CDG", "client_country": "FR", "served_from": "origin"
 }
 ```
+
+`host_profile` names the profile that was applied, `credential` says what was
+injected (never the value), and `rate_limit.policy` is the bucket that actually
+governed the call — the way to confirm a profile capped a client's request.
 
 ### Errors
 
@@ -194,6 +215,8 @@ supplies `"{run_id}:{attempt}"`, so the same host sees a different identity on e
 while one attempt stays internally consistent. `cache_buster` can add a rotating query
 parameter.
 
+Rotation is switched **off** for profiled API hosts (`api_mode`): see below.
+
 **Per-host token bucket.** Refill `HOST_RATE_PER_SEC` (default 0.5 ≈ 1 req/2 s), burst
 `HOST_BURST` (4). Buckets live in isolate memory and reconcile with `RATE_LIMIT_KV` every
 `KV_SYNC_INTERVAL_MS` (20 s), so the limit holds across colos without a KV round-trip per
@@ -225,6 +248,72 @@ zeroes the global RPM window, logging how many buckets remain active.
 
 ---
 
+## Host profiles
+
+`HOST_PROFILES` in `worker.js` pins what this relay knows about the APIs the harvester
+exists to serve. Matching is by **longest host suffix**, so `www.adsbdb.com` inherits
+`adsbdb.com` and `adsbexchange-com1.p.rapidapi.com` inherits `p.rapidapi.com`.
+
+| Profile | Host | Mode | Rate ceiling | Timeout | Cache TTL | Credential |
+| --- | --- | --- | --- | --- | --- | --- |
+| `wikidata-sparql` | `query.wikidata.org` | API | 0.25/s, burst 1 | 120 s | 1 h | — |
+| `opencorporates` | `api.opencorporates.com` | API | 0.5/s, burst 2 | 30 s | 6 h | `OPENCORPORATES_API_TOKEN` |
+| `adsbdb` | `adsbdb.com` | API | 0.5/s, burst 2 | 20 s | 12 h | — |
+| `rapidapi-adsbexchange` | `p.rapidapi.com` | API | 1/s, burst 2 | 20 s | 5 min | `ADSBEXCHANGE_API_KEY` |
+| `faa-registry` | `registry.faa.gov` | API | 0.1/s, burst 1 | 180 s | 24 h | — |
+| `companies-house` | `api.company-information.service.gov.uk` | API | 2/s, burst 5 | 30 s | 6 h | `COMPANIES_HOUSE_API_KEY` |
+| `icij-offshore-leaks` | `offshoreleaks.icij.org` | browser | 0.25/s, burst 2 | 60 s | 6 h | — |
+
+**API mode (`api: true`).** Sends one stable, self-identifying client: a descriptive
+`User-Agent` (Wikidata's policy requires contact details), `Accept: application/json`,
+`Accept-Encoding` — and *no* `sec-ch-ua`, `Sec-Fetch-*` or `DNT`. These endpoints ask to
+be told who is calling; presenting a rotating fake browser to an API is both against
+their terms and easy to detect, and a Cloudflare Worker's IP range is shared with
+everyone else. Genuine websites (ICIJ's search UI, news) keep the rotating fingerprint.
+
+**Rate ceiling.** `min(what the caller asked for, what the host allows)`. A client can
+ask to be slower, never faster: a hand-run loop or a bad config cannot make the relay
+hammer Wikidata into a project-wide 429 ban. The applied values come back in
+`rate_limit.policy`. Profile timeouts are themselves capped by `MAX_TIMEOUT_MS`.
+
+**Wikidata SPARQL shape.** WDQS is a form endpoint, so a `POST` whose body carries
+`query=` gets `format=json` and `maxlag=5` filled in when missing, and a caller that sent
+`{"json": {"query": …}}` is converted to a proper `application/x-www-form-urlencoded`
+body. `maxlag` matters: it lets WDQS answer "my replica is behind, come back later"
+instead of queueing our query on a lagging cluster.
+
+**Credentials at the edge.** `OPENCORPORATES_API_TOKEN`, `ADSBEXCHANGE_API_KEY`
+(+ `RAPIDAPI_HOST`) and `COMPANIES_HOUSE_API_KEY` are Worker secrets. They are injected
+**inside `performFetch`, on a per-call copy**:
+
+* a deferred Queue task never contains them (so a retried task cannot leak one);
+* the KV cache key is computed from the token-free URL, so two callers share entries;
+* a URL-injected token is stripped by `redactUrl` from `url`, `request_url` and the
+  stored task result before any of it is returned or persisted.
+
+This also means a GitHub Actions runner needs no API keys at all when it goes through the
+relay — the token stays on Cloudflare and out of the run log. An authenticated
+OpenCorporates call carries a far higher daily quota, which is usually the difference
+between "rate limited" and "harvested".
+
+**Adding a profile** is a single entry in `HOST_PROFILES`; nothing else needs to change,
+because `handleFetch` applies profiles generically after URL validation and before the
+cache, robots and rate-limit steps (all three read what a profile sets).
+
+### Testing the relay
+
+```bash
+node --check worker.js          # syntax
+node tests/worker_smoke.mjs     # behaviour, no network
+```
+
+The smoke test runs the exported `fetch` handler against a stubbed upstream and asserts
+the SPARQL form POST, the rate ceiling, credential injection for OpenCorporates and
+RapidAPI, that no secret value appears in any response, that an unprofiled website still
+gets browser fingerprints, and that `/health` lists the profiles. CI runs both.
+
+---
+
 ## Deploy
 
 ```bash
@@ -235,6 +324,10 @@ wrangler kv namespace create RESULT_KV
 wrangler queues create puppetnet-fetch-queue
 # paste the ids / preview_ids into wrangler.toml, then:
 wrangler secret put PROXY_AUTH_TOKEN      # openssl rand -hex 32
+# Optional — the host profiles inject these on the outgoing request:
+wrangler secret put OPENCORPORATES_API_TOKEN
+wrangler secret put ADSBEXCHANGE_API_KEY
+wrangler secret put COMPANIES_HOUSE_API_KEY
 wrangler deploy                           # or: wrangler deploy --env production
 curl -s https://<worker>.workers.dev/health | jq
 ```
@@ -269,6 +362,7 @@ python ingest.py --doctor        # probes /health and reports the bindings
 | `MAX_QUEUE_DELAY_SECONDS` | `300` | |
 | `ENFORCE_HTTPS` / `ALLOW_PRIVATE_NETWORKS` / `BLOCKED_HOST_SUFFIXES` | `true` / `false` / *(empty)* | SSRF & policy guards |
 | `ALLOWED_ORIGINS` | `*` | CORS for the PuppetNET front-end |
+| `WIKIDATA_USER_AGENT` | PuppetNET/1.5 … | Identity presented to WDQS (their policy requires contact details) |
 
 The `[env.production]` overlay tightens `GLOBAL_RPM` to 600, `HOST_RATE_PER_SEC` to 0.34
 and `HOST_BURST` to 3 for hostile origins.

@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import logging
+import os
 
 import pytest
 
-from puppetnet.config import ConfigError, Settings, load_settings, resolve_source_specs
+from puppetnet.config import REPO_ROOT, ConfigError, Settings, load_settings, resolve_source_specs
 from puppetnet.models import SourceSpec, SourceType
 from puppetnet.sources.registry import SOURCE_REGISTRY
 
@@ -147,8 +148,9 @@ def test_registry_covers_the_specified_source_families():
 
 def test_registry_weights_follow_the_spec():
     for spec in SOURCE_REGISTRY:
-        expected = 1.0 if spec.kind is SourceType.STRUCTURED else 0.4
-        assert spec.confidence == expected, spec.id
+        family = 1.0 if spec.kind is SourceType.STRUCTURED else 0.4
+        expected = family if spec.confidence_override is None else spec.confidence_override
+        assert spec.confidence == pytest.approx(expected), spec.id
 
 
 def test_bundled_sources_yaml_is_valid_and_applies(tmp_path, monkeypatch):
@@ -250,3 +252,37 @@ def test_settings_dataclass_defaults_are_complete():
     assert settings.neo4j_database == "neo4j"
     assert settings.token_bucket_rate_per_sec > 0
     assert settings.min_edge_confidence >= 0
+
+
+def test_load_settings_accepts_os_environ_itself(monkeypatch):
+    """Regression: ``load_settings(os.environ)`` used to clear the very mapping
+    it was asked to read, so every live value was silently dropped."""
+    monkeypatch.setenv("DRY_RUN", "true")
+    monkeypatch.setenv("MAX_DOCUMENTS_TOTAL", "42")
+
+    settings = load_settings(os.environ)
+
+    assert settings.dry_run is True
+    assert settings.max_documents_total == 42
+    # The caller's environment must survive the call untouched.
+    assert os.environ["MAX_DOCUMENTS_TOTAL"] == "42"
+
+
+def test_shipped_overlay_keeps_the_wikidata_domain_queries():
+    """config/sources.yaml overrides the registry defaults, so a trimmed
+    ``queries`` list here would silently switch foundation trustees off."""
+    settings = load_settings(dict(BASE, DRY_RUN="true", SOURCES_FILE=str(REPO_ROOT / "config" / "sources.yaml")))
+    specs = {spec.id: spec for spec in resolve_source_specs(settings, SOURCE_REGISTRY)}
+
+    wikidata = specs["wikidata"]
+    assert "foundation_trustees" in wikidata.options["queries"]
+    assert "board_members" in wikidata.options["queries"]
+    assert wikidata.options["link_shared_organizations"] is True
+    assert wikidata.options["max_shared_org_members"] == 24
+    assert wikidata.options["max_pairs_per_org"] == 12
+
+    # The aviation sources the ADS-B work added, with their confidence ladder.
+    assert specs["faa_registry"].confidence_override == 1.0
+    assert specs["adsb_exchange"].confidence_override == 0.8
+    assert specs["flight_logs"].confidence_override == 0.8
+    assert specs["flight_logs"].options["link_copassengers"] is True

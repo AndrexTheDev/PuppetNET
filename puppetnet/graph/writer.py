@@ -14,6 +14,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from ..domain import domain_labels, stale_domain_labels
 from ..logging_utils import get_logger
 from ..models import (
     MIN_EDGE_CONFIDENCE,
@@ -52,6 +53,11 @@ class WriteSummary:
     relations_capped: int = 0
     relations_by_type: dict[str, int] = field(default_factory=dict)
     entities_by_type: dict[str, int] = field(default_factory=dict)
+    #: Calculated layer: ``PUPPET_MASTER_OF`` edges written / pruned and the
+    #: number of ``:Person`` nodes whose ``risk_score`` was refreshed.
+    puppet_master_edges: int = 0
+    puppet_master_pruned: int = 0
+    risk_scores_updated: int = 0
     seconds: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
@@ -157,6 +163,39 @@ class GraphWriter:
             ]
             self.client.write(schema.RUN_SOURCE_STATS, {"run_id": self.run_id, "rows": rows}, rows=len(rows), kind="run")
         logger.info("ingest run %s closed with status=%s (%.1fs)", self.run_id, status, stats.duration_seconds)
+
+    # ------------------------------------------------------------------ #
+    # Calculated layer (PUPPET_MASTER_OF + person risk scores)
+    # ------------------------------------------------------------------ #
+    def write_puppet_master(self, rows: Sequence[dict[str, Any]]) -> int:
+        """Persist calculated influence edges. ``score`` overwrites, never merges."""
+        if not rows:
+            return 0
+        # ``kind="analytics"`` keeps the calculated layer distinguishable from
+        # harvested writes in the dry-run report and the recorder summary.
+        written = self.client.execute_batches(schema.PUPPET_MASTER_UPSERT, list(rows), kind="analytics", label="analytics:puppet_master")
+        self.summary.puppet_master_edges += written
+        self.stats.bump_source("analytics", "puppet_master_edges", written)
+        logger.info("wrote %d PUPPET_MASTER_OF edge(s)", written)
+        return written
+
+    def update_risk_scores(self, rows: Sequence[dict[str, Any]]) -> int:
+        """Write per-person ``risk_score`` back onto the ``:Person`` nodes."""
+        if not rows:
+            return 0
+        written = self.client.execute_batches(schema.PERSON_RISK_UPDATE, list(rows), kind="analytics", label="analytics:risk_scores")
+        self.summary.risk_scores_updated += written
+        logger.info("updated risk_score on %d person node(s)", written)
+        return written
+
+    def prune_puppet_master(self, cutoff_iso: str) -> int:
+        """Drop calculated edges not refreshed since ``cutoff_iso``."""
+        rows = self.client.read(schema.PUPPET_MASTER_PRUNE, {"cutoff": cutoff_iso})
+        pruned = int(rows[0].get("pruned", 0)) if rows else 0
+        if pruned:
+            self.summary.puppet_master_pruned += pruned
+            logger.info("pruned %d stale PUPPET_MASTER_OF edge(s) older than %s", pruned, cutoff_iso)
+        return pruned
 
     # ------------------------------------------------------------------ #
     # Sources & documents
@@ -270,18 +309,29 @@ class GraphWriter:
         if not resolved:
             return 0, []
 
-        by_type: dict[EntityType, list[dict[str, Any]]] = {}
+        # Group by (entity type, domain labels): the type label is part of the
+        # MERGE key, the domain labels are SET/REMOVE'd after it. Grouping means
+        # one statement per label combination instead of one per node.
+        by_shape: dict[tuple[EntityType, tuple[str, ...], tuple[str, ...]], list[dict[str, Any]]] = {}
         for entity in resolved:
             row = schema.properties_for_entity_row(entity, run_id=self.run_id)
-            by_type.setdefault(entity.entity_type, []).append(row)
+            labels = domain_labels(entity)
+            stale = stale_domain_labels(entity)
+            by_shape.setdefault((entity.entity_type, labels, stale), []).append(row)
 
         total = 0
-        for entity_type, rows in by_type.items():
+        for (entity_type, labels, stale), rows in by_shape.items():
             label = entity_type.value if entity_type is not EntityType.UNKNOWN else "Unknown"
-            query = schema.build_entity_upsert(label if label != "Unknown" else EntityType.UNKNOWN.value)
+            query = schema.build_entity_upsert(label, labels=labels, remove=stale)
             written = self.client.execute_batches(query, rows, label=f"entities:{label}")
             total += written
             self.summary.entities_by_type[label] = self.summary.entities_by_type.get(label, 0) + written
+            for domain_label in labels:
+                if domain_label in {"Entity", label}:
+                    continue
+                self.summary.entities_by_type[domain_label] = (
+                    self.summary.entities_by_type.get(domain_label, 0) + written
+                )
 
         self.summary.entities = total
         # Cumulative across flushes: the pipeline writes one batch per source,

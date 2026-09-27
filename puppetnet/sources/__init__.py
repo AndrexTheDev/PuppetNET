@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
+from .adsb import AdsbExchangeAdapter, AviationAdapter, FaaRegistryAdapter, FlightLogAdapter
 from .base import AdapterContext, AdapterError, SourceAdapter, build_entity, build_relation
 from .icij import IcijLeaksAdapter
 from .opencorporates import OpenCorporatesAdapter
@@ -32,6 +33,10 @@ __all__ = [
     "CompaniesHouseAdapter",
     "RegisterFilesAdapter",
     "RssAdapter",
+    "AviationAdapter",
+    "FaaRegistryAdapter",
+    "AdsbExchangeAdapter",
+    "FlightLogAdapter",
 ]
 
 ADAPTERS: dict[str, type[SourceAdapter]] = {
@@ -43,6 +48,9 @@ ADAPTERS: dict[str, type[SourceAdapter]] = {
         CompaniesHouseAdapter,
         RegisterFilesAdapter,
         RssAdapter,
+        FaaRegistryAdapter,
+        AdsbExchangeAdapter,
+        FlightLogAdapter,
     )
 }
 

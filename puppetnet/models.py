@@ -46,6 +46,9 @@ __all__ = [
     "COOCCURRENCE_PENALTY",
     "COOCCURRENCE_FACTOR",
     "MIN_EDGE_CONFIDENCE",
+    "DEFAULT_EDGE_WEIGHT",
+    "DOMAIN_EDGE_WEIGHTS",
+    "edge_weight",
     "SourceType",
     "EntityType",
     "ExtractionMethod",
@@ -82,6 +85,9 @@ COOCCURRENCE_PENALTY: float = 0.2
 COOCCURRENCE_FACTOR: float = 1.0 - COOCCURRENCE_PENALTY
 #: Edges below this confidence are dropped before they reach Neo4j.
 MIN_EDGE_CONFIDENCE: float = 0.05
+#: Domain weight written to every relationship as ``r.weight``. Predicates not
+#: listed in :data:`DOMAIN_EDGE_WEIGHTS` fall back to this.
+DEFAULT_EDGE_WEIGHT: float = 0.5
 
 
 class SourceType(str, Enum):
@@ -177,6 +183,10 @@ class RelationType(str, Enum):
     ACQUIRED = "ACQUIRED"
     SHAREHOLDER_OF = "SHAREHOLDER_OF"
     INTERMEDIARY_FOR = "INTERMEDIARY_FOR"
+    #: Nominee / beneficial-owner split — the classic layering device.
+    NOMINEE_OF = "NOMINEE_OF"
+    BENEFICIARY_OF = "BENEFICIARY_OF"
+    TRUSTEE_OF = "TRUSTEE_OF"
 
     # Governance & employment
     DIRECTOR_OF = "DIRECTOR_OF"
@@ -188,6 +198,7 @@ class RelationType(str, Enum):
     APPOINTED_BY = "APPOINTED_BY"
 
     # Money flows
+    DONATED_TO = "DONATED_TO"
     FUNDED = "FUNDED"
     FUNDED_BY = "FUNDED_BY"
     INVESTED_IN = "INVESTED_IN"
@@ -207,6 +218,8 @@ class RelationType(str, Enum):
     OPERATES = "OPERATES"
     REGISTERED_TO = "REGISTERED_TO"
     ARRIVED_FROM = "ARRIVED_FROM"
+    #: Passenger-manifest / flight-log evidence that a person was aboard a craft.
+    PASSENGER_ON = "PASSENGER_ON"
 
     # Social / adversarial
     MET_WITH = "MET_WITH"
@@ -216,6 +229,14 @@ class RelationType(str, Enum):
     INVESTIGATED_BY = "INVESTIGATED_BY"
     ACCUSED_OF = "ACCUSED_OF"
     LINKED_OFFSHORE = "LINKED_OFFSHORE"
+    #: Two actors registered at the same address — a shell-network signal.
+    SHARES_ADDRESS = "SHARES_ADDRESS"
+    #: Unstructured co-occurrence: named together in one sentence or document.
+    MENTIONED_WITH = "MENTIONED_WITH"
+
+    # Calculated — written by the analytics pass, never by an extractor
+    #: Person → entity influence edge carrying a computed ``score``.
+    PUPPET_MASTER_OF = "PUPPET_MASTER_OF"
 
     # Fallbacks
     ASSOCIATED_WITH = "ASSOCIATED_WITH"
@@ -249,6 +270,81 @@ _VALID_REL_NAME = re.compile(r"^[A-Z][A-Z0-9_]{1,63}$")
 def is_safe_relationship_type(name: str) -> bool:
     """Guard used before interpolating a relationship type into Cypher."""
     return bool(_VALID_REL_NAME.match(str(name))) and name in RelationType.names()
+
+
+# --------------------------------------------------------------------------- #
+# Domain edge weights
+# --------------------------------------------------------------------------- #
+#: Semantic weight of each predicate, written to Neo4j as ``r.weight``.
+#:
+#: ``r.weight`` answers *"how much does this kind of relationship matter for
+#: network analysis?"*; ``r.confidence`` answers *"how sure are we that this
+#: particular edge is true?"* (source weight × method factor × evidence). They
+#: are deliberately independent: a ``MENTIONED_WITH`` edge from a well-parsed
+#: broadsheet sentence is confidently extracted (high confidence) and still
+#: weak evidence of a relationship (low weight).
+DOMAIN_EDGE_WEIGHTS: dict[RelationType, float] = {
+    # Ownership & control — the backbone of a puppeteering graph.
+    RelationType.CONTROLS: 1.0,
+    RelationType.OWNS: 1.0,
+    RelationType.OWNED_BY: 1.0,
+    RelationType.SUBSIDIARY_OF: 1.0,
+    RelationType.PARENT_OF: 1.0,
+    RelationType.ACQUIRED: 0.9,
+    RelationType.SHAREHOLDER_OF: 0.9,
+    RelationType.BENEFICIARY_OF: 0.9,
+    RelationType.NOMINEE_OF: 0.8,
+    RelationType.INTERMEDIARY_FOR: 0.9,
+    # Governance.
+    RelationType.DIRECTOR_OF: 0.9,
+    RelationType.OFFICER_OF: 0.9,
+    RelationType.TRUSTEE_OF: 0.9,
+    RelationType.FOUNDED: 0.9,
+    RelationType.APPOINTED_BY: 0.7,
+    RelationType.MEMBER_OF: 0.6,
+    RelationType.EMPLOYED_BY: 0.7,
+    RelationType.EMPLOYS: 0.7,
+    # Money flows.
+    RelationType.DONATED_TO: 0.7,
+    RelationType.FUNDED: 0.8,
+    RelationType.FUNDED_BY: 0.8,
+    RelationType.INVESTED_IN: 0.8,
+    RelationType.PAID_TO: 0.7,
+    RelationType.TRANSFERRED_TO: 0.7,
+    RelationType.CONTRACTED_WITH: 0.6,
+    # Jurisdiction & geography.
+    RelationType.REGISTERED_IN: 0.9,
+    RelationType.NATIONAL_OF: 0.8,
+    RelationType.LOCATED_IN: 0.7,
+    RelationType.SHARES_ADDRESS: 0.8,
+    RelationType.OPERATES_IN: 0.6,
+    # Movement.
+    RelationType.PASSENGER_ON: 0.8,
+    RelationType.REGISTERED_TO: 0.9,
+    RelationType.OPERATES: 0.8,
+    RelationType.TRAVELED_WITH: 0.6,
+    RelationType.TRAVELED_TO: 0.6,
+    RelationType.ARRIVED_FROM: 0.5,
+    # Social / adversarial.
+    RelationType.SANCTIONED_BY: 1.0,
+    RelationType.INVESTIGATED_BY: 0.9,
+    RelationType.LINKED_OFFSHORE: 0.9,
+    RelationType.FAMILY_OF: 0.8,
+    RelationType.ACCUSED_OF: 0.6,
+    RelationType.MET_WITH: 0.5,
+    RelationType.AFFILIATED_WITH: 0.5,
+    RelationType.MENTIONED_WITH: 0.4,
+    # Calculated.
+    RelationType.PUPPET_MASTER_OF: 1.0,
+    # Fallback.
+    RelationType.ASSOCIATED_WITH: 0.3,
+}
+
+
+def edge_weight(predicate: RelationType | str) -> float:
+    """Domain weight for a predicate (:data:`DEFAULT_EDGE_WEIGHT` if unmapped)."""
+    kind = predicate if isinstance(predicate, RelationType) else RelationType.coerce(predicate)
+    return float(DOMAIN_EDGE_WEIGHTS.get(kind, DEFAULT_EDGE_WEIGHT))
 
 
 # --------------------------------------------------------------------------- #
@@ -437,10 +533,17 @@ class SourceSpec:
     max_documents: int = 200
     enabled: bool = True
     options: Mapping[str, Any] = field(default_factory=dict)
+    #: Per-source edge confidence weight. ``None`` derives it from ``kind``
+    #: (structured 1.0 / unstructured 0.4); the OSINT registry uses it for the
+    #: sources whose evidence is structured but second-hand — Wikidata and
+    #: OpenCorporates at 0.9, aviation telemetry and flight logs at 0.8.
+    confidence_override: float | None = None
 
     @property
     def confidence(self) -> float:
-        return self.kind.confidence
+        if self.confidence_override is None:
+            return self.kind.confidence
+        return max(0.0, min(1.0, float(self.confidence_override)))
 
     def with_options(self, **overrides: Any) -> SourceSpec:
         data = {
@@ -458,6 +561,7 @@ class SourceSpec:
             "max_documents": self.max_documents,
             "enabled": self.enabled,
             "options": dict(self.options),
+            "confidence_override": self.confidence_override,
         }
         for key, value in overrides.items():
             if key == "options" and isinstance(value, Mapping):
@@ -626,6 +730,19 @@ class Relation:
     def rel_type(self) -> str:
         return self.predicate.value
 
+    @property
+    def weight(self) -> float:
+        """Domain weight of this predicate — see :data:`DOMAIN_EDGE_WEIGHTS`.
+
+        An explicit ``extra["weight"]`` wins, which is how the analytics pass
+        writes a calculated ``PUPPET_MASTER_OF`` edge whose weight tracks its
+        score instead of the static table.
+        """
+        override = (self.extra or {}).get("weight")
+        if isinstance(override, (int, float)):
+            return max(0.0, min(1.0, round(float(override), 6)))
+        return edge_weight(self.predicate)
+
     def signature(self) -> str:
         """Identity of the edge for de-duplication inside a single run."""
         return f"{self.subject.canonical_key}|{self.rel_type}|{self.obj.canonical_key}"
@@ -633,6 +750,7 @@ class Relation:
     def to_edge_properties(self, run_id: str = "") -> dict[str, Any]:
         return {
             "confidence": round(float(self.confidence), 6),
+            "weight": round(float(self.weight), 6),
             "source_weight": round(float(self.source_weight), 6),
             "method": self.method.value,
             "source_id": self.source_id,

@@ -36,6 +36,35 @@ Typical extras by type:
 * **Person** — `wikidata_id`, `position`, `nationality`, `psc_kind`.
 * **Location** — `jurisdiction_code`, `role` (e.g. `registered_address`).
 
+### Domain labels
+
+On top of the type label, [`puppetnet/domain.py`](../puppetnet/domain.py) stamps
+**evidence-derived** labels onto the same node:
+
+```
+:Company · :ShellCompany · :Foundation · :Offshore
+:Aircraft · :Vessel · :Vehicle
+```
+
+They are `SET`/`REMOVE`d after the `MERGE`, never part of it: the merge key is
+`:Entity:{entity_type}` only, because these labels change as evidence accumulates and a
+merge that included them would miss yesterday's node and violate the uniqueness
+constraint instead. Two families are **mutually exclusive** — `(:Company, :Foundation)`
+and `(:Aircraft, :Vessel, :Vehicle)` — so joining one removes its siblings and the
+classification converges instead of accumulating.
+
+| Label | Carries | Derived from |
+| --- | --- | --- |
+| `:Person` | `alias`, `risk_score` | longest alias; the analytics pass |
+| `:Company` / `:Foundation` | `jurisdiction`, `reg_number`, `country` | registry fields, Wikidata `countryLabel` |
+| `:ShellCompany` | `shell_risk`, `shell_risk_reasons[]`, `is_shell` | `shell_risk() ≥ 0.5` |
+| `:Offshore` | `jurisdiction_class` | `jurisdiction_class()` secrecy tiers |
+| `:Aircraft` | `tail_number`, `owner`, `craft_kind` | FAA registry, ADS-B, CRAFT detection |
+| `:Location` | `address`, `address_key`, `gps` | normalised address string |
+
+`shell_risk_reasons` records *why* a company was flagged (no website, mailbox address,
+secrecy jurisdiction, nominee officers, …) so a label can be audited rather than trusted.
+
 ### `:Document`
 
 | Property | Notes |
@@ -79,26 +108,29 @@ Typical extras by type:
 
 ### Semantic (entity → entity)
 
-One closed vocabulary of 38 predicates — `RelationType`. Relationship types are
+One closed vocabulary of 46 predicates — `RelationType`. Relationship types are
 interpolated into Cypher, so `is_safe_relationship_type()` gates every write and
 unknown values are coerced to `ASSOCIATED_WITH` rather than emitted.
 
 | Group | Predicates |
 | --- | --- |
-| Ownership & control | `OWNS`, `OWNED_BY`, `CONTROLS`, `SUBSIDIARY_OF`, `PARENT_OF`, `ACQUIRED`, `SHAREHOLDER_OF`, `INTERMEDIARY_FOR` |
+| Ownership & control | `OWNS`, `OWNED_BY`, `CONTROLS`, `SUBSIDIARY_OF`, `PARENT_OF`, `ACQUIRED`, `SHAREHOLDER_OF`, `INTERMEDIARY_FOR`, `NOMINEE_OF`, `BENEFICIARY_OF` |
 | Roles & employment | `DIRECTOR_OF`, `OFFICER_OF`, `EMPLOYED_BY`, `EMPLOYS`, `MEMBER_OF`, `FOUNDED`, `APPOINTED_BY` |
-| Money | `FUNDED`, `FUNDED_BY`, `INVESTED_IN`, `PAID_TO`, `CONTRACTED_WITH`, `TRANSFERRED_TO` |
-| Place | `LOCATED_IN`, `REGISTERED_IN`, `NATIONAL_OF`, `OPERATES_IN` |
-| Movement & craft | `TRAVELED_WITH`, `TRAVELED_TO`, `OPERATES`, `REGISTERED_TO`, `ARRIVED_FROM` |
-| Personal & social | `MET_WITH`, `FAMILY_OF`, `AFFILIATED_WITH` |
+| Foundations & boards | `TRUSTEE_OF` |
+| Money | `DONATED_TO`, `FUNDED`, `FUNDED_BY`, `INVESTED_IN`, `PAID_TO`, `CONTRACTED_WITH`, `TRANSFERRED_TO` |
+| Place | `LOCATED_IN`, `REGISTERED_IN`, `NATIONAL_OF`, `OPERATES_IN`, `SHARES_ADDRESS` |
+| Movement & craft | `PASSENGER_ON`, `TRAVELED_WITH`, `TRAVELED_TO`, `OPERATES`, `REGISTERED_TO`, `ARRIVED_FROM` |
+| Personal & social | `MET_WITH`, `FAMILY_OF`, `AFFILIATED_WITH`, `MENTIONED_WITH` |
 | Adversarial | `SANCTIONED_BY`, `INVESTIGATED_BY`, `ACCUSED_OF`, `LINKED_OFFSHORE` |
+| Calculated | `PUPPET_MASTER_OF` |
 | Fallback | `ASSOCIATED_WITH` |
 
 Edge properties:
 
 | Property | Notes |
 | --- | --- |
-| `confidence` | Noisy-OR across observations: `1 − (1 − a)(1 − b)`. |
+| `weight` | **How much this kind of relationship matters**, from `DOMAIN_EDGE_WEIGHTS` — `CONTROLS` 1.0, `TRUSTEE_OF` 0.9, `SHARES_ADDRESS`/`PASSENGER_ON` 0.8, `DONATED_TO`/`LOCATED_IN` 0.7, `TRAVELED_WITH` 0.6, `MENTIONED_WITH` 0.4, `ASSOCIATED_WITH` 0.3. Adapters never set it by hand (`Relation.weight` falls back to the table, so the vocabulary cannot drift per source); only the analytics pass overrides it with a computed score. |
+| `confidence` | **How sure we are** — noisy-OR across observations: `1 − (1 − a)(1 − b)`. |
 | `source_weight` | Highest weight seen (a structured sighting upgrades a news edge). |
 | `method` | `structured` / `dependency` / `pattern` / `gazetteer` / `cooccurrence`. `dependency` wins over `cooccurrence` on merge. |
 | `evidence` | string[] — the last five supporting snippets. |
@@ -108,6 +140,45 @@ Edge properties:
 | `negated`, `hedged`, `passive` | Clause flags carried from the parse. |
 | `source_id`, `doc_id`, `run_id` | Provenance. |
 | `first_seen`, `last_seen` | ISO-8601. |
+
+Two numbers, two questions: `weight` asks *how much does this kind of tie matter*, and
+`confidence` asks *how sure are we about this particular tie*. Sorting by one and
+filtering by the other is the normal way to query the graph.
+
+### Calculated — `PUPPET_MASTER_OF`
+
+Written by [`puppetnet/graph/analytics.py`](../puppetnet/graph/analytics.py) *after* the
+harvest, from the graph it just produced — never by an adapter.
+
+```
+(:Person)-[:PUPPET_MASTER_OF {score}]->(:Entity)
+```
+
+| Property | Notes |
+| --- | --- |
+| `score` | Chain-weighted influence over that specific target (0–1). |
+| `weight` | `min(1.0, score)` — the calculated override of the vocabulary default. |
+| `confidence` | `max(score, risk_score × chain_strength)`. |
+| `components` | map — `control_breadth`, `opacity`, `layering`, `convergence`, `adversarial`, `movement`. |
+| `reasons` | string[] (≤ 12) — human-readable justification. |
+| `evidence` | string — the chain, as text. |
+| `depth` | hops from the person to the target (decay `0.7`/hop, max 4). |
+| `run_id`, `computed_at`, `first_seen`, `last_seen` | Provenance. |
+
+The person node also gets `risk_score`, `components`, `reasons` and `updated_at` written
+back onto it (`PERSON_RISK_UPDATE`), which is what the mandated `Person(name, alias,
+risk_score)` shape refers to.
+
+Scoring is additive with fixed component weights — `control_breadth` 0.30, `opacity`
+0.25, `layering` 0.20, `convergence` 0.10, `adversarial` 0.10, `movement` 0.05 — and a
+person must clear `PUPPET_MASTER_MIN_SCORE` (0.40) to appear at all. Only the top
+`PUPPET_MASTER_TOP_N` (8) targets per person are written, with `PUPPET_MASTER_MAX_EDGES`
+(2000) as a hard cap for a large graph. Edges not refreshed within
+`ANALYTICS_PRUNE_DAYS` (14) are deleted, so the calculated layer reflects the current
+graph rather than every graph ever written.
+
+The pass cannot fail a run: any exception is recorded as an `analytics` error and the
+pipeline still exits 0.
 
 ## Constraints & indexes
 
@@ -121,6 +192,7 @@ CONSTRAINT puppetnet_source_id     FOR (s:Source)     REQUIRE s.source_id IS UNI
 CONSTRAINT puppetnet_run_id        FOR (r:IngestRun)  REQUIRE r.run_id IS UNIQUE
 
 INDEX puppetnet_entity_name/type/confidence/aliases
+INDEX puppetnet_person_risk          FOR (p:Person) ON (p.risk_score)
 INDEX puppetnet_person_name, puppetnet_org_name, puppetnet_location_name, puppetnet_craft_name
 INDEX puppetnet_document_hash/source/published/fetched
 INDEX puppetnet_run_started
@@ -187,4 +259,29 @@ ORDER BY r.started_at DESC LIMIT 14
 MATCH (a:Entity)-[r]->(b:Entity) WHERE r.observations > 1
 RETURN a.name, type(r), b.name, r.observations, r.confidence, r.method
 ORDER BY r.observations DESC LIMIT 50
+
+// Shell companies and why they were flagged
+MATCH (s:ShellCompany)
+RETURN s.name, s.jurisdiction, s.shell_risk, s.shell_risk_reasons
+ORDER BY s.shell_risk DESC LIMIT 25
+
+// Foundation boards: who sits with whom, and on what
+MATCH (p:Person)-[t:TRUSTEE_OF]->(f:Foundation)
+RETURN f.name, f.country, collect(p.name) AS trustees, avg(t.confidence) AS confidence
+
+// A tail number, its owner and everyone seen aboard
+MATCH (ac:Aircraft) WHERE ac.tail_number STARTS WITH 'N'
+OPTIONAL MATCH (owner:Person)-[:OWNS|CONTROLS]->(ac)
+OPTIONAL MATCH (pax:Person)-[b:PASSENGER_ON]->(ac)
+RETURN ac.tail_number, owner.name, collect(DISTINCT pax.name) AS passengers, b.weight
+
+// Registrants sharing one address (mail-drop clusters)
+MATCH (a:Person)-[r:SHARES_ADDRESS]->(b:Person)
+RETURN a.name, b.name, r.weight, r.confidence, r.evidence ORDER BY r.confidence DESC
+
+// The calculated influence layer, with its justification
+MATCH (p:Person)-[m:PUPPET_MASTER_OF]->(t)
+WHERE m.score >= 0.4
+RETURN p.name, p.risk_score, t.name, labels(t), m.score, m.depth, m.components, m.reasons
+ORDER BY m.score DESC LIMIT 25
 ```
