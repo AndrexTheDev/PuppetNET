@@ -8,8 +8,9 @@ import in tests.
 
 from __future__ import annotations
 
+import json
 import os
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -70,6 +71,84 @@ def _env_list(name: str, default: Sequence[str] = ()) -> list[str]:
     return [p for p in parts if p]
 
 
+#: Canonical order for the positional ``ANOMALY_WEIGHTS`` form, matching the
+#: scoring formula ``w1·betweenness + w2·degree_spike + w3·offshore_ratio``.
+ANOMALY_WEIGHT_KEYS = ("betweenness", "degree_spike", "offshore_ratio")
+DEFAULT_ANOMALY_WEIGHTS = {"betweenness": 0.40, "degree_spike": 0.35, "offshore_ratio": 0.25}
+
+
+def _env_weights(name: str, default: Mapping[str, float] | None = None) -> dict[str, float]:
+    """Parse an anomaly-weight triple.
+
+    Three accepted spellings, because operators reach for different ones::
+
+        ANOMALY_WEIGHTS=0.40,0.35,0.25
+        ANOMALY_WEIGHTS=betweenness=0.4,degree_spike=0.35,offshore_ratio=0.25
+        ANOMALY_WEIGHTS={"betweenness": 0.4, "degree_spike": 0.35, "offshore_ratio": 0.25}
+
+    An unknown key or a non-numeric value raises :class:`ConfigError` rather
+    than falling back to the default: silently re-weighting the anomaly score
+    would change what operators are alerted about, which is worse than a failed
+    run. The weights are *not* normalised here — :meth:`Settings.validate`
+    requires them to sum to 1.0 so a missing component is caught.
+    """
+    fallback = dict(default or DEFAULT_ANOMALY_WEIGHTS)
+    raw = _env_str(name).strip()
+    if not raw:
+        return fallback
+
+    parsed: dict[str, float] = {}
+    if raw.startswith("{"):
+        try:
+            payload = json.loads(raw)
+        except ValueError as exc:
+            raise ConfigError(f"{name}={raw!r} is not valid JSON") from exc
+        if not isinstance(payload, dict):
+            raise ConfigError(f"{name} must be a JSON object")
+        for key, value in payload.items():
+            parsed[str(key).strip().lower()] = _coerce_weight(name, key, value)
+    elif "=" in raw:
+        for chunk in raw.split(","):
+            chunk = chunk.strip()
+            if not chunk:
+                continue
+            if "=" not in chunk:
+                raise ConfigError(f"{name}={raw!r}: expected key=value pairs")
+            key, _, value = chunk.partition("=")
+            parsed[key.strip().lower()] = _coerce_weight(name, key, value)
+    else:
+        values = [chunk.strip() for chunk in raw.split(",") if chunk.strip()]
+        if len(values) != len(ANOMALY_WEIGHT_KEYS):
+            raise ConfigError(
+                f"{name}={raw!r} must supply {len(ANOMALY_WEIGHT_KEYS)} weights "
+                f"({', '.join(ANOMALY_WEIGHT_KEYS)}) or key=value pairs"
+            )
+        for key, value in zip(ANOMALY_WEIGHT_KEYS, values, strict=True):
+            parsed[key] = _coerce_weight(name, key, value)
+
+    unknown = sorted(set(parsed) - set(ANOMALY_WEIGHT_KEYS))
+    if unknown:
+        raise ConfigError(
+            f"{name}: unknown weight(s) {', '.join(unknown)} "
+            f"(expected {', '.join(ANOMALY_WEIGHT_KEYS)})"
+        )
+    missing = [key for key in ANOMALY_WEIGHT_KEYS if key not in parsed]
+    if missing:
+        raise ConfigError(f"{name}: missing weight(s) {', '.join(missing)}")
+    return parsed
+
+
+def _coerce_weight(name: str, key: Any, value: Any) -> float:
+    """One weight value → float, with the house-style hard failure."""
+    try:
+        result = float(str(value).strip())
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(f"{name}: {key}={value!r} is not a number") from exc
+    if result != result:  # NaN
+        raise ConfigError(f"{name}: {key} is not a number")
+    return result
+
+
 @dataclass
 class Settings:
     """Fully-resolved runtime configuration."""
@@ -89,6 +168,8 @@ class Settings:
     #: reaches this budget the writer stops *creating* nodes (existing ones keep
     #: updating) instead of letting every write fail. ``0`` disables the guard.
     aura_node_cap: int = 200_000
+    #: AuraDB Free also caps relationships at 400k. Same guard, same semantics.
+    aura_edge_cap: int = 400_000
     #: Rows pulled into the cross-run alias index at the start of a run.
     entity_resolver_limit: int = 200_000
 
@@ -199,6 +280,83 @@ class Settings:
     #: Global cap on calculated edges per run.
     puppet_master_max_edges: int = 2_000
 
+    # -- Graph maintenance (graph_analytics.py) -----------------------------
+    #: Entity resolution: strict identifier matches plus fuzzy name matching.
+    dedupe_enabled: bool = True
+    #: Jaro-Winkler / Levenshtein gate from the resolution spec. A pair below
+    #: this is never merged, however much context it shares.
+    dedupe_fuzzy_threshold: float = 0.88
+    #: Merges applied per run. A cap keeps one bad threshold from rewriting the
+    #: whole graph in a single pass — merges are auditable but not free.
+    dedupe_max_merges: int = 500
+    #: Entities pulled into the resolver per run (ordered by recency).
+    dedupe_entity_limit: int = 60_000
+    #: Co-occurrence window for the homonym rule: two names count as sharing
+    #: context when they appear within this many words in the same document.
+    dedupe_cooccurrence_window_words: int = 50
+    #: Only documents from the last N days are scanned for co-occurrence.
+    dedupe_cooccurrence_days: int = 90
+
+    #: Capacity pruning of weak orphan nodes (AuraDB Free is 200k/400k).
+    prune_enabled: bool = True
+    #: "Orphan" = at most this many semantic ties.
+    prune_orphan_max_degree: int = 1
+    #: ...whose weakest tie scores below this.
+    prune_orphan_max_weight: float = 0.3
+    #: ...and which has not been touched for this many days.
+    prune_orphan_min_age_days: int = 180
+    #: Hard ceiling on deletions per run, independent of how much qualifies.
+    prune_max_deletions: int = 20_000
+    #: Utilisation at which the orphan rule escalates (degree ≤ 2, weight < 0.4,
+    #: age > 90 days) because the free tier is about to refuse writes.
+    prune_capacity_target: float = 0.85
+
+    #: Betweenness centrality + anomaly scoring.
+    centrality_enabled: bool = True
+    #: Nodes projected per run. Betweenness is O(V·E); on a free-tier database
+    #: this is the difference between a 40-second pass and a killed job.
+    centrality_max_nodes: int = 4_000
+    #: ``auto`` probes GDS and falls back to the bundled Python implementation
+    #: (AuraDB Free has no GDS). ``gds`` and ``python`` force one path.
+    centrality_engine: str = "auto"
+    #: Wall-clock budget for the Python scorer; a partial result is rescaled and
+    #: flagged ``truncated`` rather than abandoned.
+    centrality_max_seconds: float = 240.0
+    #: ``score = w1·betweenness + w2·degree_spike + w3·offshore_ratio``.
+    anomaly_weights: dict[str, float] = field(
+        default_factory=lambda: {"betweenness": 0.40, "degree_spike": 0.35, "offshore_ratio": 0.25}
+    )
+    #: Rows kept in the report's ``top_anomalies`` (the digest sends these).
+    anomaly_top_n: int = 5
+    #: Window over which degree growth is measured. Slightly wider than 24h so a
+    #: run that starts late still compares against a full previous day.
+    anomaly_degree_spike_window_hours: float = 30.0
+    #: Bridge alerts pushed per run before the rest wait for the next one.
+    telegram_bridge_alert_limit: int = 10
+
+    # -- Telegram alerting (telegram_bot.py) --------------------------------
+    #: Master switch. Alerting is opt-in: a deployment without a channel
+    #: configured must not fail a maintenance run.
+    telegram_enabled: bool = False
+    #: Bot API token. Equivalent to a password — never logged, never written to
+    #: a report, redacted in :meth:`describe`.
+    telegram_bot_token: str = ""
+    #: Comma/space separated chat ids (``-1001234567890``) or ``@channelname``.
+    telegram_chat_ids: str = ""
+    #: Overridable so a self-hosted Bot API server can be used.
+    telegram_api_base: str = "https://api.telegram.org"
+    #: ``HTML`` (a small allowed subset) or ``MarkdownV2``.
+    telegram_parse_mode: str = "HTML"
+    #: Outbound politeness: ~1 msg/s with a small burst stays well inside the
+    #: documented 30/s global and 20/min-per-group limits.
+    telegram_rate_per_sec: float = 1.0
+    telegram_burst: float = 5.0
+    telegram_send_retries: int = 3
+    #: A bridge alert is not repeated for this many hours.
+    telegram_suppression_hours: float = 24.0
+    telegram_digest_top_n: int = 5
+    telegram_disable_link_preview: bool = True
+
     # -- Runtime behaviour --------------------------------------------------
     dry_run: bool = False
     log_level: str = "INFO"
@@ -256,14 +414,27 @@ class Settings:
     def describe(self) -> dict[str, Any]:
         """Redacted snapshot for logs and the run report."""
         sensitive = {"neo4j_password", "worker_token", "opencorporates_api_token",
-                     "companies_house_api_key", "adsbexchange_api_key", "extra_headers_json"}
+                     "companies_house_api_key", "adsbexchange_api_key", "extra_headers_json",
+                     "telegram_bot_token"}
         out: dict[str, Any] = {}
         for key, value in self.__dict__.items():
             if key in sensitive:
                 out[key] = "***redacted***" if value else ""
+            elif key == "anomaly_weights":
+                out[key] = dict(value or {})
             else:
                 out[key] = list(value) if isinstance(value, (list, tuple, set)) else value
+        if out.get("telegram_chat_ids"):
+            # Chat ids identify a private channel; enough is shown to confirm
+            # that *something* is configured.
+            ids = [str(item) for item in str(out["telegram_chat_ids"]).replace(",", " ").split() if item]
+            out["telegram_chat_ids"] = ", ".join(_mask_chat_id(item) for item in ids)
         return out
+
+    @property
+    def telegram_configured(self) -> bool:
+        """True when both a token and at least one chat id are present."""
+        return bool(self.telegram_bot_token and self.telegram_chat_ids.strip())
 
     def validate(self) -> None:
         problems: list[str] = []
@@ -287,14 +458,56 @@ class Settings:
             problems.append("ENTITY_RESOLVER_LIMIT must be >= 1000")
         if self.min_edge_confidence < 0 or self.min_edge_confidence > 1:
             problems.append("MIN_EDGE_CONFIDENCE must be within [0, 1]")
+        if self.aura_edge_cap < 0:
+            problems.append("AURA_EDGE_CAP must be >= 0 (0 disables the guard)")
+        if not 0.5 <= self.dedupe_fuzzy_threshold <= 1.0:
+            problems.append("DEDUPE_FUZZY_THRESHOLD must be within [0.5, 1.0]")
+        if self.dedupe_max_merges < 0:
+            problems.append("DEDUPE_MAX_MERGES must be >= 0 (0 disables merging)")
+        if self.dedupe_cooccurrence_window_words < 1:
+            problems.append("DEDUPE_COOCCURRENCE_WINDOW_WORDS must be >= 1")
+        if self.prune_orphan_min_age_days < 1:
+            problems.append("PRUNE_ORPHAN_MIN_AGE_DAYS must be >= 1 (deleting fresh nodes is data loss)")
+        if self.prune_max_deletions < 0:
+            problems.append("PRUNE_MAX_DELETIONS must be >= 0")
+        if not 0.0 < self.prune_capacity_target <= 1.0:
+            problems.append("PRUNE_CAPACITY_TARGET must be within (0, 1]")
+        if self.centrality_max_nodes < 0:
+            problems.append("CENTRALITY_MAX_NODES must be >= 0")
+        if self.centrality_engine not in {"auto", "gds", "python"}:
+            problems.append("CENTRALITY_ENGINE must be one of auto, gds, python")
+        weights = self.anomaly_weights or {}
+        if abs(sum(float(value) for value in weights.values()) - 1.0) > 0.01:
+            problems.append("ANOMALY_WEIGHTS must sum to 1.0 (they are a convex combination)")
+        if any(float(value) < 0 for value in weights.values()):
+            problems.append("ANOMALY_WEIGHTS entries must be >= 0")
+        if self.telegram_parse_mode not in {"HTML", "MarkdownV2", "Markdown", ""}:
+            problems.append("TELEGRAM_PARSE_MODE must be HTML, MarkdownV2, Markdown or empty")
+        if self.telegram_rate_per_sec <= 0 or self.telegram_rate_per_sec > 30:
+            problems.append("TELEGRAM_RATE_PER_SEC must be within (0, 30]")
+        if self.telegram_suppression_hours < 0:
+            problems.append("TELEGRAM_SUPPRESSION_HOURS must be >= 0")
         if problems:
             raise ConfigError("Invalid configuration:\n  - " + "\n  - ".join(problems))
 
 
-def load_settings(env: dict[str, str] | None = None) -> Settings:
+def _mask_chat_id(chat_id: str) -> str:
+    """Show the head and tail of a chat id only (``-100123…890``, ``@pup…ts``)."""
+    text = str(chat_id or "")
+    if len(text) <= 6:
+        return text[:2] + "…" if text else ""
+    return f"{text[:5]}…{text[-3:]}"
+
+
+def load_settings(env: dict[str, str] | None = None, *, validate: bool = True) -> Settings:
     """Build :class:`Settings` from the process environment.
 
     ``env`` may be supplied for tests; otherwise ``os.environ`` is used.
+
+    ``validate=False`` returns the settings without the run-level requirements
+    check. Tooling that does not touch Neo4j or the fetch layer — the Telegram
+    alert engine, in particular — must be runnable without a database password
+    configured, and a hard ``ConfigError`` there would be a false alarm.
     """
     if env is not None:
         # Snapshot first: the caller may hand us ``os.environ`` itself, and
@@ -329,6 +542,38 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
             neo4j_max_retries=_env_int("NEO4J_MAX_RETRIES", 4),
             neo4j_ensure_schema=_env_bool("NEO4J_ENSURE_SCHEMA", True),
             aura_node_cap=_env_int("AURA_NODE_CAP", 200_000),
+            aura_edge_cap=_env_int("AURA_EDGE_CAP", 400_000),
+            dedupe_enabled=_env_bool("DEDUPE_ENABLED", True),
+            dedupe_fuzzy_threshold=_env_float("DEDUPE_FUZZY_THRESHOLD", 0.88),
+            dedupe_max_merges=_env_int("DEDUPE_MAX_MERGES", 500),
+            dedupe_entity_limit=_env_int("DEDUPE_ENTITY_LIMIT", 60_000),
+            dedupe_cooccurrence_window_words=_env_int("DEDUPE_COOCCURRENCE_WINDOW_WORDS", 50),
+            dedupe_cooccurrence_days=_env_int("DEDUPE_COOCCURRENCE_DAYS", 90),
+            prune_enabled=_env_bool("PRUNE_ENABLED", True),
+            prune_orphan_max_degree=_env_int("PRUNE_ORPHAN_MAX_DEGREE", 1),
+            prune_orphan_max_weight=_env_float("PRUNE_ORPHAN_MAX_WEIGHT", 0.3),
+            prune_orphan_min_age_days=_env_int("PRUNE_ORPHAN_MIN_AGE_DAYS", 180),
+            prune_max_deletions=_env_int("PRUNE_MAX_DELETIONS", 20_000),
+            prune_capacity_target=_env_float("PRUNE_CAPACITY_TARGET", 0.85),
+            centrality_enabled=_env_bool("CENTRALITY_ENABLED", True),
+            centrality_max_nodes=_env_int("CENTRALITY_MAX_NODES", 4_000),
+            centrality_engine=_env_str("CENTRALITY_ENGINE", "auto").strip().lower(),
+            centrality_max_seconds=_env_float("CENTRALITY_MAX_SECONDS", 240.0),
+            anomaly_weights=_env_weights("ANOMALY_WEIGHTS"),
+            anomaly_top_n=_env_int("ANOMALY_TOP_N", 5),
+            anomaly_degree_spike_window_hours=_env_float("ANOMALY_DEGREE_SPIKE_WINDOW_HOURS", 30.0),
+            telegram_bridge_alert_limit=_env_int("TELEGRAM_BRIDGE_ALERT_LIMIT", 10),
+            telegram_enabled=_env_bool("TELEGRAM_ENABLED", False),
+            telegram_bot_token=_env_str("TELEGRAM_BOT_TOKEN", ""),
+            telegram_chat_ids=_env_str("TELEGRAM_CHAT_IDS", ""),
+            telegram_api_base=_env_str("TELEGRAM_API_BASE", "https://api.telegram.org").rstrip("/"),
+            telegram_parse_mode=_env_str("TELEGRAM_PARSE_MODE", "HTML"),
+            telegram_rate_per_sec=_env_float("TELEGRAM_RATE_PER_SEC", 1.0),
+            telegram_burst=_env_float("TELEGRAM_BURST", 5.0),
+            telegram_send_retries=_env_int("TELEGRAM_SEND_RETRIES", 3),
+            telegram_suppression_hours=_env_float("TELEGRAM_SUPPRESSION_HOURS", 24.0),
+            telegram_digest_top_n=_env_int("TELEGRAM_DIGEST_TOP_N", 5),
+            telegram_disable_link_preview=_env_bool("TELEGRAM_DISABLE_LINK_PREVIEW", True),
             entity_resolver_limit=_env_int("ENTITY_RESOLVER_LIMIT", 200_000),
             worker_url=_env_str("PROXY_WORKER_URL", "").rstrip("/"),
             worker_token=_env_str("PROXY_AUTH_TOKEN", ""),
@@ -416,7 +661,8 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
             concurrency=_env_int("CONCURRENCY", 4),
             seed=_env_int("RANDOM_SEED", 1337),
         )
-        settings.validate()
+        if validate:
+            settings.validate()
         return settings
     finally:
         if env is not None:

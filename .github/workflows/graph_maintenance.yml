@@ -1,0 +1,362 @@
+# =============================================================================
+#  PuppetNET — graph maintenance & Telegram alerting
+# =============================================================================
+#  Runs after the daily ingest: entity resolution, capacity pruning, betweenness
+#  centrality + anomaly scoring, then pushes cluster-bridge alerts and the daily
+#  top-5 digest to Telegram.
+#
+#  Why a separate workflow (and not a step in daily_ingest.yml):
+#    * The ingest cron is the harvest contract and must not change shape.
+#    * Maintenance is destructive (it merges and deletes nodes), so it needs its
+#      own concurrency lock, its own audit artefact and its own failure budget.
+#    * Alerting must still run when maintenance only partially succeeded — a
+#      failed centrality pass should not silence the bridge alerts.
+#
+#  Required repository secrets:
+#      NEO4J_URI, NEO4J_USERNAME, NEO4J_PASSWORD
+#  Optional (alerting is skipped entirely without them):
+#      TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_IDS
+#  Optional tuning:
+#      NEO4J_DATABASE, DEDUPE_FUZZY_THRESHOLD, DEDUPE_MAX_MERGES,
+#      PRUNE_MAX_DELETIONS, CENTRALITY_MAX_NODES, ANOMALY_WEIGHTS
+#
+#  Without Neo4j credentials the job still completes in dry-run mode and
+#  uploads an empty report, so a fork never fails its first scheduled run.
+# =============================================================================
+
+name: Graph Maintenance
+
+on:
+  # Primary trigger: run once the harvest has written its nodes. `workflow_run`
+  # only fires for workflows on the default branch, which is why the schedule
+  # below exists as a safety net.
+  workflow_run:
+    workflows: ["Daily Ingest"]
+    types: [completed]
+
+  schedule:
+    # 06:30 UTC — after the 04:00 ingest and its 90-minute budget. Skipped by
+    # the concurrency group when a workflow_run execution is still going.
+    - cron: "30 6 * * *"
+
+  workflow_dispatch:
+    inputs:
+      passes:
+        description: "Which maintenance passes to run"
+        required: false
+        default: "all"
+        type: choice
+        options: [all, dedupe, prune, centrality, bridges, capacity]
+      dry_run:
+        description: "Compute and report, but write nothing to Neo4j"
+        required: false
+        default: false
+        type: boolean
+      send_alerts:
+        description: "Push Telegram alerts after maintenance"
+        required: false
+        default: true
+        type: boolean
+      force_alerts:
+        description: "Ignore alert suppression and the daily digest guard"
+        required: false
+        default: false
+        type: boolean
+      threshold:
+        description: "Fuzzy match threshold (empty = DEDUPE_FUZZY_THRESHOLD)"
+        required: false
+        default: ""
+        type: string
+      max_merges:
+        description: "Cap on merges per run (empty = DEDUPE_MAX_MERGES)"
+        required: false
+        default: ""
+        type: string
+      engine:
+        description: "Betweenness engine"
+        required: false
+        default: "auto"
+        type: choice
+        options: [auto, gds, python]
+      log_level:
+        description: "Log level"
+        required: false
+        default: "INFO"
+        type: choice
+        options: [DEBUG, INFO, WARNING, ERROR]
+
+# Two maintenance runs must never overlap: they merge and delete the same nodes,
+# and a concurrent Brandes pass would score a graph that is being rewritten.
+concurrency:
+  group: graph-maintenance-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUNBUFFERED: "1"
+  PYTHONDONTWRITEBYTECODE: "1"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PIP_NO_PYTHON_VERSION_WARNING: "1"
+
+jobs:
+  maintenance:
+    name: Dedupe → prune → centrality → alerts
+    runs-on: ubuntu-latest
+    # Centrality has its own CENTRALITY_MAX_SECONDS budget; this is the outer stop.
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+
+      - name: Install runtime dependencies
+        run: |
+          python -m pip install --upgrade pip wheel
+          pip install -r requirements.txt
+
+      # ---------------------------------------------------------------------
+      # The alert ledger (.state/telegram_alerts.json) is what stops the same
+      # bridge being announced on every run, so it has to survive between runs.
+      # Rolling key, same pattern as the harvest state cache.
+      # ---------------------------------------------------------------------
+      - name: Restore alert state
+        uses: actions/cache@v4
+        with:
+          path: .state
+          key: puppetnet-alerts-state-${{ github.run_id }}
+          restore-keys: |
+            puppetnet-alerts-state-
+
+      # ---------------------------------------------------------------------
+      # Inputs reach the shell through `env`, never by interpolation into the
+      # script body: a dispatch input containing `$(…)` must not execute.
+      # ---------------------------------------------------------------------
+      - name: Resolve maintenance arguments
+        id: args
+        env:
+          IN_PASSES: ${{ inputs.passes }}
+          IN_DRY_RUN: ${{ inputs.dry_run }}
+          IN_THRESHOLD: ${{ inputs.threshold }}
+          IN_MAX_MERGES: ${{ inputs.max_merges }}
+          IN_ENGINE: ${{ inputs.engine }}
+          IN_LOG_LEVEL: ${{ inputs.log_level }}
+        run: |
+          case "$IN_PASSES" in
+            ""|all ) args="--all" ;;
+            dedupe|prune|centrality|bridges|capacity ) args="--$IN_PASSES" ;;
+            * ) echo "::error title=Invalid passes::$IN_PASSES"; exit 1 ;;
+          esac
+
+          case "$IN_THRESHOLD" in
+            "" ) ;;
+            *[!0-9.]* ) echo "::error title=Invalid --threshold::$IN_THRESHOLD is not a number."; exit 1 ;;
+            * ) args="$args --threshold $IN_THRESHOLD" ;;
+          esac
+          case "$IN_MAX_MERGES" in
+            "" ) ;;
+            *[!0-9]* ) echo "::error title=Invalid --max-merges::$IN_MAX_MERGES is not an integer."; exit 1 ;;
+            * ) args="$args --max-merges $IN_MAX_MERGES" ;;
+          esac
+          case "$IN_ENGINE" in
+            ""|auto ) ;;
+            gds|python ) args="$args --engine $IN_ENGINE" ;;
+            * ) echo "::error title=Invalid engine::$IN_ENGINE"; exit 1 ;;
+          esac
+          case "$IN_LOG_LEVEL" in
+            ""|INFO ) ;;
+            DEBUG|WARNING|ERROR ) args="$args --log-level $IN_LOG_LEVEL" ;;
+            * ) echo "::error title=Invalid --log-level::$IN_LOG_LEVEL"; exit 1 ;;
+          esac
+
+          # workflow_dispatch booleans arrive as "true"/"false"; on a scheduled
+          # or workflow_run trigger every input is empty.
+          [ "$IN_DRY_RUN" = "true" ] && args="$args --dry-run"
+
+          echo "args=$args" >> "$GITHUB_OUTPUT"
+          echo "resolved: graph_analytics.py $args"
+
+      - name: Run graph maintenance
+        id: maintenance
+        env:
+          MAINTENANCE_ARGS: ${{ steps.args.outputs.args }}
+          NEO4J_URI: ${{ secrets.NEO4J_URI }}
+          NEO4J_USERNAME: ${{ secrets.NEO4J_USERNAME }}
+          NEO4J_PASSWORD: ${{ secrets.NEO4J_PASSWORD }}
+          NEO4J_DATABASE: ${{ secrets.NEO4J_DATABASE }}
+          LOG_JSON: "true"
+          # A fork without credentials still produces a report instead of failing.
+          DRY_RUN: ${{ secrets.NEO4J_PASSWORD == '' && 'true' || 'false' }}
+        run: |
+          set +e
+          # shellcheck disable=SC2086  # MAINTENANCE_ARGS is intentionally word-split
+          python graph_analytics.py $MAINTENANCE_ARGS --report-dir reports 2>&1 | tee maintenance.log
+          status=${PIPESTATUS[0]}
+          set -e
+          echo "exit_code=$status" >> "$GITHUB_OUTPUT"
+          echo "graph_analytics.py exited with $status"
+          # The alert step reads the newest report, so keep going even on a
+          # partial run: bridges found before the failure are still worth sending.
+          exit 0
+
+      - name: Locate the maintenance report
+        id: report
+        if: always()
+        run: |
+          latest="$(ls -1t reports/graph_maintenance_*.json 2>/dev/null | head -n 1 || true)"
+          if [ -z "$latest" ]; then
+            echo "path=" >> "$GITHUB_OUTPUT"
+            echo "::warning title=No maintenance report::graph_analytics.py produced no report; alerts will be skipped."
+          else
+            echo "path=$latest" >> "$GITHUB_OUTPUT"
+            echo "report: $latest"
+          fi
+
+      # ---------------------------------------------------------------------
+      # Alerting. Skipped when no bot token is configured — that is a valid
+      # deployment (maintenance only), not an error.
+      # ---------------------------------------------------------------------
+      - name: Push Telegram alerts
+        id: alerts
+        if: ${{ always() && steps.report.outputs.path != '' }}
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_IDS: ${{ secrets.TELEGRAM_CHAT_IDS }}
+          IN_SEND_ALERTS: ${{ inputs.send_alerts }}
+          IN_FORCE_ALERTS: ${{ inputs.force_alerts }}
+          REPORT_PATH: ${{ steps.report.outputs.path }}
+        run: |
+          if [ "$IN_SEND_ALERTS" = "false" ]; then
+            echo "alerts explicitly disabled by the dispatch input"
+            echo "exit_code=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ -z "$TELEGRAM_BOT_TOKEN" ]; then
+            echo "TELEGRAM_BOT_TOKEN is not set — skipping alerts (maintenance only)"
+            echo "exit_code=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          args="--all --report $REPORT_PATH"
+          [ "$IN_FORCE_ALERTS" = "true" ] && args="$args --force"
+
+          set +e
+          # shellcheck disable=SC2086
+          python telegram_bot.py $args 2>&1 | tee alerts.log
+          status=${PIPESTATUS[0]}
+          set -e
+          echo "exit_code=$status" >> "$GITHUB_OUTPUT"
+          echo "telegram_bot.py exited with $status"
+          exit 0
+
+      # ---------------------------------------------------------------------
+      # Artefacts & reporting — these run whatever happened above.
+      # ---------------------------------------------------------------------
+      - name: Upload maintenance report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: graph-maintenance-${{ github.run_id }}
+          path: |
+            reports/
+            maintenance.log
+            alerts.log
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Write job summary
+        if: always()
+        env:
+          MAINTENANCE_EXIT: ${{ steps.maintenance.outputs.exit_code }}
+          ALERTS_EXIT: ${{ steps.alerts.outputs.exit_code }}
+          REPORT_PATH: ${{ steps.report.outputs.path }}
+        run: |
+          {
+            echo "## Graph maintenance"
+            echo ""
+            echo "| stage | exit |"
+            echo "| --- | --- |"
+            echo "| graph_analytics.py | ${MAINTENANCE_EXIT:-n/a} |"
+            echo "| telegram_bot.py | ${ALERTS_EXIT:-skipped} |"
+            echo ""
+            if [ -n "$REPORT_PATH" ]; then
+              echo "<details><summary>Report numbers</summary>"
+              echo ""
+              echo '```json'
+              python - "$REPORT_PATH" <<'PY'
+          import json, sys
+          payload = json.load(open(sys.argv[1], encoding="utf-8"))
+          capacity, dedupe = payload.get("capacity", {}), payload.get("dedupe", {})
+          prune, centrality = payload.get("prune", {}), payload.get("centrality", {})
+          print(json.dumps({
+              "status": payload.get("status"),
+              "run_id": payload.get("run_id"),
+              "entities": capacity.get("entities"),
+              "node_utilisation": capacity.get("node_utilisation"),
+              "edge_utilisation": capacity.get("edge_utilisation"),
+              "merges_applied": dedupe.get("merges_applied"),
+              "homonyms_protected": dedupe.get("homonyms_protected"),
+              "purged": prune.get("purged"),
+              "escalated": prune.get("escalated"),
+              "nodes_scored": centrality.get("nodes_scored"),
+              "engine": centrality.get("engine"),
+              "bridge_alerts": len(payload.get("bridge_alerts", [])),
+              "top_anomalies": [
+                  {"name": row.get("name"), "score": row.get("anomaly_score")}
+                  for row in payload.get("top_anomalies", [])[:5]
+              ],
+          }, indent=2))
+          PY
+              echo '```'
+              echo ""
+              echo "</details>"
+            else
+              echo "_No report was produced._"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Annotate failures
+        if: always()
+        env:
+          MAINTENANCE_EXIT: ${{ steps.maintenance.outputs.exit_code }}
+          ALERTS_EXIT: ${{ steps.alerts.outputs.exit_code }}
+        run: |
+          case "$MAINTENANCE_EXIT" in
+            0|"") ;;
+            1) echo "::error title=Maintenance configuration error::Check the Neo4j secrets and the DEDUPE_/PRUNE_/CENTRALITY_ settings (exit 1)." ;;
+            2) echo "::error title=Maintenance runtime failure::Neo4j was unreachable or a stage aborted; see maintenance.log (exit 2)." ;;
+            3) echo "::warning title=Maintenance partially failed::At least one stage failed but the others completed (exit 3)." ;;
+            *) echo "::error title=Unexpected exit::graph_analytics.py exited with $MAINTENANCE_EXIT." ;;
+          esac
+          case "$ALERTS_EXIT" in
+            0|"") ;;
+            2) echo "::error title=Telegram delivery failed::At least one message could not be delivered; see alerts.log (exit 2)." ;;
+            3) echo "::warning title=Telegram not configured::Missing token, chat id or report (exit 3)." ;;
+            *) echo "::error title=Unexpected exit::telegram_bot.py exited with $ALERTS_EXIT." ;;
+          esac
+
+      # A partial maintenance run is a warning, not a red X: the graph was still
+      # improved and the alerts still went out. Configuration and runtime errors
+      # fail the job so a broken credential cannot go unnoticed for weeks.
+      - name: Fail on hard errors
+        if: always()
+        env:
+          MAINTENANCE_EXIT: ${{ steps.maintenance.outputs.exit_code }}
+          ALERTS_EXIT: ${{ steps.alerts.outputs.exit_code }}
+        run: |
+          if [ "$MAINTENANCE_EXIT" = "1" ] || [ "$MAINTENANCE_EXIT" = "2" ]; then
+            exit 1
+          fi
+          if [ "$ALERTS_EXIT" = "2" ]; then
+            exit 1
+          fi

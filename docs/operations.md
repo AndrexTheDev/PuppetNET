@@ -10,7 +10,7 @@ Related: [configuration](configuration.md) · [graph schema](graph-schema.md) ·
 
 ## 1. Automation
 
-Two workflows live in [`.github/workflows/`](../.github/workflows).
+Three workflows live in [`.github/workflows/`](../.github/workflows).
 
 ### `ci.yml` — every push and pull request
 
@@ -67,6 +67,48 @@ is skipped rather than trusted. If nothing loads, the job emits
 **Artefacts** — `ingest-report-${{ github.run_id }}` containing `reports/`, `ingest.log`
 and `.state/`, retained 14 days, uploaded with `if: always()`.
 
+### `graph_maintenance.yml` — after the ingest, plus cron `30 6 * * *`
+
+| Trigger | Why |
+| --- | --- |
+| `workflow_run` on **Daily Ingest** `completed` | Maintenance must see today's nodes. This is the primary trigger. |
+| `schedule` 06:30 UTC | `workflow_run` only fires for workflows on the default branch, so a fork or a feature branch needs the safety net. The concurrency group absorbs the overlap. |
+| `workflow_dispatch` | `passes` (all/dedupe/prune/centrality/bridges/capacity), `dry_run`, `send_alerts`, `force_alerts`, `threshold`, `max_merges`, `engine`, `log_level` |
+
+`concurrency: graph-maintenance-${{ github.ref }}` with `cancel-in-progress: false` — two
+overlapping runs would merge and delete the same nodes, and a Brandes pass would score a
+graph that is being rewritten underneath it.
+
+Steps, in order:
+
+1. **Restore alert state** — `.state/` from `actions/cache` (rolling key
+   `puppetnet-alerts-state-`). This is the suppression ledger; without it every bridge is
+   re-announced on every run.
+2. **Resolve arguments** — dispatch inputs are validated in `case` statements and passed
+   through `env`, never interpolated into the script body.
+3. **Run maintenance** — `graph_analytics.py $args --report-dir reports`, tee'd to
+   `maintenance.log`, exit code captured into `steps.maintenance.outputs.exit_code` and
+   swallowed (`exit 0`) so the reporting steps still run.
+4. **Locate the report** — newest `reports/graph_maintenance_*.json`, or a warning.
+5. **Push alerts** — `telegram_bot.py --all --report <path>`, skipped entirely when
+   `TELEGRAM_BOT_TOKEN` is unset (maintenance-only deployments are valid) or when
+   `send_alerts=false`.
+6. **Artefacts, job summary, annotations, fail gate.**
+
+`DRY_RUN` is derived from the credential: `${{ secrets.NEO4J_PASSWORD == '' && 'true' ||
+'false' }}`, so a fork produces a report instead of a red X.
+
+**Secrets** — required: `NEO4J_URI`, `NEO4J_USERNAME`, `NEO4J_PASSWORD`. Optional:
+`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_IDS`, `NEO4J_DATABASE`.
+
+**Artefacts** — `graph-maintenance-${{ github.run_id }}` containing `reports/`,
+`maintenance.log` and `alerts.log`, retained **30** days (longer than the ingest report,
+because a merge decision may need reviewing weeks later), uploaded with `if: always()`.
+
+The job summary embeds a JSON block with the numbers an operator checks first:
+utilisation, `merges_applied`, `homonyms_protected`, `purged`, `escalated`,
+`nodes_scored`, the engine used, the bridge count and the top-5 anomalies.
+
 ---
 
 ## 2. Exit codes
@@ -86,6 +128,32 @@ in a notification step.
 
 The ingest step captures `PIPESTATUS[0]` and always `exit 0` itself, so the reporting and
 artefact steps run regardless; the *last* step re-raises the failure.
+
+### `graph_analytics.py`
+
+| Code | Meaning | Scheduled run | Notes |
+| --- | --- | --- | --- |
+| `0` | Success | green | |
+| `1` | Configuration error | **red** | Unparsable `--weights`, bad credentials, client could not be built |
+| `2` | Runtime failure | **red** | Neo4j unreachable, or every requested stage failed |
+| `3` | Partial | amber (`::warning`) | One stage failed; the others completed and their results are in the report |
+
+A stage that fails records its own `status: "failed"` and `error` inside the report, so
+`3` is actionable without reading the log. A stage nobody asked for is `"skipped"`, never
+`"completed"` — a fresh report must not claim work that did not happen.
+
+### `telegram_bot.py`
+
+| Code | Meaning | Scheduled run | Notes |
+| --- | --- | --- | --- |
+| `0` | Delivered, or nothing to deliver | green | Suppressed alerts count as success |
+| `1` | Bad arguments | **red** | argparse |
+| `2` | Delivery failure | **red** | At least one message could not be sent |
+| `3` | Configuration/report problem | amber | No token, no chat id, or no maintenance report found |
+
+The maintenance workflow fails the job on `1`/`2` from `graph_analytics.py` and on `2` from
+`telegram_bot.py`; `3` (partial) is a warning for both, and "Telegram not configured" is a
+warning rather than an error because maintenance-only is a supported deployment.
 
 ---
 
@@ -115,6 +183,32 @@ Suppress with `--no-report`. Inside GitHub Actions the markdown summary is appen
 | `network` | `EdgeFetchClient.describe()` — relay URL, transport mix, rate-limit and robots counters, deferred-task stats |
 | `relations_by_type` | Predicate histogram with confidence min/mean/max per type |
 
+### Maintenance reports
+
+`graph_analytics.py` writes `reports/graph_maintenance_<run_id>.json` (suppress with
+`--no-report`). It is the contract between the two tools: `telegram_bot.py` reads
+`bridge_alerts` and `top_anomalies` out of it and never opens the database.
+
+| Key | Contents |
+| --- | --- |
+| `run_id`, `generated_at`, `status`, `dry_run` | Identity; `completed` / `partial` / `failed` |
+| `capacity` | Counts plus utilisation against `AURA_NODE_CAP` / `AURA_EDGE_CAP`, `over_target`, `headroom_*`, and `error` when the probe itself failed (zeroes then mean "unknown") |
+| `dedupe` | `entities_examined`, `strict_id_groups`, `strict_id_merges`, `fuzzy_candidates`, `context_pairs`, `decisions`, `merges_applied`, `mentions_repointed`, `relationships_repointed`, `nodes_deleted`, `homonyms_protected`, `type_conflicts`, `capped`, `merges[]`, `protected[]` |
+| `prune` | `candidates`, `purged`, `protected_nodes`, `protected[]` (node + reason), `documents_purged`, `escalated`, `cutoff`, the thresholds actually used, `sample[]` |
+| `centrality` | `engine`, `nodes_projected`, `nodes_scored`, `clusters`, `articulation_points`, `truncated`, `weights`, `spike_window_hours`, `top[]`, `bridges[]` |
+| `top_anomalies` | The digest input: score, per-component values, cluster, degree, neighbours, reasons |
+| `bridge_alerts` | One entry per new cluster bridge, with `dedupe_key` — the alert engine's suppression key |
+
+`dedupe.protected[]` is the review queue for the homonym guard: each entry names the pair,
+both spellings, the similarity, which signal admitted it (`string` or `token`) and why
+context was demanded (`generic_name`, `common_name`, `ambiguous_single_token`). If a real
+duplicate keeps landing there, the fix is more context in the graph (an address, an
+identifier), not a lower threshold.
+
+`telegram_bot.py` writes no report of its own; `--json` prints the run summary
+(`bridge_sent`, `bridge_suppressed`, `bridge_capped`, `digest_sent`, `failures`, per-message
+`outcomes[]`, ledger counters) to stdout with logging on stderr.
+
 The markdown summary's per-source table is the fastest way to spot a source that silently
 returned nothing:
 
@@ -140,6 +234,14 @@ returned nothing:
 
 **Reprocessing a document deliberately:** delete its state entry (or the whole file) *and*
 remove or re-stamp the `Document` node, because the graph is the authoritative gate.
+
+* **`.state/telegram_alerts.json`** is the alert ledger: `sent{dedupe_key: timestamp}` for
+  bridge suppression, `digests{chat_id: timestamp}` for the once-per-day rule, and
+  cumulative `counters{}`. Entries older than seven times the suppression window are pruned
+  on load, so the file does not grow for the lifetime of the repository. Deleting it is
+  safe and re-arms every alert — that is the way to re-announce after a channel migration.
+  A `--dry-run` never writes it: a preview must not consume the suppression window that the
+  next real run depends on.
 
 ---
 
@@ -232,6 +334,46 @@ curl -s "$PROXY_WORKER_URL/health" | jq '.host_profiles'   # booleans only, neve
 leaves the Worker, and a URL-injected token is stripped from every URL the relay returns
 or caches.
 
+**Maintenance, locally and safely**
+
+```bash
+# What would change? Nothing is written; the report is the plan.
+python graph_analytics.py --all --dry-run --report-dir /tmp/reports
+
+# Capacity only — the cheapest check, one read.
+python graph_analytics.py --capacity
+
+# Review the homonym guard before trusting a threshold change.
+python graph_analytics.py --dedupe --dry-run --json \
+  | jq '.dedupe.protected[] | {names, similarity, signal, generic_name, common_name}'
+
+# See the merges that would happen, strongest evidence first.
+python graph_analytics.py --dedupe --dry-run --json \
+  | jq '.dedupe.merges[] | {winner_name, loser_name, method, similarity, identifier, context}'
+
+# Re-score with different weights without touching the database.
+python graph_analytics.py --centrality --dry-run --weights 0.5,0.3,0.2 --top 10
+```
+
+**Alerts, locally**
+
+```bash
+python telegram_bot.py --test                        # getMe + one "engine online" message
+python telegram_bot.py --all --dry-run               # render every message, send nothing
+python telegram_bot.py --digest --force              # ignore the once-per-day guard
+python telegram_bot.py --all --report reports/graph_maintenance_<run>.json --json
+```
+
+`--dry-run` needs neither a chat id nor network access: with no `TELEGRAM_CHAT_IDS` it
+renders to a `(dry-run)` destination, which is how the message format gets reviewed before
+a channel exists.
+
+**After a merge went wrong** — every winner records `merged_from` (the absorbed canonical
+keys), `aliases` (the absorbed names) and `source_ids`/`doc_ids` unions, so the provenance
+survives the delete. Restore by re-running the ingest for the affected sources: the
+resolver rebuilds the absorbed node from its documents, and the `merged_from` list tells you
+which key to look for.
+
 **Read the calculated layer**
 
 ```cypher
@@ -313,3 +455,15 @@ sources stay at 0.4 unless the publisher is a primary register.
 | Calculated edges | `PUPPET_MASTER_TOP_N` = 8 per person, `PUPPET_MASTER_MAX_EDGES` = 2 000 per run | hard truncation, logged when it binds; stale edges pruned after `ANALYTICS_PRUNE_DAYS` |
 | Shared-organisation ties | `max_shared_org_members` = 24, `max_pairs_per_org` = 12 | a bigger board is skipped rather than squared |
 | Co-passenger ties | `max_copassenger_pairs` = 60 | per manifest |
+| AuraDB Free relationships | `AURA_EDGE_CAP` = 400 000 | reported as `edge_utilisation`; crossing `PRUNE_CAPACITY_TARGET` escalates the orphan rule |
+| Merges per maintenance run | `DEDUPE_MAX_MERGES` = 500 | equivalence classes beyond the cap wait for the next run; `capped: true` says so |
+| Entities resolved per run | `DEDUPE_ENTITY_LIMIT` = 60 000 | ordered by `canonical_key`, so the set is stable between runs |
+| Pairwise name comparisons | `MAX_PAIR_COMPARISONS` = 250 000 | blocking first; over-full buckets (a shared 3-char prefix, a surname like Kim) are skipped, not squared |
+| Deletions per run | `PRUNE_MAX_DELETIONS` = 20 000 | hard cap, `capped: true` in the report |
+| Centrality projection | `CENTRALITY_MAX_NODES` = 4 000 nodes, `ANALYTICS_GRAPH_EDGE_LIMIT` edges | best-connected nodes first; a truncated projection keeps the backbone, not a random sample |
+| Betweenness wall clock | `CENTRALITY_MAX_SECONDS` = 240 s | a partial Brandes run is rescaled by the fraction of sources visited and flagged `truncated` |
+| Bridge alerts per run | `TELEGRAM_BRIDGE_ALERT_LIMIT` = 10 | strongest by anomaly score; the rest wait for the next run |
+| Alert repetition | `TELEGRAM_SUPPRESSION_HOURS` = 24 per `(node, cluster pair)` | ledger in `.state/telegram_alerts.json` |
+| Digest frequency | once per chat per UTC day | `--force` overrides |
+| Telegram outbound rate | `TELEGRAM_RATE_PER_SEC` = 1.0, burst 5 | per-host token bucket, plus `retry_after` honoured on 429 (capped at 120 s) |
+| Message size | 4 096 characters | chunked on line boundaries; a chunk never ends inside an HTML tag |

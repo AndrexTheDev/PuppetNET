@@ -38,6 +38,7 @@ direct fallback must be available; `MAX_RUNTIME_SECONDS ≥ 60`; `NEO4J_BATCH_SI
 | `NEO4J_MAX_RETRIES` | `neo4j_max_retries` | `4` | Transient errors only; auth errors never retry. |
 | `NEO4J_ENSURE_SCHEMA` | `neo4j_ensure_schema` | `true` | Idempotent DDL on boot. A rejected statement is logged, never fatal. |
 | `AURA_NODE_CAP` | `aura_node_cap` | `200000` | Free-tier ceiling. Existing nodes always update; new nodes are admitted strongest-first until the budget is spent, then counted as `entities_capped` in the run summary. `0` disables the guard. |
+| `AURA_EDGE_CAP` | `aura_edge_cap` | `400000` | The relationship ceiling that goes with it. Reported as `edge_utilisation` by `graph_analytics.py --capacity`; crossing `PRUNE_CAPACITY_TARGET` escalates pruning. `0` disables the guard. |
 | `ENTITY_RESOLVER_LIMIT` | `entity_resolver_limit` | `200000` | Rows loaded into the cross-run alias index. Also how the node budget knows which nodes exist — keep it ≥ `AURA_NODE_CAP`. |
 
 ## Cloudflare Worker edge relay
@@ -148,6 +149,81 @@ Runs after the graph is written; see [docs/graph-schema.md](graph-schema.md#calc
 | `PUPPET_MASTER_MIN_SCORE` | `puppet_master_min_score` | `0.40` | Below this a person gets no calculated edges. |
 | `PUPPET_MASTER_TOP_N` | `puppet_master_top_n` | `8` | Targets written per person. |
 | `PUPPET_MASTER_MAX_EDGES` | `puppet_master_max_edges` | `2000` | Hard cap on calculated rows per run. |
+
+## Graph maintenance (`graph_analytics.py`)
+
+Entity resolution, capacity pruning and centrality. Runs after the ingest — see
+[operations](operations.md#1-automation).
+
+### Entity resolution
+
+| Env var | Field | Default | Notes |
+| --- | --- | --- | --- |
+| `DEDUPE_ENABLED` | `dedupe_enabled` | `true` | `false` ⇒ the stage reports `"disabled"` and reads nothing. |
+| `DEDUPE_FUZZY_THRESHOLD` | `dedupe_fuzzy_threshold` | `0.88` | Jaro-Winkler / Levenshtein gate. Must be within `[0.5, 1.0]`; below 0.8 the false-positive rate on person names is not defensible. |
+| `DEDUPE_MAX_MERGES` | `dedupe_max_merges` | `500` | Merges per run. The rest wait for the next run and `capped: true` is set. `0` disables merging (report only). |
+| `DEDUPE_ENTITY_LIMIT` | `dedupe_entity_limit` | `60000` | Entities pulled into the resolver, ordered by `canonical_key` so the set is stable between runs. |
+| `DEDUPE_COOCCURRENCE_WINDOW_WORDS` | `dedupe_cooccurrence_window_words` | `50` | Context window for the homonym rule; converted to characters at ~6/word because the graph stores mention offsets. |
+| `DEDUPE_COOCCURRENCE_DAYS` | `dedupe_cooccurrence_days` | `90` | Only documents fetched within this window are scanned for co-occurrence. |
+
+Strict identifiers are a fixed list (`STRICT_ID_PROPERTIES` in `graph_analytics.py`):
+`reg_number`, `company_number`, `wikidata_id`, `wikipedia_id`, `lei`, `imo`, `mmsi`,
+`tail_number`, `transponder`, `icao24`, `opencorporates_url`. A pair that agrees on one of
+them merges with no further evidence; a pair that *disagrees on `entity_type`* never merges
+and is counted in `type_conflicts` instead — the same identifier on a person and an
+organisation is a data error worth surfacing, not a duplicate to collapse.
+
+### Capacity pruning
+
+| Env var | Field | Default | Notes |
+| --- | --- | --- | --- |
+| `PRUNE_ENABLED` | `prune_enabled` | `true` | |
+| `PRUNE_ORPHAN_MAX_DEGREE` | `prune_orphan_max_degree` | `1` | Semantic ties (Document/Source/IngestRun edges do not count). |
+| `PRUNE_ORPHAN_MAX_WEIGHT` | `prune_orphan_max_weight` | `0.3` | The *weakest* tie must be below this. |
+| `PRUNE_ORPHAN_MIN_AGE_DAYS` | `prune_orphan_min_age_days` | `180` | `last_seen` older than this. Must be ≥ 1 — deleting fresh nodes is data loss, not pruning. |
+| `PRUNE_MAX_DELETIONS` | `prune_max_deletions` | `20000` | Hard ceiling per run. |
+| `PRUNE_CAPACITY_TARGET` | `prune_capacity_target` | `0.85` | Utilisation at which the rule escalates to degree ≤ 2, weight < 0.4, age > 90 days. Within `(0, 1]`. |
+| `PUPPET_MASTER_MIN_SCORE` | `puppet_master_min_score` | `0.40` | Doubles as the pruning protection threshold: a node at or above this risk score is never purged. |
+
+Offshore- and shell-labelled nodes with at least one tie are protected as well — they are
+findings, not litter. Every protection is listed in `prune.protected[]` with its reason.
+
+### Centrality & anomaly scoring
+
+| Env var | Field | Default | Notes |
+| --- | --- | --- | --- |
+| `CENTRALITY_ENABLED` | `centrality_enabled` | `true` | |
+| `CENTRALITY_MAX_NODES` | `centrality_max_nodes` | `4000` | Projection cap. Betweenness is O(V·E); on a free-tier database this is the difference between 40 s and a killed job. Best-connected nodes are kept first. |
+| `CENTRALITY_ENGINE` | `centrality_engine` | `auto` | `auto` probes `gds.version()` and falls back to the bundled Python implementation (AuraDB Free has no GDS). `gds` and `python` force one path. |
+| `CENTRALITY_MAX_SECONDS` | `centrality_max_seconds` | `240` | Wall-clock budget for the Python scorer. A partial run is rescaled by the fraction of sources visited and flagged `truncated` rather than abandoned. |
+| `ANOMALY_WEIGHTS` | `anomaly_weights` | `0.40,0.35,0.25` | `betweenness,degree_spike,offshore_ratio`. Also accepts `key=value` pairs or JSON. Must sum to 1.0 (a convex combination); a missing or unknown key raises `ConfigError` rather than silently re-weighting what operators are alerted about. |
+| `ANOMALY_TOP_N` | `anomaly_top_n` | `5` | Rows in `top_anomalies` — the digest input. |
+| `ANOMALY_DEGREE_SPIKE_WINDOW_HOURS` | `anomaly_degree_spike_window_hours` | `30` | Window for degree growth *and* for "first seen" in the bridge rule. Slightly wider than 24 h so a run that starts late still compares against a full previous day. |
+| `MIN_EDGE_CONFIDENCE` | `min_edge_confidence` | `0.05` | Edges below this are not projected. |
+| `TELEGRAM_BRIDGE_ALERT_LIMIT` | `telegram_bridge_alert_limit` | `10` | Bridge alerts kept per run, strongest first. `0` disables bridge detection output. |
+
+A GDS projection is always dropped again, including when scoring fails — a leaked
+projection sits in the instance heap and can OOM a free-tier database.
+
+## Telegram alerting (`telegram_bot.py`)
+
+| Env var | Field | Default | Notes |
+| --- | --- | --- | --- |
+| `TELEGRAM_ENABLED` | `telegram_enabled` | `false` | Alerting is opt-in; a deployment without a channel must not fail a maintenance run. |
+| `TELEGRAM_BOT_TOKEN` | `telegram_bot_token` | *(empty)* | From `@BotFather`. A credential: redacted in `describe()`, scrubbed from every log record, never routed through the edge relay, never written to a report or to `.state`. |
+| `TELEGRAM_CHAT_IDS` | `telegram_chat_ids` | *(empty)* | Comma/space separated; numeric ids (`-1001234567890`) or `@channelname`. Masked in `describe()`. |
+| `TELEGRAM_API_BASE` | `telegram_api_base` | `https://api.telegram.org` | Overridable for a self-hosted Bot API server. |
+| `TELEGRAM_PARSE_MODE` | `telegram_parse_mode` | `HTML` | `HTML`, `MarkdownV2`, `Markdown` or empty. Entity names are HTML-escaped regardless — an unescaped `<` makes Telegram reject the whole alert. |
+| `TELEGRAM_RATE_PER_SEC` | `telegram_rate_per_sec` | `1.0` | Per-host token bucket. Within `(0, 30]`; Telegram allows ~30/s globally and ~20/min per group. |
+| `TELEGRAM_BURST` | `telegram_burst` | `5.0` | |
+| `TELEGRAM_SEND_RETRIES` | `telegram_send_retries` | `3` | Retries transport errors and 429s. `400`/`404` never retry; `401`/`403` abort the run (`TelegramAuthError`) instead of hammering a dead token. |
+| `TELEGRAM_SUPPRESSION_HOURS` | `telegram_suppression_hours` | `24` | Per `(node, cluster pair)`. The same node bridging a *new* pair is a new alert. |
+| `TELEGRAM_DIGEST_TOP_N` | `telegram_digest_top_n` | `5` | Digest rows; `--top` overrides. |
+| `TELEGRAM_DISABLE_LINK_PREVIEW` | `telegram_disable_link_preview` | `true` | Preview unfurling on an alerts channel is noise. |
+| `STATE_DIR` | `state_dir` | `.state` | The ledger lives at `<state_dir>/telegram_alerts.json`. |
+
+`retry_after` from a 429 is honoured exactly, capped at 120 s so a hostile or broken
+response cannot stall a CI job.
 
 ## Run behaviour & metadata
 
