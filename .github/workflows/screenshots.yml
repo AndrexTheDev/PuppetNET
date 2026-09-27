@@ -23,7 +23,9 @@ name: Screenshot matrix
 
 on:
   push:
-    branches: [main]
+    # The same branch set as ci.yml: work is verified where it happens, not only
+    # once it reaches main.
+    branches: [main, "arena/**"]
     paths:
       - "web/**"
       - "scripts/screenshots.mjs"
