@@ -479,7 +479,7 @@ concatenation will not appear in the compiled CSS — write class names literall
 
 ```bash
 npm run check         # node --check worker.js web/app.js web/modals.js
-npm run test:web      # 28 checks, ~25 s
+npm run test:web      # 29 checks, ~25 s
 npm run test:worker   # 32 checks
 npm test              # all three
 ```
@@ -498,7 +498,12 @@ and hostile parameters; booting without Cytoscape; **worker mode against the rea
 agreement with the Python resolver; the formatting helpers; copy-Cypher injection
 resistance; credential handling; the donation dialog (addresses, QR, tabs, copy, blocked
 clipboard); the footer's legal, guide and contact dialogs; the crawler metadata and
-JSON-LD; and SEO hydration against the deployment origin.
+JSON-LD; SEO hydration against the deployment origin; and a hostile-markup attack on the
+toast sink, which is the one surface that renders emphasis tags on purpose.
+
+Repository-wide invariants — the console's clamps versus the Worker's `GRAPH_LIMITS`, the
+cost perimeter, dangling ARIA references, SEO completeness — live in a separate static
+audit: [`docs/audit.md`](audit.md), `npm run audit`.
 
 Both suites stub every upstream, so they cannot pass because a third-party API happened
 to be reachable — and they assert that nothing they ran threw an uncaught error.

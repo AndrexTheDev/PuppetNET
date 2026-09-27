@@ -601,7 +601,7 @@ package.json                  dev tooling only: jsdom, tailwindcss, terser
   graph_maintenance.yml       after the ingest: dedupe/prune/centrality + alerts
   ci.yml                      python, worker and web jobs on push/PR
   pages_deploy.yml            verify, then upload web/ to Cloudflare Pages on main
-tests/                        928 offline tests, worker_smoke.mjs (32), web_smoke.mjs (28)
+tests/                        928 offline tests, worker_smoke.mjs (32), web_smoke.mjs (29)
                               and helpers/fake_neo4j.mjs, the stub both suites share
 docs/                         architecture, configuration, schema, NLP, relay, console,
                               operations

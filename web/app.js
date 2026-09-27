@@ -563,6 +563,18 @@
   const TOAST_ICONS = { info: "◆", success: "✓", warn: "▲", error: "✕" };
   let toastHost = null;
 
+  /**
+   * Toast bodies are TEXT that may carry three emphasis tags. Everything else is
+   * escaped here, at the single sink, so no call site can turn a harvested entity
+   * name or an upstream error string into markup — the 39 call sites used to each
+   * remember `escapeHtml`, which is a contract one new call site can break.
+   * Escaping first and re-allowing `&lt;b&gt;` afterwards also means a call site
+   * that quotes a hostile `<b>` literally still shows it as text.
+   */
+  function toastMarkup(message) {
+    return escapeHtml(String(message)).replace(/&lt;(\/?)(b|code|br)\s*\/?&gt;/gi, "<$1$2>");
+  }
+
   function toast(title, message, kind, ttl) {
     if (!toastHost) toastHost = $("#cy-toast-host");
     if (!toastHost) return null;
@@ -571,7 +583,7 @@
       el("span", { class: "toast-icon", text: TOAST_ICONS[type] || "◆" }),
       el("div", { class: "toast-body" }, [
         el("div", { class: "toast-title", text: title }),
-        message ? el("div", { class: "toast-msg", html: message }) : null,
+        message ? el("div", { class: "toast-msg", html: toastMarkup(message) }) : null,
       ]),
       el("button", { class: "toast-close", type: "button", "aria-label": "Dismiss", text: "✕" }),
     ]);
@@ -2292,7 +2304,7 @@
         state.render.layout = "cose";
         runLayout("cose", opts);
       } else {
-        toast("Layout failed", escapeHtml(err && err.message ? err.message : String(err)), "error");
+        toast("Layout failed", err && err.message ? err.message : String(err), "error");
       }
     }
   }
@@ -2827,7 +2839,13 @@
       return "Rejected by the API (" + err.status + "). Check the token in settings — the Worker needs <code>GRAPH_API_TOKEN</code> or <code>PROXY_AUTH_TOKEN</code>.";
     }
     if (err.status === 404) return "Endpoint not found (404). Is the Worker deployed with the <code>/graph</code> routes?";
-    if (err.status === 429) return "Rate limited (429)" + (err.retryAfter ? " — retry in " + err.retryAfter + "s" : "") + ". The Worker budgets graph queries to protect the free-tier database.";
+    if (err.status === 429) {
+      // retry-after arrives as a header; upstream it is coerced with toNumber,
+      // and it is coerced again here because this function returns HTML.
+      const retry = Number(err.retryAfter) || 0;
+      return "Rate limited (429)" + (retry ? " — retry in " + retry + "s" : "")
+        + ". The Worker budgets graph queries to protect the free-tier database.";
+    }
     if (err.status === 503) return "Service unavailable (503). Neo4j may not be configured on the Worker.";
     if (err.status >= 500) return "Server error (" + err.status + "): " + escapeHtml(err.message || "");
     if (err.code === "neo4j_error") return "Neo4j: " + escapeHtml(err.message || "");
@@ -2901,7 +2919,7 @@
 
     const nodes = payload.nodes || [];
     if (!nodes.length) {
-      toast("No match", "Nothing in <b>" + escapeHtml(state.provider.label) + "</b> matches <code>" + escapeHtml(needle) + "</code>.", "warn");
+      toast("No match", "Nothing in <b>" + state.provider.label + "</b> matches <code>" + needle + "</code>.", "warn");
       $("#cy-empty").hidden = state.nodes.size > 0;
       $("#cy-empty-msg").textContent = "No entity matched “" + needle + "”. Try a shorter fragment, a registration number, or an IMO/MMSI.";
       return false;
@@ -3255,7 +3273,7 @@
         mergePayload({ nodes: [detail.node], edges: detail.edges || [], docs: detail.docs || [] }, { mode: "merge", relayout: true, fit: true });
         setActive(key, { center: true });
       } else {
-        toast("Could not load entity", "The API returned nothing for <code>" + escapeHtml(key) + "</code>.", "error");
+        toast("Could not load entity", "The API returned nothing for <code>" + key + "</code>.", "error");
       }
     }
     pushHistory("focus", { key: key });
@@ -3378,7 +3396,7 @@
         text: node.key + (node._stub ? "  (stub: not returned by the API)" : ""),
         onclick: async function () {
           const ok = await copyText(node.key);
-          toast(ok ? "Copied" : "Copy failed", "<code>" + escapeHtml(node.key) + "</code>", ok ? "success" : "warn", 2000);
+          toast(ok ? "Copied" : "Copy failed", "<code>" + node.key + "</code>", ok ? "success" : "warn", 2000);
         },
       }),
       el("div", { class: "ins-actions" }, [
@@ -4113,9 +4131,9 @@
         switchView("graph");
         selectElements(related, false);
         markSearchHits(related);
-        toast("Citation", "<b>" + escapeHtml(row.title) + "</b> · " + related.length + " loaded entities reference it.", "info");
+        toast("Citation", "<b>" + row.title + "</b> · " + related.length + " loaded entities reference it.", "info");
       } else {
-        toast("Citation not loaded", "No entity in the current scope references <code>" + escapeHtml(row.doc_id) + "</code>.", "warn");
+        toast("Citation not loaded", "No entity in the current scope references <code>" + row.doc_id + "</code>.", "warn");
       }
       return;
     }
@@ -4724,7 +4742,7 @@
       }, false],
       ["Copy canonical key", "", async function () {
         const ok = await copyText(key);
-        toast(ok ? "Copied" : "Copy failed", "<code>" + escapeHtml(key) + "</code>", ok ? "success" : "warn", 2000);
+        toast(ok ? "Copied" : "Copy failed", "<code>" + key + "</code>", ok ? "success" : "warn", 2000);
       }, false],
       ["Hide node", "", function () { hideNode(key); }, true],
     ];
@@ -5022,11 +5040,11 @@
     $("#btn-neighbour-run").addEventListener("click", function () { expandNode(state.activeKey, state.depth); });
     $("#btn-path-from-active").addEventListener("click", function () {
       const node = state.nodes.get(state.activeKey);
-      if (node) { setPathEndpoint("from", node); toast("Entity A set", escapeHtml(node.name), "info", 2200); }
+      if (node) { setPathEndpoint("from", node); toast("Entity A set", node.name, "info", 2200); }
     });
     $("#btn-path-to-active").addEventListener("click", function () {
       const node = state.nodes.get(state.activeKey);
-      if (node) { setPathEndpoint("to", node); toast("Entity B set", escapeHtml(node.name), "info", 2200); }
+      if (node) { setPathEndpoint("to", node); toast("Entity B set", node.name, "info", 2200); }
     });
 
     /* ---- settings ---- */
@@ -5071,7 +5089,7 @@
     $("#btn-copy-cypher").addEventListener("click", async function () {
       const text = cypherForCurrentView();
       const ok = await copyText(text);
-      toast(ok ? "Cypher copied" : "Copy failed", ok ? "<code>" + escapeHtml(text.split("\n")[0].replace("// ", "")) + "</code>" : "", ok ? "success" : "warn");
+      toast(ok ? "Cypher copied" : "Copy failed", ok ? "<code>" + text.split("\n")[0].replace("// ", "") + "</code>" : "", ok ? "success" : "warn");
     });
 
     /* ---- window ---- */
@@ -5094,7 +5112,7 @@
       document.body.appendChild(a); a.click(); a.remove();
       toast("PNG exported", cy.nodes().length + " nodes · " + cy.edges().length + " edges at " + (window.devicePixelRatio || 1) + "×.", "success");
     } catch (err) {
-      toast("Export failed", escapeHtml(err && err.message ? err.message : String(err)), "error");
+      toast("Export failed", err && err.message ? err.message : String(err), "error");
     }
   }
 
@@ -5151,7 +5169,7 @@
       state.scope = { kind: "overview", label: "whole graph", key: null };
       setActive(null);
       await loadOverview({ quiet: true });
-      toast("Data source", "Now reading from <b>" + escapeHtml(state.provider.label) + "</b>" + (ok ? "" : " (probe failed)"), ok ? "success" : "warn");
+      toast("Data source", "Now reading from <b>" + state.provider.label + "</b>" + (ok ? "" : " (probe failed)"), ok ? "success" : "warn");
     }
     return ok;
   }
@@ -5180,7 +5198,7 @@
             (graph.database ? " · database <code>" + escapeHtml(graph.database) + "</code>" : "") +
             (graph.nodes !== undefined ? " · " + escapeHtml(String(graph.nodes)) + " entities" : "")
           : '<span class="warn">▲ demo mode</span> — ' + escapeHtml(health && health.note || "synthetic dataset loaded");
-        toast("Connection OK", escapeHtml(state.provider.label) + (graph.nodes !== undefined ? " · " + graph.nodes + " entities" : ""), "success");
+        toast("Connection OK", state.provider.label + (graph.nodes !== undefined ? " · " + graph.nodes + " entities" : ""), "success");
       }
       return true;
     } catch (err) {
@@ -5410,7 +5428,9 @@
   function fatal(message, detail) {
     const boot = $("#boot");
     boot.classList.remove("is-gone");
-    $("#boot-status").innerHTML = '<span class="bad">' + escapeHtml(message) + "</span>" + (detail ? "<br>" + detail : "");
+    // Both arguments are text: escaping happens here, not at the call sites.
+    $("#boot-status").innerHTML = '<span class="bad">' + escapeHtml(message) + "</span>"
+      + (detail ? "<br>" + escapeHtml(detail) : "");
     boot.querySelector(".boot-core").style.display = "none";
   }
 
@@ -5484,7 +5504,7 @@
       }
     } catch (err) {
       console.error("[console] boot failed", err);
-      fatal("Console failed to start", escapeHtml(err && err.message ? err.message : String(err)));
+      fatal("Console failed to start", err && err.message ? err.message : String(err));
     }
   }
 

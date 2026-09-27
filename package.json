@@ -8,6 +8,7 @@
     "build:css": "tailwindcss -c web/tailwind.config.cjs -i web/tailwind.input.css -o web/vendor/tailwind.css --minify",
     "build:css:watch": "tailwindcss -c web/tailwind.config.cjs -i web/tailwind.input.css -o web/vendor/tailwind.css --watch",
     "vendor:libs": "node scripts/vendor-libs.mjs",
+    "audit": "node scripts/audit.mjs",
     "check": "node --check worker.js && node --check web/app.js && node --check web/modals.js",
     "test:worker": "node tests/worker_smoke.mjs",
     "test:web": "node tests/web_smoke.mjs",

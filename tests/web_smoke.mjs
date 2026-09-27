@@ -2068,6 +2068,49 @@ await check("credentials never travel in a URL, and persistence is honest", asyn
     assert.equal(doc.querySelector("#foot-email").textContent, "hippie.highho@gmail.com");
   });
 
+  await check("the toast sink neutralises markup instead of trusting its callers", async () => {
+    const c = await bootConsole();
+    const { win, api, q, jsdomErrors } = c;
+
+    // Toast bodies are the one surface that renders markup on purpose, so the
+    // escaping lives in the sink rather than in 39 call sites. This feeds it the
+    // worst string the graph can produce and asserts what comes out.
+    const hostile = '<img src=x onerror="window.__pwned=1"><script>window.__script=1</script>'
+      + '<b>bold</b><a href="javascript:window.__href=1">link</a><code>ok</code>'
+      + '<span style="position:fixed">styled</span>';
+    api.actions.toast("Hostile title", hostile, "warn");
+
+    // The host already holds the boot toast, so address the newest one.
+    const last = () => q("#cy-toast-host .toast:last-child .toast-msg");
+    const body = last();
+    assert.ok(body, "the toast rendered");
+    // Nothing executable, nothing that can carry an attribute, nothing that can
+    // leave the page: only the allowlisted emphasis tags survive as elements.
+    assert.equal(body.querySelector("img"), null, "no <img> element was created");
+    assert.equal(body.querySelector("script"), null, "no <script> element was created");
+    assert.equal(body.querySelector("a"), null, "no <a> element was created");
+    assert.equal(body.querySelector("span"), null, "no <span> element was created");
+    assert.equal(win.__pwned, undefined, "no onerror handler ran");
+    assert.equal(win.__script, undefined, "no inline script ran");
+    assert.equal(win.__href, undefined, "no javascript: URL was created");
+    // The text is still readable — escaping must not swallow the message.
+    const shown = body.textContent;
+    assert.ok(shown.includes("<img src=x"), `the markup is shown as text: ${shown.slice(0, 60)}`);
+    assert.ok(shown.includes("javascript:"), "including the URL scheme, as text");
+    // And the allowlist still does its job for the console's own copy.
+    assert.ok(body.querySelector("b"), "<b> survives as emphasis");
+    assert.ok(body.querySelector("code"), "and so does <code>");
+
+    // A call site that passes harvested text needs no escaping of its own: the
+    // node name goes in raw and comes out as text.
+    api.actions.toast("Loaded", "Now showing <b>" + hostile + "</b>", "info");
+    const second = last();
+    assert.equal(second.querySelector("img"), null, "nested hostile markup stays text");
+    assert.ok(second.querySelector("b"), "while the caller's own emphasis still renders");
+
+    assert.deepEqual(jsdomErrors, [], "nothing threw while rendering hostile markup");
+  });
+
 clearTimeout(WATCHDOG);
 
 // Each booted console runs a clock (setInterval) plus layout and toast timers, so

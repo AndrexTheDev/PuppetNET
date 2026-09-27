@@ -431,7 +431,8 @@ class IngestPipeline:
 
     def _parse_document(self, document: Document, spec: SourceSpec) -> ParseResult:
         """Run the NLP engine over one unstructured document."""
-        assert self.nlp is not None
+        if self.nlp is None:  # an assert would vanish under `python -O`
+            raise RuntimeError("the NLP engine is not initialised — cannot parse a document")
         if not document.text:
             self.logger.debug("document %s has no text — skipping NLP", document.doc_id)
             return ParseResult(doc_id=document.doc_id, backend=self.nlp.backend)
