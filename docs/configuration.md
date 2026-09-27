@@ -74,7 +74,8 @@ direct fallback must be available; `MAX_RUNTIME_SECONDS ≥ 60`; `NEO4J_BATCH_SI
 | `HTTP_BACKOFF_BASE_SECONDS` | `http_backoff_base_seconds` | `1.2` | |
 | `HTTP_BACKOFF_CAP_SECONDS` | `http_backoff_cap_seconds` | `45` | |
 | `HTTP_MAX_RESPONSE_BYTES` | `http_max_response_bytes` | `12582912` | 12 MiB; larger bodies are truncated and flagged. |
-| `HTTP_USER_AGENT` | `http_user_agent` | `PuppetNET-OSINT/1.5 (…; research bot)` | Used on the direct path only; the Worker rotates real browser fingerprints. |
+| `HTTP_USER_AGENT` | `http_user_agent` | `PuppetNET-OSINT/1.5 (…; research bot)` | Used on the direct path only; the Worker rotates real browser fingerprints. It is also the identity the direct transport presents when it evaluates robots.txt. |
+| `RESPECT_ROBOTS_TXT` | `respect_robots_txt` | `true` | Evaluate robots.txt on the **direct** path too (the relay always does). Turning it off is for a host the operator has written permission to fetch; an unreadable rules file is read as "do not crawl" (RFC 9309), never as permission. |
 | `EXTRA_HEADERS_JSON` | `extra_headers_json` | *(empty)* | Static extra headers as JSON, e.g. `{"X-Api-Key":"…"}`. Redacted. |
 
 ## NLP

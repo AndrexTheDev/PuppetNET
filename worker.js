@@ -902,16 +902,23 @@ function parseRobots(text) {
     const field = line.slice(0, idx).trim().toLowerCase();
     const value = line.slice(idx + 1).trim();
     if (field === "user-agent") {
-      if (current && current.rules.length === 0) {
+      // The agent list stays open only until the group's first directive line —
+      // *any* directive, including `Crawl-delay`. Keying this on `rules.length`
+      // merged `User-agent: *` into the block above whenever that block's only
+      // line was a Crawl-delay, spreading one crawler's pace over every other bot.
+      if (current && current.agentListOpen) {
         current.agents.push(value.toLowerCase());
       } else {
-        current = { agents: [value.toLowerCase()], rules: [], crawlDelay: null };
+        current = { agents: [value.toLowerCase()], rules: [], crawlDelay: null, agentListOpen: true };
         groups.push(current);
       }
     } else if (current) {
+      current.agentListOpen = false;
       if (field === "disallow" || field === "allow") {
+        // An empty `Disallow:` is not a rule: it matches nothing, so it loses to
+        // every real pattern. Reading it as `Allow: /` let it outvote a
+        // one-character `Disallow: /` on the tie-break above.
         if (value) current.rules.push({ type: field, pattern: value });
-        else if (field === "disallow") current.rules.push({ type: "allow", pattern: "/" });
       } else if (field === "crawl-delay") {
         const d = Number(value);
         if (Number.isFinite(d) && d > 0) current.crawlDelay = d;
@@ -957,7 +964,9 @@ function isPathAllowed(groups, path, userAgent) {
   const ua = String(userAgent || "").toLowerCase();
   let group = null;
   for (const g of groups) {
-    if (g.agents.some((a) => a !== "*" && ua.includes(a))) {
+    // An empty `User-agent:` line matches nothing; `ua.includes("")` is always
+    // true, so without the length check a stray line would swallow every bot.
+    if (g.agents.some((a) => a && a !== "*" && ua.includes(a))) {
       group = g;
       break;
     }
@@ -968,7 +977,17 @@ function isPathAllowed(groups, path, userAgent) {
   let best = null;
   for (const rule of group.rules) {
     if (!robotPathMatches(rule.pattern, path)) continue;
-    if (!best || rule.pattern.length > best.pattern.length) best = rule;
+    // RFC 9309 §2.2.2: the longest match wins and, on a tie, Allow beats
+    // Disallow. Taking the first longest line made the *file order* decide,
+    // which is the trap the stdlib parser falls into — and here it would mean
+    // refusing a page the origin explicitly allowed.
+    if (
+      !best ||
+      rule.pattern.length > best.pattern.length ||
+      (rule.pattern.length === best.pattern.length && rule.type === "allow")
+    ) {
+      best = rule;
+    }
   }
   const allowed = best ? best.type === "allow" : true;
   return { allowed, crawlDelay: group.crawlDelay };
@@ -1003,14 +1022,18 @@ async function checkRobots(env, cfg, url, userAgent, respectRobots) {
       } else if (resp.status === 401 || resp.status === 403) {
         // RFC 9309: a 401/403 on robots.txt means "everything disallowed".
         text = "User-agent: *\nDisallow: /\n";
+      } else if (resp.status >= 500) {
+        return { allowed: false, crawlDelay: null, source: "unreachable", status: resp.status };
       } else {
-        text = ""; // 404 etc → no restrictions
+        text = ""; // 404 etc → no restrictions (RFC 9309 §2.3.1.3)
       }
     } catch (err) {
       console.warn(`[robots] fetch failed for ${robotsUrl}: ${err && err.message}`);
-      text = "";
-      // Fail-open on transient robots errors, but never cache the miss.
-      return { allowed: true, crawlDelay: null, source: "fetch-error" };
+      // RFC 9309 §2.3.1.4: an unreachable robots.txt is complete disallow.
+      // Failing open handed anyone who could break their own rules file a free
+      // crawl, and the KV cache only holds *fresh* rules, so reaching this point
+      // means there is no cached copy to fall back on.
+      return { allowed: false, crawlDelay: null, source: "unreachable" };
     }
     // Cache robots.txt across runs only for hosts we actually revisit (see
     // syncBucketWithKv): a write per cold article host would spend the KV write
@@ -1540,6 +1563,20 @@ async function handleFetch(request, env, cfg, ctx) {
   const probeUa = task.user_agent || pickFingerprint(targetUrl.hostname, 0, task.fingerprint_salt).ua;
   const robots = await checkRobots(env, cfg, task.url, probeUa, task.respect_robots);
   if (!robots.allowed) {
+    // An unreachable rules file is not a verdict, and the client must be able to
+    // tell the two apart: `robots_disallowed` is terminal (the client stops and
+    // never falls back to its own transport), while this one is a retryable
+    // origin-policy failure — the runner's own rules fetch may well succeed where
+    // the edge could not reach the origin at all.
+    if (robots.source === "unreachable") {
+      return errorResponse(
+        "robots_unavailable",
+        `robots.txt for ${targetUrl.hostname} could not be read`,
+        502,
+        { robots, request_id: task.request_id },
+        env
+      );
+    }
     return errorResponse(
       "robots_disallowed",
       `robots.txt disallows ${targetUrl.pathname}`,

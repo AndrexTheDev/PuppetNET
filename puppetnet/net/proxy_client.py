@@ -43,6 +43,7 @@ from requests.adapters import HTTPAdapter
 from ..logging_utils import get_logger
 from ..models import IngestStats, SourceSpec
 from .headers import HeaderFactory
+from .robots import MAX_ROBOTS_BYTES, RobotsPolicy
 from .token_bucket import DelayQueue
 
 __all__ = ["FetchClient", "FetchResult", "Transport", "CircuitBreaker", "FetchError"]
@@ -88,6 +89,11 @@ class FetchResult:
     truncated: bool = False
     source_id: str = ""
     byte_length: int = 0
+    #: True when the origin's `robots.txt` refused this URL on the **direct** path.
+    #: The relay reports that verdict in its own envelope; a direct fetch is policed
+    #: here, and a caller that only looks at `ok` would otherwise read a policy
+    #: refusal as a network problem and retry against the origin's wishes.
+    robots_blocked: bool = False
     meta: dict[str, Any] = field(default_factory=dict)
 
     # -- convenience -----------------------------------------------------
@@ -290,6 +296,16 @@ class FetchClient:
         self._clock = clock
         self._session = session or self._build_session(settings)
         self._local_cache: dict[str, FetchResult] = {}
+        #: robots.txt evaluation for the *direct* transport. The relay does this
+        #: for everything it serves; without it the fallback path would crawl
+        #: whatever it liked the moment the relay went down — precisely when
+        #: nobody is watching.
+        self.robots = RobotsPolicy(
+            self._fetch_robots_txt,
+            user_agent=settings.http_user_agent,
+            clock=clock,
+            enabled=bool(getattr(settings, "respect_robots_txt", True)),
+        )
 
     # ------------------------------------------------------------------ #
     @staticmethod
@@ -462,6 +478,13 @@ class FetchClient:
             # The relay branch records this; without it a direct fetch always
             # reports attempts=1 and the run report under-counts retries.
             result.attempts = attempt
+            if result.robots_blocked:
+                # A robots.txt verdict, not a transport failure. Retrying asks the
+                # same origin the same question, and falling back to the relay asks
+                # a different transport the same question — both are exactly what
+                # the refusal forbids. Terminal, like the relay's 403.
+                logger.info("robots.txt verdict for %s: %s", result.url, result.meta.get("source"))
+                return result
             if result.ok:
                 self.delay_queue.report_success(host)
                 if cache_ttl:
@@ -524,6 +547,16 @@ class FetchClient:
             self.delay_queue.set_host_policy(host, rate_per_sec=source.rate_per_sec, burst=source.burst)
         cap = int(max_bytes or self.settings.http_max_response_bytes)
         timeout_seconds = float(timeout or (source.timeout_ms / 1000.0 if source else self.settings.http_timeout_seconds))
+
+        # A stream downloads a whole dataset directly and never traverses the
+        # relay, so the policy has to decide here (see robots.py).
+        robots = self.robots.check(url, respect=bool(source.respect_robots if source else True))
+        if not robots.allowed:
+            self._count("http_robots_blocked")
+            logger.info("robots.txt disallows the stream %s — not fetching it", url)
+            return
+        if robots.crawl_delay:
+            self.delay_queue.respect_crawl_delay(host, robots.crawl_delay)
 
         waited = self.delay_queue.acquire(host, cost=2.0)  # a long-lived stream costs more
         if waited:
@@ -706,6 +739,10 @@ class FetchClient:
                 error=str(error.get("message") or error.get("code") or "relay error"),
                 elapsed_ms=elapsed,
                 source_id=source_id,
+                # The code names the *reason* (`robots_unavailable`,
+                # `invalid_target`, …) and is what makes a relay refusal legible in
+                # the run report instead of one line of prose.
+                meta={"relay_code": str(error.get("code") or "")},
             )
 
         status = int(data.get("status") or response.status_code)
@@ -833,6 +870,26 @@ class FetchClient:
         mode = task.get("mode", "browser")
         accept = task.get("accept")
 
+        robots = self.robots.check(url, respect=bool(task.get("respect_robots", True)))
+        if not robots.allowed:
+            # A policy verdict, not a failure: the caller must not retry it and
+            # must not route it through the relay either (the relay will refuse
+            # the same URL, and asking again is exactly what robots.txt forbids).
+            self._count("http_robots_blocked")
+            return FetchResult(
+                url=url,
+                status=robots.status or 403,
+                ok=False,
+                transport=Transport.DIRECT,
+                error="robots_disallowed",
+                robots_blocked=True,
+                meta={"policy": "robots.txt", "source": robots.source},
+            )
+        if robots.crawl_delay:
+            # Adopt the origin's stated pace for this host (this is what the
+            # unused DelayQueue.respect_crawl_delay was written for).
+            self.delay_queue.respect_crawl_delay(host, robots.crawl_delay)
+
         try:
             waited = self.delay_queue.acquire(host, timeout=self.settings.http_backoff_cap_seconds * 4)
         except TimeoutError as exc:
@@ -902,6 +959,41 @@ class FetchClient:
                 elapsed_ms=(self._clock() - started) * 1000.0,
             )
 
+    def _fetch_robots_txt(self, robots_url: str) -> FetchResult:
+        """Fetch one origin's robots.txt directly, for the policy cache.
+
+        It goes through the local delay queue but *not* through
+        :meth:`request`: that would consult the policy again and recurse. The
+        ceiling is the same one the relay uses, so both evaluators see the same
+        rules.
+        """
+        host = urlparse(robots_url).hostname or ""
+        try:
+            self.delay_queue.acquire(host, timeout=self.settings.http_backoff_cap_seconds * 2)
+        except TimeoutError:
+            return FetchResult(url=robots_url, ok=False, status=0, error="delay queue timeout", transport=Transport.DIRECT)
+        headers = self.headers_factory.build(robots_url, mode="bot", accept="text/plain,*/*;q=0.5")
+        try:
+            with self._session.get(robots_url, headers=headers, timeout=(10.0, 20.0), allow_redirects=True) as response:
+                body = self._read_capped(response, MAX_ROBOTS_BYTES)
+                return FetchResult(
+                    url=robots_url,
+                    final_url=response.url or robots_url,
+                    status=int(response.status_code),
+                    ok=200 <= response.status_code < 300,
+                    transport=Transport.DIRECT,
+                    content_type=response.headers.get("content-type", ""),
+                    text=body.decode("utf-8", errors="replace"),
+                    content=body,
+                    headers={str(k).lower(): str(v) for k, v in response.headers.items()},
+                    byte_length=len(body),
+                )
+        except requests.RequestException as exc:
+            return FetchResult(
+                url=robots_url, ok=False, status=0,
+                error=f"{exc.__class__.__name__}: {exc}", transport=Transport.DIRECT,
+            )
+
     @staticmethod
     def _read_capped(response: requests.Response, max_bytes: int) -> bytes:
         chunks: list[bytes] = []
@@ -952,4 +1044,5 @@ class FetchClient:
             "delay_queue": self.delay_queue.stats(),
             "headers": self.headers_factory.describe(),
             "local_cache_entries": len(self._local_cache),
+            "robots": self.robots.describe(),
         }

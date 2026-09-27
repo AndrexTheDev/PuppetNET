@@ -9,7 +9,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
-from urllib.parse import parse_qsl
+from urllib.parse import parse_qsl, urlparse
 
 import pytest
 
@@ -331,14 +331,43 @@ class FakeResponse:
 
 
 class FakeSession:
-    """Records every call and replays a scripted queue of responses."""
+    """Records every call and replays a scripted queue of responses.
 
-    def __init__(self, responses=None, *, exception: Exception | None = None) -> None:
+    ``robots.txt`` is answered by the session itself and recorded separately:
+    the direct transport consults the origin's rules before it fetches anything,
+    and a document test that asserted ``calls[0]`` must not start seeing the
+    rules request instead. The default answer is a 404, which RFC 9309 reads as
+    "no restrictions" — the same meaning the real relay gives it.
+    """
+
+    def __init__(
+        self,
+        responses=None,
+        *,
+        exception: Exception | None = None,
+        robots_status: int = 404,
+        robots_text: str = "",
+        robots_exception: Exception | None = None,
+    ) -> None:
         self.responses = list(responses or [])
         self.exception = exception
         self.calls: list[dict] = []
+        self.robots_status = robots_status
+        self.robots_text = robots_text
+        self.robots_exception = robots_exception
+        self.robots_calls: list[dict] = []
 
     def _next(self, kind: str, url: str, **kwargs) -> FakeResponse:
+        if urlparse(str(url)).path.endswith("/robots.txt"):
+            self.robots_calls.append({"kind": kind, "url": url, **kwargs})
+            if self.robots_exception is not None:
+                raise self.robots_exception
+            return FakeResponse(
+                status=self.robots_status,
+                body=self.robots_text.encode("utf-8"),
+                headers={"content-type": "text/plain"},
+                url=url,
+            )
         self.calls.append({"kind": kind, "url": url, **kwargs})
         if self.exception is not None:
             raise self.exception
@@ -372,7 +401,16 @@ def relay_ok(url: str, text: str, *, status: int = 200, content_type: str = "tex
     )
 
 
-def make_client(*, worker: bool = False, responses=None, exception=None, **env) -> tuple[FetchClient, FakeSession, FakeClock]:
+def make_client(
+    *,
+    worker: bool = False,
+    responses=None,
+    exception=None,
+    robots_status: int = 404,
+    robots_text: str = "",
+    robots_exception: Exception | None = None,
+    **env,
+) -> tuple[FetchClient, FakeSession, FakeClock]:
     clock = FakeClock()
     settings_env = dict(BASE)
     settings_env.update(env)
@@ -380,7 +418,13 @@ def make_client(*, worker: bool = False, responses=None, exception=None, **env) 
         settings_env.setdefault("PROXY_WORKER_URL", "https://relay.example.workers.dev")
         settings_env.setdefault("PROXY_AUTH_TOKEN", "test-token")
     settings = load_settings(settings_env)
-    session = FakeSession(responses, exception=exception)
+    session = FakeSession(
+        responses,
+        exception=exception,
+        robots_status=robots_status,
+        robots_text=robots_text,
+        robots_exception=robots_exception,
+    )
     client = FetchClient(settings, session=session, clock=clock, sleeper=clock.sleep)
     return client, session, clock
 
@@ -708,3 +752,226 @@ def test_get_and_post_to_one_url_do_not_share_a_cache_entry():
     assert first.transport is Transport.DIRECT
     assert second.transport is Transport.DIRECT, "a POST must not be served from the GET's cache entry"
     assert len([c for c in session.calls if c["kind"] == "request"]) == 2
+
+
+# --------------------------------------------------------------------------- #
+# robots.txt on the direct transport
+# --------------------------------------------------------------------------- #
+#
+# The relay evaluates robots.txt for everything it serves, and the smoke suite
+# covers that path (G15). These tests cover the *fallback*: when the relay is
+# down or the breaker is open, the harvester talks to origins itself, and before
+# this guard that traffic was not policed at all.
+
+
+def test_a_direct_fetch_asks_for_the_rules_before_the_document():
+    client, session, _ = make_client(responses=[FakeResponse(status=200, body=b"ok", headers={"content-type": "text/plain"}, url="u")])
+    client.request("https://origin.test/page", source=make_spec())
+
+    assert session.robots_calls, "the direct path must consult robots.txt"
+    assert session.robots_calls[0]["url"] == "https://origin.test/robots.txt"
+    assert session.robots_calls[0]["kind"] == "get"
+    assert len(session.calls) == 1, "one document request, no retries"
+
+
+def test_a_disallowed_path_is_refused_without_touching_the_origin():
+    client, session, _ = make_client(
+        responses=[],
+        robots_status=200,
+        robots_text="User-agent: *\nDisallow: /private\n",
+    )
+    result = client.request("https://origin.test/private/report.pdf", source=make_spec())
+
+    assert result.ok is False and result.robots_blocked is True
+    assert result.error == "robots_disallowed"
+    assert result.status == 403
+    assert session.calls == [], "a disallowed path must not be fetched at all"
+    assert client.stats.http_robots_blocked == 1
+    assert client.stats.http_requests == 0, "the request counter is for real egress"
+
+
+def test_the_direct_path_reads_the_rules_the_same_way_the_relay_does():
+    """Same fixtures as the worker smoke suite (G15): the two evaluators must agree."""
+    rules = (
+        "User-agent: *\n"
+        "Disallow: /private\n"
+        "Allow: /private/public\n"
+        "Disallow: /*.json$\n"
+    )
+    client, session, _ = make_client(robots_status=200, robots_text=rules)
+
+    refused = ["/private/x", "/privateer/x", "/data.json"]
+    allowed = ["/public/page", "/private/public/x", "/data.json?v=2", "/data.jsonp"]
+    for path in refused:
+        before = len(session.calls)
+        result = client.request(f"https://origin.test{path}", source=make_spec())
+        assert result.robots_blocked is True, f"{path} should be refused"
+        assert len(session.calls) == before, f"{path} must not reach the origin"
+    for path in allowed:
+        document = FakeResponse(status=200, body=b"x", headers={"content-type": "text/plain"}, url=path)
+        session.responses.append(document)
+        result = client.request(f"https://origin.test{path}", source=make_spec())
+        assert result.ok is True, f"{path} should be fetched ({result.error})"
+
+
+def test_robots_that_deny_crawl_makes_the_origin_fully_disallowed():
+    """RFC 9309: a 401/403 on robots.txt means "everything disallowed"."""
+    client, session, _ = make_client(robots_status=403)
+    result = client.request("https://origin.test/anything", source=make_spec())
+    assert result.robots_blocked is True and session.calls == []
+
+
+def test_an_unreachable_rules_file_stops_the_request_without_caching_the_refusal():
+    """RFC 9309 §2.3.1.4: unreadable robots.txt means "do not crawl" — and the
+    verdict is re-evaluated next time instead of being frozen."""
+    client, session, _ = make_client(robots_status=500)
+    result = client.request("https://origin.test/page", source=make_spec())
+
+    assert result.robots_blocked is True, "an unreadable rules file is not a licence to crawl"
+    assert result.status == 502, "the reason is 'could not read', not 'you may not'"
+    assert len(session.robots_calls) == 1, "no retry against a host whose rules we cannot read"
+    assert session.calls == [], "the document was never requested"
+
+    # The origin answers again: the *second* call re-reads the rules instead of
+    # reusing the refusal, which is the whole point of not caching it.
+    session.robots_status = 200
+    session.robots_text = "User-agent: *\nDisallow: /page\n"
+    second = client.request("https://origin.test/page", source=make_spec())
+    assert second.robots_blocked is True and len(session.robots_calls) == 2
+    assert session.calls == []
+
+    # And when the rules permit the path, the same host is fetched normally.
+    recovered, recovered_session, _ = make_client(
+        responses=[FakeResponse(status=200, body=b"x", headers={"content-type": "text/plain"}, url="page")],
+        robots_status=200,
+        robots_text="User-agent: *\nAllow: /page\n",
+    )
+    assert recovered.request("https://origin.test/page", source=make_spec()).ok is True
+    assert len(recovered_session.calls) == 1
+
+
+def test_a_transport_fault_on_the_rules_fetch_also_refuses():
+    """A connection error is `unreachable` too, not an excuse."""
+    import requests
+
+    client, session, _ = make_client(robots_exception=requests.ConnectionError("dns down"))
+    result = client.request("https://origin.test/page", source=make_spec())
+    assert result.robots_blocked is True and session.calls == []
+    assert client.stats.http_robots_blocked == 1
+
+
+def test_a_policy_verdict_is_terminal_and_never_retried():
+    """The refusal must not be laundered through the retry loop (which is how the
+    old code turned a policy answer into a generic HTTP 502 after four attempts)."""
+    client, session, _ = make_client(robots_status=200, robots_text="User-agent: *\nDisallow: /\n")
+    result = client.request("https://origin.test/page", source=make_spec())
+    assert result.attempts == 1
+    assert len(session.robots_calls) == 1 and session.calls == []
+    assert client.stats.http_robots_blocked == 1 and client.stats.http_errors == 0
+
+
+def test_an_edge_side_rules_outage_falls_through_to_the_runners_own_transport():
+    """The relay could not read robots.txt; the runner is allowed to ask itself.
+
+    `robots_unavailable` is deliberately *not* terminal, unlike
+    `robots_disallowed`: the runner reads the rules with its own connection, and
+    when that read succeeds the document is fetched — politely — instead of the
+    source going dark because the edge had a bad minute.
+    """
+    client, session, _ = make_client(
+        worker=True,
+        responses=[
+            FakeResponse(
+                status=502,
+                json_body={"ok": False, "error": {"code": "robots_unavailable", "message": "robots.txt for origin.test could not be read"}},
+                headers={"content-type": "application/json"},
+                url="u",
+            ),
+            FakeResponse(status=200, body=b"<p>served</p>", headers={"content-type": "text/html"}, url="page"),
+        ],
+        robots_status=200,
+        robots_text="User-agent: *\nAllow: /\n",
+    )
+    result = client.request("https://origin.test/page", source=make_spec())
+
+    assert result.ok is True and result.transport is Transport.DIRECT
+    assert "served" in (result.text or "")
+    assert session.robots_calls, "the runner read the rules itself before fetching"
+    assert client.stats.http_robots_blocked == 0
+
+
+def test_the_rules_are_cached_for_the_run():
+    client, session, _ = make_client(robots_status=200, robots_text="User-agent: *\nAllow: /\n")
+    for index in range(3):
+        session.responses.append(FakeResponse(status=200, body=b"x", headers={"content-type": "text/plain"}, url=f"p{index}"))
+        client.request(f"https://origin.test/p{index}", source=make_spec())
+    assert len(session.robots_calls) == 1, "one rules fetch per host per run, not one per document"
+    assert client.robots.stats["cached"] == 2
+
+
+def test_respect_robots_false_skips_the_check_entirely():
+    """`respect_robots=False` is the documented escape hatch (an API endpoint, the
+    Telegram bot) — it must not spend a request on robots.txt either."""
+    client, session, _ = make_client(
+        responses=[FakeResponse(status=200, body=b"{}", headers={"content-type": "application/json"}, url="u")],
+        robots_status=200,
+        robots_text="User-agent: *\nDisallow: /\n",
+    )
+    result = client.request("https://api.test/endpoint", source=make_spec(respect_robots=False))
+    assert result.ok is True
+    assert session.robots_calls == [], "no rules request for an endpoint we are allowed to call"
+    assert len(session.calls) == 1
+
+
+def test_the_relay_verdict_never_falls_back_to_a_direct_fetch():
+    """Terminal means terminal: a robots refusal reported by the relay must not be
+    re-attempted here, or the fallback would do exactly what the relay refused."""
+    client, session, _ = make_client(
+        worker=True,
+        responses=[FakeResponse(
+            status=403,
+            json_body={"ok": False, "error": {"code": "robots_disallowed", "message": "disallowed"}},
+            headers={"content-type": "application/json"},
+            url="u",
+        )],
+        robots_status=200,
+        robots_text="User-agent: *\nAllow: /\n",
+    )
+    result = client.request("https://origin.test/secret", source=make_spec())
+    assert result.error == "robots_disallowed"
+    # Only the relay POST is on the wire; no direct GET to the origin, and not
+    # even a rules fetch (the verdict is already in hand).
+    assert [c["kind"] for c in session.calls] == ["post"]
+    assert session.robots_calls == []
+    assert client.stats.http_robots_blocked == 1
+
+
+def test_a_crawl_delay_from_the_rules_slows_the_host_down():
+    """`Crawl-delay` is the origin's own pace; the direct transport adopts it."""
+    client, session, _ = make_client(
+        robots_status=200,
+        robots_text="User-agent: *\nAllow: /\nCrawl-delay: 10\n",
+        **{"TOKEN_BUCKET_RATE_PER_SEC": "5", "TOKEN_BUCKET_BURST": "5"},
+    )
+    session.responses.append(FakeResponse(status=200, body=b"x", headers={"content-type": "text/plain"}, url="p1"))
+    client.request("https://slow.test/p1", source=make_spec())
+
+    decision = client.delay_queue.admit("slow.test")
+    assert decision.wait_seconds >= 9.0, "the second request waits out the crawl delay"
+
+
+def test_a_stream_obeys_the_rules_too():
+    """Streaming is always direct — the path an origin is most likely to forbid."""
+    client, session, _ = make_client(robots_status=200, robots_text="User-agent: *\nDisallow: /dump\n")
+    lines = list(client.stream_lines("https://origin.test/dump.tsv", source=make_spec()))
+    assert lines == [], "a disallowed dump is not streamed"
+    assert session.calls == []
+    assert client.stats.http_robots_blocked == 1
+
+
+def test_the_robots_policy_is_reported_in_describe():
+    client, _, _ = make_client(robots_status=404)
+    payload = client.describe()
+    assert payload["robots"]["enabled"] is True
+    assert payload["robots"]["user_agent"] == load_settings(BASE).http_user_agent
+    json.dumps(payload), "describe() must stay serialisable"

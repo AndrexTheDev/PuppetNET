@@ -125,6 +125,22 @@ Two special cases are deliberately *not* retried or escalated: a relay `403` wit
 `error.code == "robots_disallowed"` is terminal (recorded as `http_robots_blocked`),
 and a `401/403` with an unparseable body is treated as a credential rejection.
 
+**robots.txt on the fallback path.** The relay evaluates robots.txt for everything it
+serves, which means the *direct* transport used to be the polite crawler's blind spot: the
+moment the breaker opened or the relay was unreachable, the runner fetched whatever it
+liked. `puppetnet/net/robots.py` closes that hole. Before a direct request or a direct
+stream the client consults a per-host cache of the origin's rules (one fetch per host per
+run, through the same `DelayQueue` as its documents) and refuses what the file forbids —
+with the relay's vocabulary, same fixture table, same verdicts. A `Crawl-delay` from the
+rules becomes the host's floor in the delay queue, and the three error cases follow RFC
+9309: `4xx` means no restrictions, `401`/`403` means the whole host is off limits for the
+run, and an unreachable file (`5xx`, timeout, DNS) means *do not crawl* — the copy cached
+earlier in the run is reused if there is one, but the refusal itself is never cached, so a
+recovered origin is served on the next attempt. `RESPECT_ROBOTS_TXT=false` (or
+`respect_robots=False` on a single source) switches the check off for a host that has given
+written permission; the default is on, and a refusal is terminal — never retried, never
+handed to the other transport.
+
 `DelayQueue` keeps one token bucket per host plus a global minimum interval, so a slow
 host cannot starve the others; failures escalate a host's backoff
 (`max(retry_after, 2^consecutive_failures)`), and `429`/`503` cost at least 5 s.

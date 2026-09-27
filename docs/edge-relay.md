@@ -169,6 +169,7 @@ Two distinct shapes. **Relay-level refusals** carry a structured `error` object:
 | 429 | `host_rate_limited` | Per-host bucket exhausted and `queue_on_limit` off (or Queue/KV unbound); `retry_after`, `remaining_tokens`, `policy` |
 | 429 | `global_rate_limited` | Worker-wide `GLOBAL_RPM` budget exhausted; `retry_after` |
 | 202 | — (`deferred: true`) | Queued: `{ok:false, deferred:true, task_id, status:"queued", retry_after, request_id}` |
+| 502 | `robots_unavailable` | The origin's robots.txt could not be read (`5xx` or unreachable) — the path is **not** fetched (RFC 9309 §2.3.1.4), but this is a transient verdict: the client may try its own transport, and nothing is cached |
 | 502 | *(fetch envelope)* | Origin failure or timeout after all attempts — see below |
 | 503 | `queue_unavailable`, `kv_unbound` | Queue/`RESULT_KV` not bound or enqueue failed |
 | 500 | `internal_error` | Relay fault |
@@ -377,7 +378,14 @@ free-tier CPU and KV quotas across all hosts.
 
 **robots.txt.** Fetched and cached in `RATE_LIMIT_KV` for `ROBOTS_TTL_SECONDS` (6 h) per
 host + user-agent. `Crawl-delay` tightens the host bucket. A disallowed path is refused
-with `403 robots_disallowed` *before* any egress.
+with `403 robots_disallowed` *before* any egress. A rules file that answers `5xx` — or
+cannot be reached at all — is read as *complete disallow* (RFC 9309 §2.3.1.4) and reported
+as `502 robots_unavailable`: the same refusal, but with the reason attached, so the runner
+can tell "you may not" (terminal) from "I could not read it" (its own transport may still
+get through). Nothing is cached on that path, so the next request asks again. The Python
+transport applies the same three rules — see
+[docs/architecture.md](architecture.md#4-anti-rate-limiting) — which is why the fixture
+table in `tests/test_robots.py` and `tests/worker_smoke.mjs` (G15b) is the same table.
 
 ### Free-tier KV budget
 
@@ -411,8 +419,12 @@ The evaluator follows the specification's own vocabulary: group selection is by
 user-agent substring (a group written for another crawler does not apply, and `*` is the
 fallback), `*` matches any run of characters, a trailing `$` anchors the end of the path,
 and matching is a **prefix** match — `/fish` covers `/fish/chips` and `/fishheads`. The
-longest matching pattern wins, `Allow` breaks a tie against `Disallow` of the same length,
-and a `401`/`403` on robots.txt itself is read as "everything disallowed".
+longest matching pattern wins (`Allow` breaks a tie against `Disallow` of the same length,
+so the order of the lines never decides), and a `401`/`403` on robots.txt itself is read as
+"everything disallowed". Two parsing rules are easy to get wrong and are pinned by fixtures:
+consecutive `User-agent:` lines are one group **until the first directive line** — including
+`Crawl-delay`, which otherwise lets one crawler's pace leak onto every other bot — and an
+empty `Disallow:` is not a rule, so it cannot outvote a one-character `Disallow: /`.
 
 **Retries.** `max_attempts` (default 3) with jittered exponential backoff
 (`BACKOFF_BASE_MS` 700 → `BACKOFF_CAP_MS` 12 s), honouring `Retry-After`. Every attempt is

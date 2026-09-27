@@ -1266,6 +1266,101 @@ await check("the robots evaluator honours the rules, not the longest line of the
   assert.equal(robotsFetches.length, 0, "with respect_robots off there is no robots request");
 });
 
+// --- G15b. The same RFC fixtures the Python suite runs ----------------------
+//
+// The relay and the runner each evaluate robots.txt, in different runtimes with
+// different caches, and they must agree: a rule that means "refused" on the edge
+// and "allowed" in the runner would make the answer depend on which transport
+// happened to serve the request. `tests/test_robots.py::RFC_FIXTURES` is the same
+// table — change one, change both.
+await check("robots evaluation matches the RFC fixtures and the Python transport", async () => {
+  const { parseRobots, isPathAllowed } = (await import("../worker.js")).__internals;
+  const verdict = (rules, path, agent) => isPathAllowed(parseRobots(rules), path, agent).allowed;
+
+  const fixtures = [
+    // Longest match wins; on equal specificity Allow beats Disallow, and the
+    // order of the lines must not decide.
+    ["User-agent: *\nDisallow: /page\nAllow: /page\n", "/page", "PuppetNET", true],
+    ["User-agent: *\nAllow: /page\nDisallow: /page\n", "/page", "PuppetNET", true],
+    ["User-agent: *\nAllow: /private\nDisallow: /private/secret\n", "/private/secret/a", "PuppetNET", false],
+    // Prefix matching.
+    ["User-agent: *\nDisallow: /private\nAllow: /private/public\n", "/private/x", "PuppetNET", false],
+    ["User-agent: *\nDisallow: /private\nAllow: /private/public\n", "/private/public/x", "PuppetNET", true],
+    ["User-agent: *\nDisallow: /private\nAllow: /private/public\n", "/privateer/x", "PuppetNET", false],
+    // Wildcard and end anchor.
+    ["User-agent: *\nDisallow: /*.json$\n", "/data.json", "PuppetNET", false],
+    ["User-agent: *\nDisallow: /*.json$\n", "/data.json?v=2", "PuppetNET", true],
+    ["User-agent: *\nDisallow: /*.json$\n", "/data.jsonp", "PuppetNET", true],
+    ["User-agent: *\nDisallow: /tmp/*\nAllow: /tmp/public/\n", "/tmp/public/a", "PuppetNET", true],
+    // Consecutive User-agent lines are one group; the first directive closes it.
+    ["User-agent: AlphaBot\nUser-agent: BetaBot\nDisallow: /x\n\nUser-agent: *\nAllow: /\n", "/x", "BetaBot/1.0", false],
+    ["User-agent: AlphaBot\nUser-agent: BetaBot\nDisallow: /x\n\nUser-agent: *\nAllow: /\n", "/x", "GammaBot/1.0", true],
+    ["User-agent: Googlebot\nDisallow: /\n\nUser-agent: *\nAllow: /\n", "/page", "PuppetNET", true],
+    // An empty Disallow is not a rule and must not outvote the line above it.
+    ["User-agent: *\nDisallow: /\nDisallow:\n", "/x", "PuppetNET", false],
+    // A Crawl-delay line closes the agent list: the `*` group below is a second
+    // group, so SlowBot's pace and rules do not leak onto every other bot.
+    ["User-agent: SlowBot\nCrawl-delay: 5\n\nUser-agent: *\nDisallow: /x\n", "/x", "OtherBot", false],
+    ["User-agent: SlowBot\nCrawl-delay: 5\n\nUser-agent: *\nDisallow: /x\n", "/x", "SlowBot/1", true],
+    // Nothing applies to us ⇒ allowed.
+    ["User-agent: Googlebot\nDisallow: /\n", "/x", "PuppetNET", true],
+  ];
+
+  for (const [rules, path, agent, expected] of fixtures) {
+    assert.equal(
+      verdict(rules, path, agent),
+      expected,
+      `${JSON.stringify(rules)} vs ${path} for ${agent}`
+    );
+  }
+  assert.ok(fixtures.some((row) => row[3] === false) && fixtures.some((row) => row[3] === true),
+    "the table has to cover both verdicts, or a stub would pass it");
+
+  // The crawl-delay still reaches the caller for its own group.
+  const groups = parseRobots("User-agent: SlowBot\nCrawl-delay: 5\n\nUser-agent: *\nAllow: /\n");
+  assert.equal(isPathAllowed(groups, "/x", "SlowBot/1").crawlDelay, 5);
+  assert.equal(isPathAllowed(groups, "/x", "OtherBot").crawlDelay, null,
+    "one crawler's crawl delay must not throttle the others");
+});
+
+await check("an unreadable robots.txt is reported as unavailable, not as a verdict", async () => {
+  // RFC 9309 §2.3.1.4: an unreachable robots.txt means complete disallow. The old
+  // fail-open answer was a free crawl for anyone who could break their own rules
+  // file — but the client must still be able to tell "you may not" from "I could
+  // not read it": the first is terminal, the second lets the runner try its own
+  // transport, whose view of the origin may well be healthy.
+  const original = globalThis.fetch;
+  globalThis.fetch = async (target, init = {}) => {
+    const url = typeof target === "string" ? target : target.url;
+    if (url.includes("robots.txt")) return new Response("origin exploded", { status: 503 });
+    return original(target, init);
+  };
+  try {
+    const response = await relay("/fetch", { url: "https://unreachable.example/page", respect_robots: true },
+      SECRETS.PROXY_AUTH_TOKEN, { ...makeEnv(), HOST_RATE_PER_SEC: "50", HOST_BURST: "50" });
+    assert.equal(response.status, 502, `expected a retryable envelope: ${response.text.slice(0, 200)}`);
+    assert.equal(response.body.error.code, "robots_unavailable");
+    assert.equal(response.body.error.robots.allowed, false);
+  } finally {
+    globalThis.fetch = original;
+  }
+
+  // A network fault is the same answer as a 5xx: unreadable is unreadable.
+  globalThis.fetch = async (target, init = {}) => {
+    const url = typeof target === "string" ? target : target.url;
+    if (url.includes("robots.txt")) throw new Error("dns is down");
+    return original(target, init);
+  };
+  try {
+    const response = await relay("/fetch", { url: "https://dnsdown.example/page", respect_robots: true },
+      SECRETS.PROXY_AUTH_TOKEN, { ...makeEnv(), HOST_RATE_PER_SEC: "50", HOST_BURST: "50" });
+    assert.equal(response.status, 502);
+    assert.equal(response.body.error.code, "robots_unavailable");
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
 // --- G16. Workers KV Free allows 1k writes/day: only hot hosts may spend them ---
 await check("KV writes go to hot hosts only, so an hourly news run cannot drain the free quota", async () => {
   // The relay is expected to be *polite* rather than to coordinate: a host that

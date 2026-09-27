@@ -200,6 +200,11 @@ class Settings:
     http_user_agent: str = (
         "PuppetNET-OSINT/1.5 (+https://github.com/AndrexTheDev/PuppetNET; research bot)"
     )
+    #: Evaluate robots.txt on the **direct** path as well. The relay enforces it
+    #: for everything it serves; this switch governs the fallback, which is the
+    #: traffic an origin never agreed to when the relay is down. Only a
+    #: deployment that has written permission for a host should turn it off.
+    respect_robots_txt: bool = True
 
     # -- NLP ----------------------------------------------------------------
     #: Ordered preference list; the first importable model wins.
@@ -595,6 +600,7 @@ def load_settings(env: dict[str, str] | None = None, *, validate: bool = True) -
             http_backoff_cap_seconds=_env_float("HTTP_BACKOFF_CAP_SECONDS", 45.0),
             http_max_response_bytes=_env_int("HTTP_MAX_RESPONSE_BYTES", 12 * 1024 * 1024),
             http_user_agent=_env_str("HTTP_USER_AGENT", Settings.http_user_agent),
+            respect_robots_txt=_env_bool("RESPECT_ROBOTS_TXT", True),
             spacy_models=models,
             nlp_enabled=_env_bool("NLP_ENABLED", True),
             nlp_max_chars_per_doc=_env_int("NLP_MAX_CHARS_PER_DOC", 400_000),

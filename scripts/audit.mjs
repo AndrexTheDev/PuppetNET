@@ -816,6 +816,61 @@ function auditInvariants() {
 }
 
 /* ========================================================================== */
+/*  4b. robots.txt parity (relay ↔ direct transport)                           */
+/* ========================================================================== */
+
+function auditRobotsParity() {
+  // robots.txt is enforced in two places that must agree: the relay (TypeScript)
+  // and the direct transport (Python). They were written separately, so they
+  // drifted — the Worker's tie-break let the file's line order decide an
+  // equal-length Allow/Disallow pair, and only the Worker consulted the file at
+  // all, which made an open circuit breaker a licence to crawl.
+  //
+  // The three things this pins are the ones whose absence is invisible at
+  // runtime: the policy must still be *called* on both direct paths (a commented
+  // call reads exactly like a real one to a substring search), both evaluators
+  // must read an unreadable rules file as a refusal, and both must implement the
+  // tie-break. Verdict correctness itself is covered by the shared fixture table
+  // (tests/test_robots.py::RFC_FIXTURES = worker smoke G15b).
+  const robotsPy = read("puppetnet/net/robots.py");
+  const client = read("puppetnet/net/proxy_client.py");
+  const workerFile = read("worker.js");
+  if (!robotsPy || !client || !workerFile) {
+    finding("invariant/robotsParity", "bugs", "high", "puppetnet/net/** ↔ worker.js", "robots.txt",
+      "could not read the robots evaluators or the client (" +
+        [robotsPy, client, workerFile].map((v) => (v ? "ok" : "missing")).join("/") + ")",
+      "Keep these three files parseable — this check compares them.");
+  } else {
+    // Comment-stripped, because `# self.robots.check(...)` is not a call.
+    const codeOnly = (text) => text.split("\n").map((line) => line.replace(/#.*$/, "")).join("\n");
+    const clientCode = codeOnly(client);
+    for (const [label, header] of [["request", "def _direct("], ["stream", "def stream_lines("]]) {
+      const start = clientCode.indexOf(header);
+      const rest = start < 0 ? "" : clientCode.slice(start + header.length);
+      const nextDef = rest.indexOf("\n    def ");
+      const body = nextDef < 0 ? rest : rest.slice(0, nextDef);
+      if (start < 0 || !body.includes("self.robots.check(")) {
+        finding("invariant/robotsParity", "docs", "high", "puppetnet/net/proxy_client.py",
+          `${label} path`,
+          `${header.trim()} does not consult the robots policy`,
+          "The relay enforces robots.txt for the traffic it serves; the direct path must enforce it for its own.");
+      }
+    }
+    if (!/rule\.pattern\.length === best\.pattern\.length[^\n]*allow/.test(workerFile) ||
+        !/len\(pattern\) == len\(best\[1\]\) and rule_type == "allow"/.test(robotsPy)) {
+      finding("invariant/robotsParity", "bugs", "high", "worker.js ↔ puppetnet/net/robots.py", "tie-break",
+        "an equal-length Allow/Disallow pair is not resolved in favour of Allow in both evaluators",
+        "RFC 9309 §2.2.2: the longest match wins and Allow breaks a tie — otherwise the order of the lines decides.");
+    }
+    if (!workerFile.includes("robots_unavailable") || !robotsPy.includes('"unreachable"')) {
+      finding("invariant/robotsParity", "bugs", "high", "worker.js ↔ puppetnet/net/robots.py", "unreachable rules file",
+        "an unreadable robots.txt is not reported as a refusal by both transports",
+        "RFC 9309 §2.3.1.4: unreachable means complete disallow — and the client must be able to tell it from a verdict.");
+    }
+  }
+}
+
+/* ========================================================================== */
 /*  5. Worker security                                                         */
 /* ========================================================================== */
 
@@ -1294,6 +1349,7 @@ auditSeo();
 auditUiState();
 auditCypher();
 auditInvariants();
+auditRobotsParity();
 auditWorker();
 auditPython();
 auditCostAndSupplyChain();
