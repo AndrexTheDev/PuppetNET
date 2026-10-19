@@ -56,6 +56,22 @@ def _env_float(name: str, default: float) -> float:
         raise ConfigError(f"{name}={raw!r} is not a valid number") from exc
 
 
+def _env_optional_float(name: str) -> float | None:
+    """Return ``None`` when the variable is unset/empty.
+
+    Used for overrides that must fall back to a computed default (published
+    Workers AI neuron rates) rather than to a hard-coded constant.
+    """
+
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return None
+    try:
+        return float(raw)
+    except ValueError as exc:
+        raise ConfigError(f"{name} must be a number, got {raw!r}") from exc
+
+
 def _env_bool(name: str, default: bool = False) -> bool:
     raw = _env_str(name).lower()
     if not raw:
@@ -214,6 +230,39 @@ class Settings:
     nlp_backend: str = "spacy"
     gliner_model: str = "urchade/gliner_small-v2.1"
     gliner_threshold: float = 0.5
+    #: ``torch`` (default) or ``onnx``. The ONNX path needs a pre-exported
+    #: ``model.onnx``; it is never a silent fallback for a broken Torch install.
+    gliner_runtime: str = "torch"
+    #: GLiNER context window and overlap, in tokens. 384/64 follows the
+    #: documented multilingual checkpoint limit with enough overlap to keep
+    #: cross-sentence relations in one window.
+    gliner_context_tokens: int = 384
+    gliner_overlap_tokens: int = 64
+
+    # -- Workers AI triplet extraction (free tier) --------------------------
+    triplet_backend: str = "off"
+    cf_ai_account_id: str = ""
+    cf_ai_api_token: str = ""
+    cf_ai_model: str = "@cf/meta/llama-3.1-8b-instruct"
+    cf_ai_base_url: str = "https://api.cloudflare.com/client/v4/accounts"
+    #: Workers Free hard-fails after 10,000 neurons/day; the extractor stops
+    #: before the cap instead of burning the last request on a doomed call.
+    cf_ai_daily_neurons: float = 10_000.0
+    cf_ai_budget_file: str = ""
+    cf_ai_max_output_tokens: int = 700
+    #: Hard per-run document cap. One 384-token window is cheap; a 1,500-document
+    #: harvest is not, and the free tier must be spent deliberately.
+    cf_ai_max_documents: int = 10
+    cf_ai_max_chunks: int = 32
+    cf_ai_max_triplets_per_chunk: int = 20
+    cf_ai_timeout_seconds: float = 45.0
+    cf_ai_max_retries: int = 2
+    cf_ai_min_confidence: float = 0.0
+    #: Empty means "use the published rates for ``cf_ai_model``". Set both to
+    #: override (per *million* tokens) when Cloudflare changes pricing.
+    cf_ai_input_neurons_per_million: float | None = None
+    cf_ai_output_neurons_per_million: float | None = None
+
     nlp_enabled: bool = True
     nlp_max_chars_per_doc: int = 400_000
     nlp_max_sentences_per_doc: int = 1_500
@@ -423,7 +472,7 @@ class Settings:
         """Redacted snapshot for logs and the run report."""
         sensitive = {"neo4j_password", "worker_token", "opencorporates_api_token",
                      "companies_house_api_key", "adsbexchange_api_key", "extra_headers_json",
-                     "telegram_bot_token"}
+                     "telegram_bot_token", "cf_ai_api_token", "cf_ai_account_id"}
         out: dict[str, Any] = {}
         for key, value in self.__dict__.items():
             if key in sensitive:
@@ -452,6 +501,39 @@ class Settings:
             problems.append("GLINER_THRESHOLD must be in (0, 1]")
         if not self.gliner_model.strip():
             problems.append("GLINER_MODEL must not be empty")
+        if self.gliner_runtime not in {"torch", "onnx"}:
+            problems.append("GLINER_RUNTIME must be torch or onnx")
+        if not 8 <= self.gliner_context_tokens <= 4_096:
+            problems.append("GLINER_CONTEXT_TOKENS must be between 8 and 4096")
+        if not 0 <= self.gliner_overlap_tokens < max(8, self.gliner_context_tokens):
+            problems.append("GLINER_OVERLAP_TOKENS must be within [0, GLINER_CONTEXT_TOKENS)")
+        if self.triplet_backend not in {"off", "cloudflare"}:
+            problems.append("TRIPLET_BACKEND must be off or cloudflare")
+        if self.triplet_backend == "cloudflare":
+            if not self.cf_ai_account_id.strip() or not self.cf_ai_api_token.strip():
+                problems.append(
+                    "TRIPLET_BACKEND=cloudflare requires CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN "
+                    "(Workers AI:Read)"
+                )
+            if not self.cf_ai_model.strip():
+                problems.append("CF_AI_MODEL must not be empty")
+            if not self.cf_ai_base_url.startswith("https://"):
+                problems.append("CF_AI_BASE_URL must be an https:// endpoint")
+            if not 0 < self.cf_ai_daily_neurons <= 1_000_000:
+                problems.append("CF_AI_DAILY_NEURONS must be within (0, 1_000_000]")
+            if not 0 < self.cf_ai_max_output_tokens <= 4_096:
+                problems.append("CF_AI_MAX_OUTPUT_TOKENS must be within (0, 4096]")
+            if self.cf_ai_max_chunks < 1 or self.cf_ai_max_triplets_per_chunk < 1:
+                problems.append("CF_AI_MAX_CHUNKS and CF_AI_MAX_TRIPLETS_PER_CHUNK must be >= 1")
+            if self.cf_ai_max_documents < 0:
+                problems.append("CF_AI_MAX_DOCUMENTS must be >= 0 (0 disables triplet extraction)")
+            if not 0 <= self.cf_ai_min_confidence <= 1:
+                problems.append("CF_AI_MIN_CONFIDENCE must be within [0, 1]")
+            if self.cf_ai_max_retries < 0 or self.cf_ai_max_retries > 5:
+                problems.append("CF_AI_MAX_RETRIES must be within [0, 5]")
+            if self.cf_ai_timeout_seconds <= 0:
+                problems.append("CF_AI_TIMEOUT_SECONDS must be > 0")
+
         if not self.dry_run:
             if not self.neo4j_uri:
                 problems.append("NEO4J_URI is required")
@@ -614,6 +696,25 @@ def load_settings(env: dict[str, str] | None = None, *, validate: bool = True) -
             nlp_backend=_env_str("NLP_BACKEND", "spacy"),
             gliner_model=_env_str("GLINER_MODEL", "urchade/gliner_small-v2.1"),
             gliner_threshold=_env_float("GLINER_THRESHOLD", 0.5),
+            gliner_runtime=_env_str("GLINER_RUNTIME", "torch").strip().lower(),
+            gliner_context_tokens=_env_int("GLINER_CONTEXT_TOKENS", 384),
+            gliner_overlap_tokens=_env_int("GLINER_OVERLAP_TOKENS", 64),
+            triplet_backend=_env_str("TRIPLET_BACKEND", "off").strip().lower(),
+            cf_ai_account_id=_env_str("CLOUDFLARE_ACCOUNT_ID", ""),
+            cf_ai_api_token=_env_str("CLOUDFLARE_API_TOKEN", ""),
+            cf_ai_model=_env_str("CF_AI_MODEL", "@cf/meta/llama-3.1-8b-instruct"),
+            cf_ai_base_url=_env_str("CF_AI_BASE_URL", "https://api.cloudflare.com/client/v4/accounts").rstrip("/"),
+            cf_ai_daily_neurons=_env_float("CF_AI_DAILY_NEURONS", 10_000.0),
+            cf_ai_budget_file=_env_str("CF_AI_BUDGET_FILE", ""),
+            cf_ai_max_output_tokens=_env_int("CF_AI_MAX_OUTPUT_TOKENS", 700),
+            cf_ai_max_chunks=_env_int("CF_AI_MAX_CHUNKS", 32),
+            cf_ai_max_documents=_env_int("CF_AI_MAX_DOCUMENTS", 10),
+            cf_ai_max_triplets_per_chunk=_env_int("CF_AI_MAX_TRIPLETS_PER_CHUNK", 20),
+            cf_ai_timeout_seconds=_env_float("CF_AI_TIMEOUT_SECONDS", 45.0),
+            cf_ai_max_retries=_env_int("CF_AI_MAX_RETRIES", 2),
+            cf_ai_min_confidence=_env_float("CF_AI_MIN_CONFIDENCE", 0.0),
+            cf_ai_input_neurons_per_million=_env_optional_float("CF_AI_INPUT_NEURONS_PER_MILLION"),
+            cf_ai_output_neurons_per_million=_env_optional_float("CF_AI_OUTPUT_NEURONS_PER_MILLION"),
             nlp_enabled=_env_bool("NLP_ENABLED", True),
             nlp_max_chars_per_doc=_env_int("NLP_MAX_CHARS_PER_DOC", 400_000),
             nlp_max_sentences_per_doc=_env_int("NLP_MAX_SENTENCES_PER_DOC", 1_500),

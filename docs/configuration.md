@@ -84,6 +84,12 @@ direct fallback must be available; `MAX_RUNTIME_SECONDS ≥ 60`; `NEO4J_BATCH_SI
 | --- | --- | --- | --- |
 | `SPACY_MODELS` | `spacy_models` | `en_core_web_trf,en_core_web_lg,en_core_web_md,en_core_web_sm` | Ordered preference list; the first that loads wins. |
 | `SPACY_MODEL` | — | *(empty)* | Legacy single-model override; wins the preference order when set. |
+| `NLP_BACKEND` | `nlp_backend` | `spacy` | `spacy` or `gliner`. |
+| `GLINER_MODEL` | `gliner_model` | `urchade/gliner_small-v2.1` | The workflow selects `urchade/gliner_multi-v2.1` (Apache-2.0, 209M, multilingual). |
+| `GLINER_THRESHOLD` | `gliner_threshold` | `0.5` | Must be in `(0, 1]`. |
+| `GLINER_RUNTIME` | `gliner_runtime` | `torch` | `torch` or `onnx`; ONNX requires a checkpoint with a pre-exported `model.onnx`. |
+| `GLINER_CONTEXT_TOKENS` | `gliner_context_tokens` | `384` | Sentence-aligned window; 8–4096. |
+| `GLINER_OVERLAP_TOKENS` | `gliner_overlap_tokens` | `64` | Whole trailing sentences repeated in the next window; must be smaller than the context. |
 | `NLP_ENABLED` | `nlp_enabled` | `true` | `false` ⇒ documents only, no extraction. |
 | `NLP_LANGUAGE` | `nlp_language` | `en` | |
 | `NLP_MAX_CHARS_PER_DOC` | `nlp_max_chars_per_doc` | `400000` | Longer documents are truncated and flagged. |
@@ -94,6 +100,24 @@ direct fallback must be available; `MAX_RUNTIME_SECONDS ≥ 60`; `NEO4J_BATCH_SI
 | `ENABLE_COOCCURRENCE_FALLBACK` | `enable_cooccurrence_fallback` | `true` | Sentence-level fallback with the 0.2 penalty. |
 | `MIN_EDGE_CONFIDENCE` | `min_edge_confidence` | `0.05` | Edges below this never reach Neo4j. |
 | `MAX_ARGUMENT_DISTANCE` | `max_argument_distance` | `24` | Token distance beyond which the evidence score decays. |
+
+### Workers AI triplets (free tier)
+
+| Env var | Field | Default | Notes |
+| --- | --- | --- | --- |
+| `TRIPLET_BACKEND` | `triplet_backend` | `off` | `cloudflare` enables subject-predicate-object extraction; requires the two credentials below. |
+| `CLOUDFLARE_ACCOUNT_ID` | `cf_ai_account_id` | *(empty)* | Redacted in reports. Also used by Wrangler; setting it alone does **not** enable spending. |
+| `CLOUDFLARE_API_TOKEN` | `cf_ai_api_token` | *(empty)* | Needs Workers AI:Read. Redacted in reports and never written to the ledger. |
+| `CF_AI_MODEL` | `cf_ai_model` | `@cf/meta/llama-3.1-8b-instruct` | `…-fp8-fast` costs ~6× fewer neurons on input and is the workflow default. |
+| `CF_AI_DAILY_NEURONS` | `cf_ai_daily_neurons` | `10000` | Free-tier allocation; the extractor hard-stops below it (UTC-day ledger). |
+| `CF_AI_BUDGET_FILE` | `cf_ai_budget_file` | `$STATE_DIR/cloudflare_ai_budget.json` | Persisted between runs; in-process enforcement still applies when read-only. |
+| `CF_AI_MAX_DOCUMENTS` | `cf_ai_max_documents` | `10` | Per-run cap; `0` disables the stage without removing credentials. |
+| `CF_AI_MAX_CHUNKS` | `cf_ai_max_chunks` | `32` | Windows per document. |
+| `CF_AI_MAX_TRIPLETS_PER_CHUNK` | `cf_ai_max_triplets_per_chunk` | `20` | Model output cap. |
+| `CF_AI_MAX_OUTPUT_TOKENS` | `cf_ai_max_output_tokens` | `700` | Charged against the budget before the call. |
+| `CF_AI_TIMEOUT_SECONDS` / `CF_AI_MAX_RETRIES` | `cf_ai_timeout_seconds` / `cf_ai_max_retries` | `45` / `2` | 429/5xx retries honour `Retry-After`; errors fail soft per document. |
+| `CF_AI_MIN_CONFIDENCE` | `cf_ai_min_confidence` | `0.0` | Drop lower-confidence triplets. |
+| `CF_AI_INPUT_NEURONS_PER_MILLION` / `CF_AI_OUTPUT_NEURONS_PER_MILLION` | … | *(model rate)* | Override the published rates when Cloudflare changes pricing. |
 
 ## Harvest limits & state
 

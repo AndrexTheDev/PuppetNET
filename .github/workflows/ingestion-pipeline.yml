@@ -1,7 +1,7 @@
 name: Python ingestion pipeline
 on:
   push:
-    branches: [main, arena/48cd7919-puppetnet]
+    branches: [main, arena/dbc5fb0c-puppetnet]
     paths:
       - 'packages/pipeline/**'
       - 'tests/**.py'
@@ -38,7 +38,30 @@ jobs:
           cache-dependency-path: packages/pipeline/pyproject.toml
       - run: pip install -e './packages/pipeline[dev]'
       - run: python -m pytest -q -m 'not integration'
-      - run: ruff check packages/pipeline tests/test_gliner.py tests/test_hybrid_ci.py
+      - run: ruff check packages/pipeline tests/test_gliner.py tests/test_hybrid_ci.py tests/test_nlp_*.py tests/nlp_fakes.py
+      - name: Offline multilingual NLP contract
+        run: |
+          python - <<'PYCODE'
+          from nlp.chunking import chunk_text, split_sentences
+          from nlp.labels import OSINT_LABELS
+          from nlp.triplet_extractor import DEFAULT_PREDICATES, NeuronBudget
+
+          sample = (
+              "Dr. Anna Müller von der Acme GmbH traf sich in Berlin. "
+              "Иван Петров работает в Москве. "
+              "التقى محمد علي بشركة النور في دبي."
+          )
+          sentences = split_sentences(sample)
+          chunks = chunk_text(sample, max_tokens=384, overlap_tokens=64)
+          assert len(sentences) >= 3 and chunks
+          assert all(chunk.token_count <= 384 for chunk in chunks)
+          assert len(OSINT_LABELS) == 9
+          budget = NeuronBudget(None, daily_limit=10_000, input_rate=4_119, output_rate=34_868)
+          per_chunk = budget.estimate(384, 250)
+          print(f'OSINT labels: {len(OSINT_LABELS)}; predicates: {len(DEFAULT_PREDICATES)}')
+          print(f'Chunks for multilingual sample: {len(chunks)}')
+          print(f'Approx. free-tier chunks/day (fp8-fast, 384+250 tokens): {int(10_000 / per_chunk)}')
+          PYCODE
   ingestion:
     needs: tests
     # Never ingest from PRs or arbitrary branches; missing secrets must fail,
@@ -52,8 +75,17 @@ jobs:
     timeout-minutes: 45
     env:
       NLP_BACKEND: gliner
-      GLINER_MODEL: urchade/gliner_small-v2.1
+      GLINER_MODEL: urchade/gliner_multi-v2.1
       GLINER_THRESHOLD: '0.5'
+      GLINER_RUNTIME: torch
+      GLINER_CONTEXT_TOKENS: '384'
+      GLINER_OVERLAP_TOKENS: '64'
+      TRIPLET_BACKEND: ${{ vars.TRIPLET_BACKEND || 'off' }}
+      CF_AI_MODEL: ${{ vars.CF_AI_MODEL || '@cf/meta/llama-3.1-8b-instruct-fp8-fast' }}
+      CF_AI_DAILY_NEURONS: '10000'
+      CF_AI_BUDGET_FILE: .state/cloudflare_ai_budget.json
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       NLP_MAX_CHARS_PER_DOC: '20000'
       NLP_MAX_SENTENCES_PER_DOC: '100'
       HF_HOME: ${{ github.workspace }}/.cache/huggingface
@@ -89,7 +121,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: .cache/huggingface
-          key: gliner-small-v2.1-cpu-v1
+          key: gliner-multi-v2.1-cpu-v1
       - name: Preflight actual model before fetching or writing data
         run: |
           python - <<'PYCODE'
@@ -101,6 +133,61 @@ jobs:
           print('Model preflight entities:', len(result.entities))
           engine.close()
           PYCODE
+      - name: Restore Workers AI neuron ledger
+        if: vars.TRIPLET_BACKEND == 'cloudflare'
+        uses: actions/cache/restore@v4
+        with:
+          path: .state/cloudflare_ai_budget.json
+          key: cf-ai-budget-${{ github.run_id }}
+          restore-keys: cf-ai-budget-
+
+      - name: Multilingual entity extraction preflight (gliner_multi-v2.1)
+        run: |
+          python - <<'PYCODE'
+          from nlp.extractor import GLiNERExtractor
+
+          samples = {
+              'de': 'Dr. Anna Müller von der Acme GmbH traf sich in Berlin mit dem Vorstand.',
+              'ru': 'Иван Петров работает в компании Ромашка в Москве.',
+              'ar': 'التقى محمد علي بشركة النور في دبي.',
+          }
+          extractor = GLiNERExtractor(eager_load=False, threshold=0.35)
+          try:
+              for language, text in samples.items():
+                  result = extractor.extract(text, language=language)
+                  print(language, result.to_dict())
+                  # Extraction quality is probabilistic; offsets are a hard
+                  # contract and must hold for every span the model returns.
+                  assert all(text[e.start_char:e.end_char] == e.text for e in result.entities)
+                  if not result.entities:
+                      print(f'::warning::{language}: multilingual preflight found no entity')
+          finally:
+              extractor.close()
+          PYCODE
+
+      - name: Workers AI triplet preflight (free tier, optional)
+        if: vars.TRIPLET_BACKEND == 'cloudflare'
+        env:
+          CF_AI_MAX_CHUNKS: '2'
+        run: |
+          python - <<'PYCODE'
+          from nlp.triplet_extractor import CloudflareTripletExtractor
+          from puppetnet.config import load_settings
+
+          settings = load_settings()
+          text = (
+              'Die Acme GmbH mit Sitz in München gehört der Familie Müller. '
+              'Frau Müller ist Geschäftsführerin der Acme GmbH.'
+          )
+          with CloudflareTripletExtractor.from_settings(settings) as extractor:
+              result = extractor.extract(text, language='de')
+              print(extractor.describe())
+              print(result.to_dict())
+              assert result.neurons_used <= settings.cf_ai_daily_neurons
+              if not result.triplets:
+                  print('::warning::Workers AI preflight returned no usable triplet')
+          PYCODE
+
       - name: GLiNER extraction and Neo4j ingestion
         shell: bash
         run: |
@@ -111,6 +198,14 @@ jobs:
           elif [ "$code" -ne 0 ]; then
             exit "$code"
           fi
+      - name: Save Workers AI neuron ledger
+        if: always() && vars.TRIPLET_BACKEND == 'cloudflare'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: .state/cloudflare_ai_budget.json
+          key: cf-ai-budget-${{ github.run_id }}
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:

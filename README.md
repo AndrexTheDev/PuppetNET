@@ -35,12 +35,20 @@ python -m venv .venv
 . .venv/bin/activate
 pip install -e './packages/pipeline[dev]'
 python -m pytest -q -m 'not integration'
-ruff check packages/pipeline tests/test_gliner.py tests/test_hybrid_ci.py
+ruff check packages/pipeline tests
 ```
 
 GLiNER CPU inference is an optional install (`packages/pipeline[gliner]`), selected
-with `NLP_BACKEND=gliner`. Tests use offline model doubles; production ingestion loads
-real model weights. spaCy remains the default for backwards-compatible local runs.
+with `NLP_BACKEND=gliner`. `urchade/gliner_multi-v2.1` (Apache-2.0, 209M params) is the
+multilingual checkpoint used by the ingestion workflow; `packages/pipeline[onnx]` is the
+ONNX Runtime alternative for a checkpoint that ships `model.onnx`. Tests use offline model
+doubles; production ingestion loads real model weights. spaCy remains the default for
+backwards-compatible local runs.
+
+The v1.6 extraction pipeline adds sentence-aligned 384-token GLiNER chunking and optional
+Cloudflare Workers AI triple extraction within the free 10,000-neuron/day tier
+(`TRIPLET_BACKEND=cloudflare`). See [the NLP pipeline guide](docs/nlp-pipeline.md#multilingual-gliner--workers-ai-v16)
+for labels, cost arithmetic, graph confidence and the opt-in live tests.
 Root compatibility symlinks retain the previous Python/console/tooling paths without
 source duplication; use a symlink-capable checkout.
 
@@ -55,6 +63,9 @@ GitHub Actions has **no build/deploy JavaScript jobs and no artificial minute ga
 Standard hosted runner execution in this public repository is free under GitHub's
 public-repository policy; normal service, concurrency and artifact limits still apply.
 Daily ingestion is disabled until `ENABLE_INGESTION=true` and database secrets exist.
+Workers AI triplets stay off until `vars.TRIPLET_BACKEND=cloudflare` and the
+`CLOUDFLARE_ACCOUNT_ID`/`CLOUDFLARE_API_TOKEN` secrets are present; the neuron ledger is
+cached between runs and the stage is capped per run.
 
 Older docs and workflows under `docs/legacy-*` describe the v1 architecture only.
 The historical static audit is not a v2 certification. Current runtime regressions,

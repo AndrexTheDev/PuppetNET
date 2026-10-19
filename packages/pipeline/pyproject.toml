@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "puppetnet"
-version = "1.5.0"
+version = "1.6.0"
 description = "Serverless OSINT harvesting + NLP graph-ingestion engine for PuppetNET"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "PuppetNET maintainers" }]
-keywords = ["osint", "nlp", "spacy", "neo4j", "graph", "serverless", "ingestion"]
+keywords = ["osint", "nlp", "gliner", "gliner-multi", "workers-ai", "spacy", "neo4j", "graph", "serverless", "ingestion"]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
@@ -40,6 +40,18 @@ dependencies = [
 # CPU-local inference; model weights downloaded separately, never an API key.
 gliner = ["gliner==0.2.29", "torch>=2.2,<3", "transformers>=4.51.3,<5"]
 
+# Same extractor through ONNX Runtime (smaller install, faster cold start). The
+# model must ship a pre-exported model.onnx; GLiNER does not export at runtime.
+onnx = ["gliner==0.2.29", "onnxruntime>=1.18,<2", "transformers>=4.51.3,<5"]
+
+# Everything the multilingual entity + Workers AI triplet pipeline needs.
+nlp = [
+    "gliner==0.2.29",
+    "torch>=2.2,<3",
+    "transformers>=4.51.3,<5",
+    "requests>=2.31,<3",
+]
+
 # en_core_web_trf (transformer-backed NER + parser). Heavy: pulls torch.
 trf = [
     "torch>=2.1",
@@ -63,7 +75,7 @@ Issues = "https://github.com/AndrexTheDev/PuppetNET/issues"
 py-modules = ["ingest"]
 
 [tool.setuptools.packages.find]
-include = ["puppetnet*"]
+include = ["puppetnet*", "nlp*"]
 exclude = ["tests*", "docs*"]
 
 # ---------------------------------------------------------------------------
@@ -107,4 +119,4 @@ ignore = [
 "tests/*" = ["B011", "SIM", "E741"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["puppetnet", "tests"]
+known-first-party = ["puppetnet", "nlp", "tests"]

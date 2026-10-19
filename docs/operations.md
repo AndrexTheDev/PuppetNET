@@ -625,6 +625,7 @@ average — a run that finds nothing new costs the same as one that does.
 | Workers KV storage | 1 GB | bucket + robots entries, expiring on their own TTLs | ~100 % |
 | Cloudflare Queues | 10 000 operations/day | one per *deferred* request, i.e. only when the relay is over budget | large: queues are the escape hatch, not the path |
 | Cloudflare Pages | 500 builds/month, unlimited requests | 1 build per push to `web/` or `worker.js` in a month of development, then 0 | one order of magnitude |
+| Cloudflare Workers AI | 10 000 neurons/day, reset 00:00 UTC; requests hard-fail past the cap | opt-in only: 10 documents × ≤32 chunks × ≈10 neurons (fp8-fast) ≈ **3 200** on the one daily ingest run | a UTC ledger stops before the limit; `CF_AI_MAX_DOCUMENTS=0` disables the stage |
 | Neo4j AuraDB Free | 1 instance, 200 000 nodes / 400 000 relationships | capped in code (`AURA_NODE_CAP`, `AURA_EDGE_CAP`) and reported as utilisation | the pipeline refuses newcomers rather than failing writes |
 | Telegram Bot API | no quota for a bot of this size | ≤ 10 bridge alerts + 1 digest + at most a handful of failure warnings per day | rate-limited to 1 msg/s locally, `retry_after` honoured |
 | Domain / TLS | none used | the console is served from `*.pages.dev`, the relay from `*.workers.dev` | a custom domain is the only thing that could ever cost money, and nothing requires one |
@@ -638,6 +639,10 @@ Two numbers are worth watching rather than assuming:
 * **AuraDB nodes** are the only quota the data can exhaust (200 000). `AURA_NODE_CAP` is probed
   once per run, newcomers are admitted strongest-first, and a refusal is counted in the run
   report as `entities_capped` — a full graph degrades, it does not fail.
+* **Workers AI neurons** are the only quota that can stop mid-run (10 000/day). The ledger
+  is checked before every call with 2% headroom, the stage is capped per document and per
+  run, and an exhausted budget is a per-document warning — the local NLP output is still
+  written. The free tier never bills an overflow.
 
 There is no analytics, no CDN, no third-party API key required, and no host on the paid
 blocklist is reachable by default: `[cost] paidSourceDefault` fails the build if a paid source
