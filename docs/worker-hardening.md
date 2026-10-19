@@ -135,8 +135,12 @@ linearizable mutex, and the code says so. The lease is deliberately advisory:
 
 Cost: one read + one write per acquire, one read + one delete per release. The
 cron runs 10 times a day, so the locks cost tens of operations, not thousands.
-`/status/refresh` uses the same lease, so an operator holding down the button
-does not queue up full graph scans.
+`/status?live=1` and `/status/refresh` take the same kind of short lease, so an
+operator holding down the button does not queue up full graph scans. A live probe
+also **skips the KV write** when the stored snapshot is younger than five
+minutes: at the 30-second lease cap, persisting every manual refresh would cost
+up to 2 880 writes/day — three times the Free quota — while showing the operator
+the same numbers.
 
 ## 4. Cron triggers
 
@@ -207,7 +211,7 @@ disappears during an incident is worse than no page.
 | --- | --- | --- | --- |
 | `/status` | GET | `STATUS_TOKEN`, graph or relay token | HTML, 60-second meta refresh |
 | `/status.json` | GET | same | The same snapshot as JSON |
-| `/status/refresh` | POST | token only, never public | Runs a live probe and returns JSON |
+| `/status/refresh` | POST | token only, never public | Runs a live probe and returns JSON; persists a snapshot only if the stored one is older than 5 min |
 
 `STATUS_PUBLIC=true` opens the **read-only** view; a live probe always needs a
 token, because it costs two full graph scans. With neither a status nor an API
@@ -228,7 +232,9 @@ What it shows:
 * **Last keep-alive, last probe, snapshot age and every degraded reason.**
 
 The page is server-rendered, has no script, no external asset and no inline
-handler. Its CSP is `default-src 'none'; style-src 'unsafe-inline'`, it sends
+handler. A stored snapshot is served for up to 15 minutes; `?live=1` (token)
+forces a probe and persists it only when the stored copy is older than five
+minutes, which keeps repeated manual refreshes inside the KV write budget. Its CSP is `default-src 'none'; style-src 'unsafe-inline'`, it sends
 `noindex, nofollow`, `X-Frame-Options: DENY` and `no-store`. Every value is
 escaped (`escapeHtml`), including error messages that originate in Neo4j.
 
@@ -253,7 +259,7 @@ escaped (`escapeHtml`), including error messages that originate in Neo4j.
 | Workers requests | 100 000/day | Console + cron; 10 cron invocations/day is negligible |
 | Cron triggers | 5/account | 2 |
 | KV reads | 100 000/day | Locks (2/cron), robots cache, graph bucket sync, dashboard reads |
-| KV writes | 1 000/day | ~40/day from cron + ≤288/day from a constantly-used graph bucket |
+| KV writes | 1 000/day | ~30/day from cron + ≤288/day from a constantly-used graph bucket + ≤288/day if `/status?live=1` is refreshed every 5 min |
 | KV deletes | 1 000/day | 2 per lock release, ~20/day |
 | Aura nodes | 200 000 | `AURA_NODE_STOP=180000` in the pipeline, plus one heartbeat node |
 | Aura relationships | 400 000 | `AURA_EDGE_CAP=400000` |

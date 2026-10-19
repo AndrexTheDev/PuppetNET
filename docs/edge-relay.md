@@ -31,7 +31,7 @@ so the database credentials never reach a browser.
 | `GET` | `/graph/health` | public | Graph API liveness, limits, entity/index counts |
 | `GET` | `/graph/*` | graph token | Read-only graph queries — see [Graph read API](#graph-read-api) |
 | `GET` | `/status`, `/status.json` | status token (or public read-only) | Free-tier dashboard — see [worker-hardening.md](worker-hardening.md#5-status-the-free-tier-dashboard) |
-| `POST` | `/status/refresh` | status token, never public | Live probe; writes a fresh snapshot |
+| `POST` | `/status/refresh` | status token, never public | Live probe; persists only if the stored snapshot is >5 min old |
 | `OPTIONS` | `*` | public | CORS preflight (`ALLOWED_ORIGINS`) |
 
 **Auth** — `Authorization: Bearer <PROXY_AUTH_TOKEN>` (or `X-Proxy-Token`). Multiple

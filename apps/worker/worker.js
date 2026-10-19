@@ -3769,6 +3769,13 @@ async function runHealthCheck(env, cfg, meta = {}) {
     });
     snapshot.lock = { backend: lock.backend, advisory: Boolean(lock.advisory) };
     if (!snapshot.keepalive) snapshot.degraded.push("Noch kein Keep-Alive-Lauf aufgezeichnet.");
+    if (meta.persist === false) {
+      // A manual live probe can be repeated; the 1 000 KV writes/day budget
+      // cannot. The caller still gets fresh data, but the stored snapshot is
+      // only refreshed on the interval the cron enforces.
+      snapshot.persisted = false;
+      return snapshot;
+    }
     await writeKvJson(env, HEALTH_SNAPSHOT_KEY, snapshot, 30 * 86400);
     await updateDailyLedger(env, snapshot, "health");
     return snapshot;
@@ -3889,9 +3896,14 @@ async function statusSnapshot(env, cfg, options = {}) {
         refresh: { ok: false, skipped: "locked", holder: lease.owner || null },
       };
     }
+    // Persisting every live view would spend 2 KV writes per refresh (~2 880/day
+    // at the 30-second lease cap, i.e. three times the Free quota). A stored
+    // snapshot younger than five minutes is current enough to keep, so the
+    // manual probe shows live numbers without rewriting KV.
+    const snapshotIsFresh = stored && ageMs !== null && ageMs < 5 * 60_000;
     let fresh;
     try {
-      fresh = await runHealthCheck(env, cfg, { cron: null });
+      fresh = await runHealthCheck(env, cfg, { cron: null, persist: !snapshotIsFresh });
     } finally {
       await releaseLock(env, "status-live", lease.owner);
     }

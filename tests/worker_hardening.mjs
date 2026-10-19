@@ -533,6 +533,22 @@ await check("/status degrades honestly when no snapshot exists yet", async () =>
   assert.equal(json.body.cached, false);
 });
 
+await check("a live probe against a fresh snapshot does not rewrite the KV ledger", async () => {
+  const neo = fakeNeo4j();
+  const original = JSON.stringify(storedSnapshot());
+  const kv = makeKv(new Map([["health:snapshot", original]]));
+  const env = { ...BASE_ENV, RATE_LIMIT_KV: kv };
+  await withFetch(neo.stub, async () => {
+    const res = await call("/status.json?live=1", { env, token: BASE_ENV.STATUS_TOKEN });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.cached, false, "the caller sees live data");
+    assert.equal(res.body.aura.nodes, 1234);
+    assert.equal(neo.calls.length, 1, "exactly one live probe");
+  });
+  assert.equal(kv.store.get("health:snapshot"), original, "the stored snapshot is untouched");
+  assert.equal(kv.store.has(`health:daily:${new Date().toISOString().slice(0, 10)}`), false);
+});
+
 await check("a live probe honours the status lease and answers from the snapshot", async () => {
   const neo = fakeNeo4j();
   const kv = makeKv(new Map([
