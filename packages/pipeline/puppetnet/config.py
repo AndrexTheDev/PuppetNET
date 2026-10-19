@@ -384,8 +384,10 @@ class Settings:
     puppet_master_in_degree_weight: float = 0.20
 
     # -- AuraDB Free keep-alive (keep_alive.py) -----------------------------
-    #: Free-tier instances pause after 72 h without a connection. The scheduled
-    #: ``RETURN 1`` ping keeps the clock reset.
+    #: Free-tier instances pause after 72 h without a *write query*. This
+    #: read-only ``RETURN 1`` ping proves connectivity (and wakes a paused
+    #: instance); the Worker cron writes the bounded heartbeat that resets the
+    #: idle clock.
     keep_alive_timeout_seconds: float = 30.0
     keep_alive_retries: int = 2
 

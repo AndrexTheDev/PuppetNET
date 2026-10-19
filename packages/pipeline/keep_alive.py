@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
 """AuraDB Free keep-alive — one ``RETURN 1``, every day, forever.
 
-AuraDB Free pauses an instance after **72 hours without a connection**. A paused
-instance is not lost — it wakes on the next connect — but the wake-up costs tens
-of seconds and the scheduled ingestion run that hits it looks like a timeout.
-The cheapest fix is a heartbeat: the workflow pings the database daily with the
-smallest possible query.
+AuraDB Free pauses an instance after **72 hours without a write query**; Neo4j
+does not count read queries as activity. A paused instance is not lost — it wakes
+on the next connect — but the wake-up costs tens of seconds and the scheduled
+ingestion run that hits it looks like a timeout. This script's daily
+``RETURN 1`` proves the pipeline's credentials and wakes a paused instance; the
+Worker cron (``0 */12 * * *``) issues the bounded ``MERGE`` that actually resets
+the idle clock.
 
 Design constraints, all deliberate:
 
 * **Read-only.** The ping is ``RETURN 1 AS ok`` — no node, no relationship, no
-  property, no transaction that could touch the 200 000-node budget. A heartbeat
-  that writes is a heartbeat that eventually fills the database.
+  property, no transaction that could touch the 200 000-node budget. The one
+  write heartbeat lives in the Worker cron, where a fixed node id bounds it to a
+  single node no matter how often it runs.
 * **Short timeout, few retries.** A keep-alive that hangs for five minutes is a
   bad keep-alive. The defaults are 30 s and two retries, both configurable.
 * **No credentials in logs.** The URI is printed without its credentials (the

@@ -418,9 +418,12 @@ whether a document goes through spaCy at all.
 
 ## Keep-alive (`keep_alive.py`)
 
-AuraDB Free pauses an instance after **72 hours without a connection**. The
-scheduled workflow runs `python keep_alive.py` daily; the script executes the
-smallest possible query, `RETURN 1 AS ok`, and nothing else.
+AuraDB Free pauses an instance after **72 hours without a write query**
+(read queries do not reset the timer). The Worker cron performs the bounded
+heartbeat write; the scheduled workflow runs `python keep_alive.py` daily, which
+executes the smallest possible query, `RETURN 1 AS ok`, and nothing else. That
+read-only ping proves the pipeline's credentials and wakes an already-paused
+instance — it is a reachability check, not the pause protection itself.
 
 | Env var | Field | Default | Notes |
 | --- | --- | --- | --- |

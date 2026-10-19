@@ -250,10 +250,11 @@ jobs:
           retention-days: 1
 
   keep-alive:
-    # AuraDB Free pauses an instance after 72 h without a connection. The daily
-    # scheduled run pings it with RETURN 1 (no writes, no NLP dependencies).
-    # It is a separate job so a failed or disabled ingestion does not let the
-    # database fall asleep.
+    # AuraDB Free pauses an instance after 72 h without a *write*. The Worker
+    # cron performs that bounded write; this daily job pings with RETURN 1 (no
+    # writes, no NLP dependencies) to prove the pipeline credentials work and to
+    # wake an instance that is already paused. It is a separate job so a failed
+    # or disabled ingestion cannot hide a dead heartbeat.
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 10
