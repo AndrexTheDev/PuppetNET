@@ -1440,3 +1440,18 @@ def test_engine_accepts_a_real_neo4j_client_in_dry_run(settings):
         assert maintenance.dry_run is True
         report = maintenance.capacity()
         assert report.entities == 0
+
+
+def test_dry_run_is_reported_by_every_skipped_stage(settings):
+    """A dry run must not leave a stage looking like it wrote something."""
+    client = MaintenanceClient(reads={}, dry_run=True)
+    report = engine(dataclasses.replace(settings, dry_run=True), client).run(
+        dedupe=False, prune=False, centrality=False,
+    )
+    assert report.dry_run is True
+    assert report.dedupe.status == "skipped"
+    assert report.dedupe.dry_run is True
+    assert report.prune.dry_run is True
+    assert report.centrality.dry_run is True
+    assert report.puppet_master.dry_run is True
+    assert report.cycles.dry_run is True

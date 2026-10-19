@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "puppetnet"
-version = "1.6.0"
+version = "1.7.0"
 description = "Serverless OSINT harvesting + NLP graph-ingestion engine for PuppetNET"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "PuppetNET maintainers" }]
-keywords = ["osint", "nlp", "gliner", "gliner-multi", "workers-ai", "spacy", "neo4j", "graph", "serverless", "ingestion"]
+keywords = ["osint", "nlp", "gliner", "gliner-multi", "workers-ai", "spacy", "neo4j", "apoc", "graph", "graph-algorithms", "serverless", "ingestion"]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
@@ -72,7 +72,7 @@ Homepage = "https://github.com/AndrexTheDev/PuppetNET"
 Issues = "https://github.com/AndrexTheDev/PuppetNET/issues"
 
 [tool.setuptools]
-py-modules = ["ingest"]
+py-modules = ["ingest", "entity_resolution", "keep_alive", "graph_analytics"]
 
 [tool.setuptools.packages.find]
 include = ["puppetnet*", "nlp*"]

@@ -244,6 +244,21 @@ class GraphWriter:
     # ------------------------------------------------------------------ #
     # AuraDB Free node budget
     # ------------------------------------------------------------------ #
+    def _admission_cap(self) -> int:
+        """The population at which new entity nodes stop being admitted.
+
+        Two numbers govern the free tier: the physical ``aura_node_cap`` (the
+        AuraDB ceiling, used for utilisation reporting) and ``aura_node_stop``
+        (90 % of it by default). Writing stops at the *lower* of the two, so the
+        database keeps a 10 % reserve for merges, repairs and manual analysis.
+        ``aura_node_stop=0`` restores the old "fill to the ceiling" behaviour.
+        """
+        hard = int(getattr(self.settings, "aura_node_cap", 0) or 0)
+        stop = int(getattr(self.settings, "aura_node_stop", 0) or 0)
+        if hard <= 0:
+            return 0
+        return min(hard, stop) if stop > 0 else hard
+
     def entity_node_count(self) -> int | None:
         """How many :Entity nodes the graph already holds (``None`` if unknown).
 
@@ -253,7 +268,7 @@ class GraphWriter:
         """
         if self._node_count is not None:
             return self._node_count
-        if self.client.dry_run or int(getattr(self.settings, "aura_node_cap", 0) or 0) <= 0:
+        if self.client.dry_run or self._admission_cap() <= 0:
             return None
         try:
             rows = self.client.read(schema.ENTITY_NODE_COUNT)
@@ -277,7 +292,7 @@ class GraphWriter:
         are admitted and the rest are reported, so a long-running deployment
         degrades gracefully instead of failing every write.
         """
-        cap = int(getattr(self.settings, "aura_node_cap", 0) or 0)
+        cap = self._admission_cap()
         if cap <= 0 or not resolved:
             return list(resolved)
         count = self.entity_node_count()
@@ -298,8 +313,8 @@ class GraphWriter:
         self.summary.entities_capped += len(refused)
         self._node_count = count + len(admitted)
         logger.warning(
-            "AuraDB node budget reached (%d/%d): refusing %d new entity node(s), keeping the %d strongest",
-            count, cap, len(refused), len(admitted),
+            "AuraDB node budget reached (%d/%d, hard ceiling %s): refusing %d new entity node(s), keeping the %d strongest",
+            count, cap, getattr(self.settings, "aura_node_cap", "?"), len(refused), len(admitted),
         )
         return existing + admitted
 

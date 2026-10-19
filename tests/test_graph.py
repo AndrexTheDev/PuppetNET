@@ -802,8 +802,17 @@ class ScriptedGraphClient(Neo4jClient):
         return []
 
 
-def budget_writer(live_settings, *, node_count: int, alias_rows=None, cap: int = 200_000):
-    settings = dataclasses.replace(live_settings, aura_node_cap=cap, neo4j_batch_size=50)
+def budget_writer(live_settings, *, node_count: int, alias_rows=None, cap: int = 200_000, stop: int | None = None):
+    # ``stop`` defaults to ``cap`` here so the historical tests keep asserting
+    # the admission behaviour at the ceiling they pass in. The production
+    # default is 180 000 (90 % of 200 000); see
+    # ``test_default_stop_is_ninety_percent_of_the_ceiling``.
+    settings = dataclasses.replace(
+        live_settings,
+        aura_node_cap=cap,
+        aura_node_stop=cap if stop is None else stop,
+        neo4j_batch_size=50,
+    )
     client = ScriptedGraphClient(
         settings,
         reads={
@@ -883,6 +892,45 @@ def test_node_budget_is_not_probed_in_dry_run(dry_settings):
     assert not any("count(e)" in entry["query_preview"] for entry in recorded(client))
 
 
+def test_default_stop_is_ninety_percent_of_the_ceiling():
+    """The shipped configuration stops at 180k, not at the 200k cliff."""
+    from puppetnet.config import Settings
+
+    defaults = Settings()
+    assert defaults.aura_node_cap == 200_000
+    assert defaults.aura_node_stop == 180_000
+    assert defaults.aura_node_stop == int(defaults.aura_node_cap * 0.9)
+
+
+def test_the_early_stop_refuses_newcomers_before_the_ceiling(live_settings):
+    """180k is the stop: a 179 999-node graph still admits one newcomer."""
+    graph, _ = budget_writer(live_settings, node_count=179_999, cap=200_000, stop=180_000)
+    written, resolved = graph.write_entities([entity("Gazprom"), entity("Rosneft")])
+    assert written == 1
+    assert graph.summary.entities_capped == 1
+
+    full, _ = budget_writer(
+        live_settings,
+        node_count=180_000,
+        cap=200_000,
+        stop=180_000,
+        alias_rows=[
+            {
+                "canonical_key": "ORGANIZATION:gazprom-8d3be1d8",
+                "entity_type": "Organization",
+                "name": "Gazprom",
+                "aliases": ["Gazprom"],
+                "mention_count": 8,
+            }
+        ],
+    )
+    written, resolved = full.write_entities([entity("Gazprom"), entity("Rosneft")])
+    # The known node still updates; the newcomer is refused at the 90 % stop.
+    assert written == 1
+    assert [node.name for node in resolved] == ["Gazprom"]
+    assert full.summary.entities_capped == 1
+
+
 def test_node_budget_can_be_disabled(live_settings):
     graph, client = budget_writer(live_settings, node_count=10_000_000, cap=0)
     written, _ = graph.write_entities([entity("Gazprom"), entity("Rosneft")])
@@ -937,7 +985,7 @@ def test_run_summary_reports_the_node_budget(live_settings):
                 captured.update((params or {}).get("properties", {}))
             return super().write(query, params, rows=rows, kind=kind)
 
-    spy_settings = dataclasses.replace(live_settings, aura_node_cap=100)
+    spy_settings = dataclasses.replace(live_settings, aura_node_cap=100, aura_node_stop=100)
     spy = Spy(spy_settings, reads={"count(e) AS nodes": [{"nodes": 100}], "e.aliases AS aliases": []}, sleeper=RecordingSleeper())
     spy_graph = GraphWriter(spy, spy_settings, stats=IngestStats())
     spy_graph.begin_run("run-cap")

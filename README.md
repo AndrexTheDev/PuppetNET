@@ -49,6 +49,12 @@ The v1.6 extraction pipeline adds sentence-aligned 384-token GLiNER chunking and
 Cloudflare Workers AI triple extraction within the free 10,000-neuron/day tier
 (`TRIPLET_BACKEND=cloudflare`). See [the NLP pipeline guide](docs/nlp-pipeline.md#multilingual-gliner--workers-ai-v16)
 for labels, cost arithmetic, graph confidence and the opt-in live tests.
+The v1.7 graph layer adds APOC entity resolution (`entity_resolution.py`), an exact
+ownership-cycle detector and a Cypher `PUPPET_MASTER_OF` blend of PageRank, betweenness and
+in-degree (`graph_analytics.py --puppet-master --cycles`). New entity nodes stop at 90 % of
+the free-tier ceiling (`AURA_NODE_STOP=180000`), and a daily `RETURN 1` heartbeat
+(`keep_alive.py`) keeps the instance from pausing after 72 idle hours. See
+[operations](docs/operations.md#the-180-000-node-stop).
 Root compatibility symlinks retain the previous Python/console/tooling paths without
 source duplication; use a symlink-capable checkout.
 

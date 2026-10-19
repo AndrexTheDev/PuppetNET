@@ -118,6 +118,17 @@ jobs:
         run: |
           pip install 'torch>=2.2,<3' --index-url https://download.pytorch.org/whl/cpu
           pip install -e './packages/pipeline[gliner]'
+
+      - name: Free-tier guard (180,000-node stop)
+        shell: bash
+        run: |
+          code=0
+          python graph_analytics.py --guard --json || code=$?
+          if [ "$code" -eq 4 ]; then
+            echo '::warning::AuraDB Free stop engaged (>= 180,000 nodes); new entity nodes will be refused'
+          elif [ "$code" -ne 0 ]; then
+            exit "$code"
+          fi
       - uses: actions/cache@v4
         with:
           path: .cache/huggingface
@@ -198,6 +209,28 @@ jobs:
           elif [ "$code" -ne 0 ]; then
             exit "$code"
           fi
+      - name: APOC entity resolution
+        shell: bash
+        run: |
+          code=0
+          python entity_resolution.py --json || code=$?
+          if [ "$code" -eq 3 ]; then
+            echo '::warning::entity resolution partially completed; inspect reports/entity_resolution_*.json'
+          elif [ "$code" -ne 0 ]; then
+            exit "$code"
+          fi
+
+      - name: Graph analytics (dedupe, cycles, Cypher PUPPET_MASTER_OF)
+        shell: bash
+        run: |
+          code=0
+          python graph_analytics.py --all --json || code=$?
+          if [ "$code" -eq 3 ]; then
+            echo '::warning::graph analytics partially completed; inspect reports/graph_maintenance_*.json'
+          elif [ "$code" -ne 0 ]; then
+            exit "$code"
+          fi
+
       - name: Save Workers AI neuron ledger
         if: always() && vars.TRIPLET_BACKEND == 'cloudflare'
         continue-on-error: true
@@ -213,3 +246,36 @@ jobs:
           path: reports/
           if-no-files-found: ignore
           retention-days: 1
+
+  keep-alive:
+    # AuraDB Free pauses an instance after 72 h without a connection. The daily
+    # scheduled run pings it with RETURN 1 (no writes, no NLP dependencies).
+    # It is a separate job so a failed or disabled ingestion does not let the
+    # database fall asleep.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      DRY_RUN: 'false'
+      KEEP_ALIVE_TIMEOUT_SECONDS: '30'
+      KEEP_ALIVE_RETRIES: '2'
+      NEO4J_URI: ${{ secrets.NEO4J_URI }}
+      NEO4J_USERNAME: ${{ secrets.NEO4J_USERNAME }}
+      NEO4J_PASSWORD: ${{ secrets.NEO4J_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require actual database credentials
+        shell: bash
+        run: |
+          test -n "$NEO4J_URI" || { echo 'Missing NEO4J_URI'; exit 1; }
+          test -n "$NEO4J_USERNAME" || { echo 'Missing NEO4J_USERNAME'; exit 1; }
+          test -n "$NEO4J_PASSWORD" || { echo 'Missing NEO4J_PASSWORD'; exit 1; }
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: packages/pipeline/pyproject.toml
+      - name: Install the pipeline (no model weights, no inference API)
+        run: pip install -e './packages/pipeline'
+      - name: Keep the free-tier instance awake
+        run: python keep_alive.py --json

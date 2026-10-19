@@ -19,7 +19,7 @@ Validation happens in `Settings.validate()` and raises `ConfigError` (exit code 
 a non-dry run needs `NEO4J_URI` + `NEO4J_PASSWORD`; at least one of the relay or the
 direct fallback must be available; `MAX_RUNTIME_SECONDS ≥ 60`; `NEO4J_BATCH_SIZE` in
 `[1, 10000]`; `MIN_EDGE_CONFIDENCE` in `[0, 1]`; `AURA_NODE_CAP ≥ 0`;
-`ENTITY_RESOLVER_LIMIT ≥ 1000`.
+`0 ≤ AURA_NODE_STOP ≤ AURA_NODE_CAP`; `ENTITY_RESOLVER_LIMIT ≥ 1000`.
 
 ---
 
@@ -37,7 +37,8 @@ direct fallback must be available; `MAX_RUNTIME_SECONDS ≥ 60`; `NEO4J_BATCH_SI
 | `NEO4J_BATCH_SIZE` | `neo4j_batch_size` | `500` | Rows per `UNWIND` statement. |
 | `NEO4J_MAX_RETRIES` | `neo4j_max_retries` | `4` | Transient errors only; auth errors never retry. |
 | `NEO4J_ENSURE_SCHEMA` | `neo4j_ensure_schema` | `true` | Idempotent DDL on boot. A rejected statement is logged, never fatal. |
-| `AURA_NODE_CAP` | `aura_node_cap` | `200000` | Free-tier ceiling. Existing nodes always update; new nodes are admitted strongest-first until the budget is spent, then counted as `entities_capped` in the run summary. `0` disables the guard. |
+| `AURA_NODE_CAP` | `aura_node_cap` | `200000` | The **physical** AuraDB Free ceiling, used for utilisation reporting. Existing nodes always update; new nodes are admitted strongest-first until the budget is spent, then counted as `entities_capped`. `0` disables the guard. |
+| `AURA_NODE_STOP` | `aura_node_stop` | `180000` | The **early stop**: 90 % of the ceiling. New entity nodes are refused here, not at 200 000, so merges/repairs/analyst writes still have room. Must not exceed `AURA_NODE_CAP`; `0` falls back to the physical ceiling. Reported by `--capacity` and enforced by `--guard` (exit 4). |
 | `AURA_EDGE_CAP` | `aura_edge_cap` | `400000` | The relationship ceiling that goes with it. Reported as `edge_utilisation` by `graph_analytics.py --capacity`; crossing `PRUNE_CAPACITY_TARGET` escalates pruning. `0` disables the guard. |
 | `ENTITY_RESOLVER_LIMIT` | `entity_resolver_limit` | `200000` | Rows loaded into the cross-run alias index. Also how the node budget knows which nodes exist — keep it ≥ `AURA_NODE_CAP`. |
 
@@ -198,6 +199,66 @@ them merges with no further evidence; a pair that *disagrees on `entity_type`* n
 and is counted in `type_conflicts` instead — the same identifier on a person and an
 organisation is a data error worth surfacing, not a duplicate to collapse.
 
+### APOC entity resolution (`entity_resolution.py`)
+
+A pre-pass that blocks names on two stored keys, scores pairs **inside Neo4j**
+with `apoc.text.jaroWinklerDistance` and `apoc.text.levenshteinSimilarity`, and
+merges with `apoc.refactor.mergeNodes`. It runs before the fuzzy resolver above,
+which keeps its own policy for the cases APOC cannot see efficiently.
+
+| Env var | Field | Default | Notes |
+| --- | --- | --- | --- |
+| `RESOLUTION_ENABLED` | `resolution_enabled` | `true` | `false` ⇒ no read, no write, `status: disabled`. |
+| `RESOLUTION_THRESHOLD` | `resolution_threshold` | `0.90` | Weighted gate: 60 % Jaro-Winkler + 40 % Levenshtein. **Each** metric must also clear `threshold − 0.05` / `threshold − 0.10`, so one generous metric cannot carry a bad pair. |
+| `RESOLUTION_MAX_MERGES` | `resolution_max_merges` | `250` | Blast-radius cap. One node is merged at most once per run. |
+| `RESOLUTION_ENTITY_LIMIT` | `resolution_entity_limit` | `20000` | Strongest entities (degree first) loaded into the blocking pass. |
+| `RESOLUTION_BLOCK_PREFIX` | `resolution_block_prefix` | `4` | Characters of the folded name used for the orthographic block. |
+| `RESOLUTION_COOCCURRENCE_DAYS` | `resolution_cooccurrence_days` | `365` | A shared `Document` inside this window protects a pair (the homonym rule). If the guard query fails, **nothing** is merged: it fails closed. |
+
+Merge configuration is deliberate and not configurable: `properties: 'discard'`
+(the winner was already rolled up in Cypher), `mergeRels: false` (evidence
+relationships are moved, never folded), `produceSelfRef: false`. After merging,
+an **evidence audit** compares the winner's `EVIDENCED_BY` / `MENTIONS` counts
+with the pre-merge sums; a shortfall sets `evidence_integrity: false`. Without
+APOC the pass scores in Python but refuses to merge — never hand-delete nodes.
+
+### Cypher `PUPPET_MASTER_OF` (`puppetnet/graph/puppet_master.py`)
+
+The ingestion-time scorer in `puppetnet/graph/analytics.py` writes relation rows
+from the current batch. This second layer recomputes influence **against the
+whole graph** and writes it back in Cypher (`graph_analytics.py --puppet-master`,
+included in `--all`):
+
+| Env var | Field | Default | Notes |
+| --- | --- | --- | --- |
+| `PUPPET_MASTER_CYPHER_ENABLED` | `puppet_master_cypher_enabled` | `true` | | |
+| `PUPPET_MASTER_MAX_NODES` | `puppet_master_max_nodes` | `5000` | Bounded subgraph (strongest by degree). AuraDB Free has no GDS PageRank, so the power iteration is plain Cypher and must fit memory. |
+| `PUPPET_MASTER_PAGERANK_ITERATIONS` | `puppet_master_pagerank_iterations` | `12` | Damped iterations. |
+| `PUPPET_MASTER_DAMPING` | `puppet_master_damping` | `0.85` | Within `(0, 1)`. |
+| `PUPPET_MASTER_PAGERANK_WEIGHT` | `puppet_master_pagerank_weight` | `0.50` | Relative weight; components are normalised by their maximum before the blend. |
+| `PUPPET_MASTER_BETWEENNESS_WEIGHT` | `puppet_master_betweenness_weight` | `0.30` | GDS `betweenness` when available, Brandes otherwise (the Aura Free path). |
+| `PUPPET_MASTER_IN_DEGREE_WEIGHT` | `puppet_master_in_degree_weight` | `0.20` | Counted in Cypher with `count(DISTINCT r)` over control edges. |
+
+The blend and the `MERGE (p)-[:PUPPET_MASTER_OF]->(t)` derivation are single
+Cypher statements; PageRank and in-degree are Cypher iterations; only Brandes
+betweenness runs in Python, because Cypher has no such algorithm without GDS.
+
+### Circular ownership (`--cycles`)
+
+A circular structure is a strongly connected component with more than one
+member, or a self-loop. The detector loads the ownership edge set (bounded by
+`CYCLE_EDGE_LIMIT`), runs Tarjan in Python — exact and linear — and marks the
+member nodes with `ownership_cycle_id` / `ownership_cycle_length` in Cypher.
+A broken cycle loses its mark; a scan that hit its edge limit never clears
+marks, because a truncated view cannot prove a cycle is gone.
+
+| Env var | Field | Default | Notes |
+| --- | --- | --- | --- |
+| `CYCLE_DETECTION_ENABLED` | `cycle_detection_enabled` | `true` | |
+| `CYCLE_EDGE_LIMIT` | `cycle_edge_limit` | `50000` | Ownership edges loaded per run. |
+| `CYCLE_MAX_STARTS` | `cycle_max_starts` | `2000` | Cyclic components reported per run. |
+| `CYCLE_MAX_LENGTH` | `cycle_max_length` | `12` | Longest concrete path reported per component. |
+
 ### Capacity pruning
 
 | Env var | Field | Default | Notes |
@@ -343,3 +404,20 @@ whether a document goes through spaCy at all.
 | `companies_house` | `queries`, `company_numbers`, `include_psc`, `include_officers` |
 | `register_files` | `files` (declarative column→entity/relation mappings), `row_limit` |
 | `rss` | `feeds`, `fetch_full_articles`, `entry_content_max_chars`, `per_feed_limit`, `recent_days`, `language` |
+
+## Keep-alive (`keep_alive.py`)
+
+AuraDB Free pauses an instance after **72 hours without a connection**. The
+scheduled workflow runs `python keep_alive.py` daily; the script executes the
+smallest possible query, `RETURN 1 AS ok`, and nothing else.
+
+| Env var | Field | Default | Notes |
+| --- | --- | --- | --- |
+| `KEEP_ALIVE_TIMEOUT_SECONDS` | `keep_alive_timeout_seconds` | `30` | Driver connection timeout for the ping. |
+| `KEEP_ALIVE_RETRIES` | `keep_alive_retries` | `2` | Retries before exit code 2. |
+
+The ping is read-only: no node, relationship or property is created, so it can
+never consume the 200 000-node budget. A first response slower than 5 s is
+reported as `woke_from_pause: true` — that is the client-visible symptom of a
+resumed instance. `--loop --interval-minutes 360` supports a long-running host;
+the scheduled job uses `--once` (the default).

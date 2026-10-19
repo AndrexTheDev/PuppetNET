@@ -34,6 +34,22 @@ The `nlp/` package mirrors `puppetnet/parsing/` for the multilingual path:
 | `nlp/triplet_extractor.py` | Workers AI triples with a 10,000-neuron/day ledger |
 | `nlp/graph_bridge.py` | Triples → existing `Entity`/`Relation` model |
 
+## Graph maintenance (v1.7)
+
+| Module | Purpose |
+| --- | --- |
+| `entity_resolution.py` | APOC Jaro-Winkler/Levenshtein blocking, `apoc.refactor.mergeNodes`, evidence audit |
+| `graph_analytics.py` | Dedupe/prune/centrality plus `--puppet-master`, `--cycles` and `--guard` |
+| `puppetnet/graph/puppet_master.py` | Cypher PageRank + betweenness + in-degree blend, SCC cycle detection, 180k guard |
+| `keep_alive.py` | Read-only `RETURN 1` heartbeat against AuraDB Free's 72-hour pause |
+
+```sh
+python entity_resolution.py --dry-run --json      # plan APOC merges
+python graph_analytics.py --guard --json          # exit 4 at 180 000 nodes
+python graph_analytics.py --all --json            # dedupe → prune → centrality → puppet-master → cycles
+python keep_alive.py --json                       # the daily heartbeat
+```
+
 ```sh
 # entity extraction only (torch)
 pip install 'torch>=2.2,<3' --index-url https://download.pytorch.org/whl/cpu
