@@ -379,7 +379,8 @@ async function provisionSecrets(existing = null) {
     const value = randomBytes(32).toString('hex');
     values.set(name, value);
     generated.set(name, value);
-    ok(`${name}: generated a new 32-byte token`);
+    if (DRY) log(`  plan  ${name}: would generate a new 32-byte token`);
+    else ok(`${name}: generated a new 32-byte token`);
   }
 
   if (!DRY && values.size) writeGenerated(generated);
