@@ -4069,10 +4069,18 @@ async function handleStatus(request, url, env, cfg) {
   // A live probe costs two full graph scans. It is allowed for a public
   // dashboard only when the operator explicitly opted in *and* the request is
   // authenticated; `STATUS_PUBLIC` covers the read-only view, not the probe.
+  const lockSeconds = authLockSeconds(request, env, cfg);
+  if (lockSeconds > 0) {
+    return errorResponse("auth_locked", "Too many failed attempts", 429, { retry_after: lockSeconds }, env);
+  }
   const auth = statusAuthorised(request, env, { allowPublic: !live });
   if (!auth.ok) {
+    // The status token is a bearer secret like any other: guessing it must be
+    // as expensive as guessing the relay or graph token.
+    recordAuthFailure(request, env, cfg);
     return errorResponse("unauthorised", auth.reason, 401, { headers: { "WWW-Authenticate": 'Bearer realm="puppetnet-status"' } }, env);
   }
+  clearAuthFailures(request, env);
   const snapshot = await statusSnapshot(env, cfg, { live });
   if (url.pathname === "/status.json") {
     return jsonResponse({ ...snapshot, auth_mode: auth.mode }, 200, { "X-Robots-Tag": "noindex, nofollow" }, env);
@@ -4081,13 +4089,16 @@ async function handleStatus(request, url, env, cfg) {
 }
 
 async function handleStatusRefresh(request, env, cfg) {
+  const lockSeconds = authLockSeconds(request, env, cfg);
+  if (lockSeconds > 0) {
+    return errorResponse("auth_locked", "Too many failed attempts", 429, { retry_after: lockSeconds }, env);
+  }
   const auth = statusAuthorised(request, env, { allowPublic: false });
   if (!auth.ok) {
+    recordAuthFailure(request, env, cfg);
     return errorResponse("unauthorised", auth.reason, 401, { headers: { "WWW-Authenticate": 'Bearer realm="puppetnet-status"' } }, env);
   }
-  if (authLockSeconds(request, env, cfg) > 0) {
-    return errorResponse("auth_locked", "Too many failed attempts", 429, {}, env);
-  }
+  clearAuthFailures(request, env);
   const snapshot = await statusSnapshot(env, cfg, { live: true });
   return jsonResponse({ ok: snapshot.ok !== false, ...snapshot, auth_mode: auth.mode }, 200, { "X-Robots-Tag": "noindex, nofollow" }, env);
 }

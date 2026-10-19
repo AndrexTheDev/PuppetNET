@@ -521,6 +521,24 @@ await check("the dashboard is token-protected, opt-in public, and escapes errors
   assert.equal(json.body.cached, true);
 });
 
+await check("the status token is protected by the same per-address lockout", async () => {
+  const kv = makeKv(new Map([["health:snapshot", JSON.stringify(storedSnapshot())]]));
+  const env = { ...BASE_ENV, RATE_LIMIT_KV: kv, AUTH_FAILURE_LIMIT: "3" };
+  const attacker = { "cf-connecting-ip": "198.51.100.88" };
+  for (let index = 0; index < 3; index += 1) {
+    const res = await call("/status.json", { env, token: "not-the-status-token", headers: attacker });
+    assert.equal(res.status, 401, `attempt ${index + 1}`);
+  }
+  const locked = await call("/status.json", { env, token: BASE_ENV.STATUS_TOKEN, headers: attacker });
+  assert.equal(locked.status, 429);
+  assert.equal(locked.body.error.code, "auth_locked");
+  assert.ok(Number(locked.body.error.retry_after) >= 1);
+
+  const other = await call("/status.json", { env, token: BASE_ENV.STATUS_TOKEN, headers: { "cf-connecting-ip": "198.51.100.89" } });
+  assert.equal(other.status, 200, "other addresses keep their access");
+  internals.resetRateLimits();
+});
+
 await check("/status degrades honestly when no snapshot exists yet", async () => {
   const env = { ...BASE_ENV, STATUS_PUBLIC: "true" }; // no KV at all
   const res = await call("/status", { env, token: null });

@@ -244,8 +244,9 @@ escaped (`escapeHtml`), including error messages that originate in Neo4j.
   closed when no token is configured.
 * Ten failed attempts from one address (`AUTH_FAILURE_LIMIT`) lock that address
   for 15 minutes (`AUTH_FAILURE_WINDOW_MS`). The lock covers the relay, graph and
-  status token checks; a correct token from a locked address is refused too, and
-  a different address is unaffected.
+  status token checks — `/status` and `/status/refresh` record failures exactly
+  like `/graph/*` and `/fetch`; a correct token from a locked address is refused
+  too, and a different address is unaffected.
 * The lock is in-isolate, like the fixed rate window. A distributed brute-force
   defence would need a Durable Object or a paid WAF; for a single-token API this
   is the right cost/benefit point, and it is documented rather than implied.
@@ -325,4 +326,5 @@ cache, credential/port/zone refusal, redirect-to-metadata refusal, cross-origin
 credential stripping, HTTPS downgrade, redirect loops, `resolve_override`
 removal, KV lease acquisition/contention/expiry/release, the memory fallback,
 the keep-alive **write**, duplicate suppression, snapshot success/failure, cron
-expression shape, dashboard rendering/escalation/auth, and the security headers.
+expression shape, dashboard rendering/escalation/auth, the per-address status
+lockout, the no-rewrite rule for fresh snapshots, and the security headers.
