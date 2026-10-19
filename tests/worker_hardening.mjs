@@ -512,6 +512,8 @@ await check("the dashboard is token-protected, opt-in public, and escapes errors
   // A live probe is never public, even when the read-only view is.
   const refresh = await call("/status/refresh", { env: publicEnv, method: "POST", token: null });
   assert.equal(refresh.status, 401);
+  const live = await call("/status?live=1", { env: publicEnv, token: null });
+  assert.equal(live.status, 401, "?live=1 must not be reachable through the public view");
 
   const json = await call("/status.json", { env, token: BASE_ENV.GRAPH_API_TOKEN });
   assert.equal(json.status, 200);

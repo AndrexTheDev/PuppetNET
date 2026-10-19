@@ -46,6 +46,12 @@ decision, not a tuning knob.
    optional `CLIENT_KEY_SALT`); `X-Forwarded-For` is deliberately ignored because
    a caller controls it.
 
+The relay's `/fetch` is deliberately **not** part of this budget: it never touches
+AuraDB. It keeps its own per-host token buckets and the 900/min `GLOBAL_RPM` safety
+valve, which exist for a different reason (not getting the harvester blocked).
+Capping the relay at 25/min would make the daily news run impossible without
+protecting a database it does not use.
+
 The KV sync for the graph bucket uses `GRAPH_KV_SYNC_INTERVAL_MS=300000`
 (5 minutes), not the relay's 20-second cadence: a constantly-used console would
 otherwise spend ~1 440 writes/day on publishing a bucket, i.e. more than the
