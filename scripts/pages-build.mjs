@@ -13,4 +13,8 @@ for (const args of [['scripts/emit-seo-files.mjs', '--build-gate'], ['--check', 
 const result = spawnSync('npm', ['run', 'build', '-w', '@puppetnet/web'], {
   stdio: 'inherit', env: { ...process.env, NEXT_TELEMETRY_DISABLED: '1' }
 });
-process.exit(result.status ?? 1);
+if (result.status !== 0) process.exit(result.status ?? 1);
+// The deployment directory is the product: verify the exported files, worker
+// format and Cloudflare headers only after `next build` has written out/.
+const exported = spawnSync(process.execPath, ['tests/export_smoke.mjs'], { stdio: 'inherit' });
+process.exit(exported.status ?? 1);

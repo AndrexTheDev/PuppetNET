@@ -29,6 +29,7 @@ npm run audit                     # static, offline repository consistency ledge
 npm run emit:seo -- --origin https://<your-pages-origin>   # sitemaps + Sitemap: lines
 npm run test:scaffold             # monorepo/build configuration contracts
 npm run test:dashboard            # filters, LoD, evidence, 120k-element fixture
+npm run test:export               # after build: assets, worker format, Pages headers
 npm run deploy -w @puppetnet/worker -- --dry-run --outdir /tmp/puppetnet-worker
 python -m venv .venv
 . .venv/bin/activate

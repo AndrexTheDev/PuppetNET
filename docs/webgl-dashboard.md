@@ -118,14 +118,31 @@ npm ci
 npm run test:dashboard
 npm run test:scaffold
 npm run ci:pages
+npm run test:export       # after npm run build: validates apps/web/out itself
 npm run ci:worker
 ```
 
-The Pages native build gate now runs the 10 dashboard core tests in addition to the
-existing 32 console checks, then TypeScript checking and the static export. Tests cover
-validation, filtering, zero/invalid coordinates, evidence directions/URLs, Cypher
-parameter separation and conservation of the full 120k-element fixture under LoD.
-The Python-only GitHub workflow remains unchanged.
+The Pages native build gate runs the 10 dashboard core tests in addition to the
+existing 32 console checks, TypeScript checking and the static export, then
+`test:export`. That post-build gate verifies that every root-relative asset in the
+exported HTML exists, that the ForceAtlas2 bundle is still a classic (non-module)
+worker chunk referenced by the dashboard, that no `_next/server` output leaked into
+`out/`, and that `_headers` caches content-hashed assets immutably while revalidating
+the dashboard shell. Tests cover validation, filtering, zero/invalid coordinates,
+evidence directions/URLs, Cypher parameter separation and conservation of the full
+120k-element fixture under LoD. The Python-only GitHub workflow remains unchanged.
+
+`npm run test:export` also documents the Cloudflare Pages contract:
+
+```
+apps/web/out/
+  index.html, dashboard/index.html, 404.html, robots.txt
+  _headers        -> immutable /_next/static/*, no-cache HTML
+  _next/static/   -> hashed JS/CSS and the classic ForceAtlas2 worker
+```
+
+Serve it exactly as Pages would with `npm run preview`
+(`python3 -m http.server 8080 --directory apps/web/out --bind 0.0.0.0`).
 
 Optional browser acceptance (serve the static output on a separate terminal):
 

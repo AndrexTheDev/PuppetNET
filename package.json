@@ -16,10 +16,12 @@
     "serve": "python3 -m http.server 8080 --directory web --bind 0.0.0.0",
     "dev": "npm run dev -w @puppetnet/web",
     "build": "npm run build -w @puppetnet/web",
+    "preview": "python3 -m http.server 8080 --directory apps/web/out --bind 0.0.0.0",
     "test:scaffold": "node --test tests/scaffold.test.mjs",
     "ci:pages": "node scripts/pages-build.mjs",
     "ci:worker": "node scripts/worker-build.mjs",
-    "test:dashboard": "node --import tsx --test tests/dashboard.test.ts"
+    "test:dashboard": "node --import tsx --test tests/dashboard.test.ts",
+    "test:export": "node tests/export_smoke.mjs"
   },
   "devDependencies": {
     "cose-base": "2.2.0",
