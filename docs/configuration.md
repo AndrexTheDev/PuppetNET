@@ -19,7 +19,7 @@ Validation happens in `Settings.validate()` and raises `ConfigError` (exit code 
 a non-dry run needs `NEO4J_URI` + `NEO4J_PASSWORD`; at least one of the relay or the
 direct fallback must be available; `MAX_RUNTIME_SECONDS ≥ 60`; `NEO4J_BATCH_SIZE` in
 `[1, 10000]`; `MIN_EDGE_CONFIDENCE` in `[0, 1]`; `AURA_NODE_CAP ≥ 0`;
-`0 ≤ AURA_NODE_STOP ≤ AURA_NODE_CAP`; `ENTITY_RESOLVER_LIMIT ≥ 1000`.
+`AURA_NODE_STOP ≥ 0` (and `≤ AURA_NODE_CAP` when a cap is set); `ENTITY_RESOLVER_LIMIT ≥ 1000`.
 
 ---
 

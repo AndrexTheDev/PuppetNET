@@ -429,3 +429,15 @@ def test_reports_are_json_serialisable(settings, tmp_path):
 def test_puppet_master_report_round_trips_through_json(settings):
     report = pm.PuppetMasterReport(run_id="x", generated_at="now", top=[{"canonical_key": "A"}])
     assert json.loads(json.dumps(report.to_dict()))["top"][0]["canonical_key"] == "A"
+
+
+def test_stop_threshold_honours_zero_and_the_physical_cap(settings):
+    assert pm.stop_threshold(settings) == 180_000
+    assert pm.stop_threshold(dataclasses.replace(settings, aura_node_stop=150_000)) == 150_000
+    assert pm.stop_threshold(dataclasses.replace(settings, aura_node_stop=0)) == 200_000
+    assert pm.stop_threshold(
+        dataclasses.replace(settings, aura_node_stop=0, aura_node_cap=120_000)
+    ) == 120_000
+    assert pm.stop_threshold(
+        dataclasses.replace(settings, aura_node_stop=0, aura_node_cap=0)
+    ) == 200_000

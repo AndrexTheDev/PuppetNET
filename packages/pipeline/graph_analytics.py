@@ -90,6 +90,7 @@ from puppetnet.graph.puppet_master import (  # noqa: E402
     CypherAnalytics,
     PuppetMasterReport,
     capacity_guard,
+    stop_threshold,
 )
 from puppetnet.logging_utils import banner, configure_logging, get_logger, human_int, timed  # noqa: E402
 from puppetnet.models import is_safe_relationship_type  # noqa: E402
@@ -1447,7 +1448,7 @@ class GraphMaintenance:
             node_limit=int(getattr(self.settings, "aura_node_cap", AURA_NODE_LIMIT) or AURA_NODE_LIMIT),
             edge_limit=int(getattr(self.settings, "aura_edge_cap", AURA_EDGE_LIMIT) or AURA_EDGE_LIMIT),
             target=float(getattr(self.settings, "prune_capacity_target", CAPACITY_TARGET_DEFAULT) or CAPACITY_TARGET_DEFAULT),
-            stop_threshold=int(getattr(self.settings, "aura_node_stop", 0) or 0) or AURA_NODE_STOP,
+            stop_threshold=stop_threshold(self.settings),
         )
         try:
             rows = self.client.read(CAPACITY_COUNTS)
@@ -1465,9 +1466,12 @@ class GraphMaintenance:
         report.semantic_edges = int(row.get("semantic_edges") or 0)
         report.all_edges = int(row.get("all_edges") or 0)
         report.offshore_nodes = int(row.get("offshore_nodes") or 0)
-        report.node_utilisation = round(report.entities / report.node_limit, 4) if report.node_limit else 0.0
+        # Aura counts every node, not only :Entity. Utilisation must use the
+        # same population as the guard, or --capacity can report 60 % while
+        # --guard has already engaged the stop.
+        report.node_utilisation = round(report.all_nodes / report.node_limit, 4) if report.node_limit else 0.0
         report.edge_utilisation = round(report.all_edges / report.edge_limit, 4) if report.edge_limit else 0.0
-        report.headroom_nodes = max(0, report.node_limit - report.entities)
+        report.headroom_nodes = max(0, report.node_limit - report.all_nodes)
         report.headroom_edges = max(0, report.edge_limit - report.all_edges)
         report.headroom_to_stop = max(0, report.stop_threshold - report.all_nodes)
         # Aura counts every node, not only :Entity — a document spree can exhaust
@@ -1480,8 +1484,9 @@ class GraphMaintenance:
             or report.stop_engaged
         )
         logger.info(
-            "capacity: %s/%s entities (%.1f%%), %s/%s edges (%.1f%%), %s offshore",
-            human_int(report.entities), human_int(report.node_limit), report.node_utilisation * 100,
+            "capacity: %s entities in %s/%s nodes (%.1f%%), %s/%s edges (%.1f%%), %s offshore",
+            human_int(report.entities), human_int(report.all_nodes), human_int(report.node_limit),
+            report.node_utilisation * 100,
             human_int(report.all_edges), human_int(report.edge_limit), report.edge_utilisation * 100,
             human_int(report.offshore_nodes),
         )

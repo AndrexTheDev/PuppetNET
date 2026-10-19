@@ -72,6 +72,7 @@ __all__ = [
     "CycleReport",
     "CapacityGuardReport",
     "capacity_guard",
+    "stop_threshold",
 ]
 
 #: AuraDB Free ceilings. Kept here as well as in ``graph_analytics.py`` so the
@@ -81,6 +82,19 @@ AURA_EDGE_LIMIT = 400_000
 #: 90 % of the node ceiling: the point at which new writes stop, leaving room
 #: for the merges and repairs that are supposed to fix an over-full graph.
 AURA_NODE_STOP = 180_000
+
+
+def stop_threshold(settings: Any) -> int:
+    """The node population at which *new* writes stop.
+
+    ``AURA_NODE_STOP`` is the early stop (180 000 by default). ``0`` means "no
+    early stop": fall back to the physical cap, and to the AuraDB Free ceiling
+    when no cap is configured either. The writer, ``--capacity`` and ``--guard``
+    all call this function, so the three can never disagree about the number.
+    """
+    stop = int(getattr(settings, "aura_node_stop", 0) or 0)
+    cap = int(getattr(settings, "aura_node_cap", 0) or 0)
+    return stop or cap or AURA_NODE_LIMIT
 
 #: Predicates that express ownership/control *in one direction*. A cycle over
 #: these edges is a circular ownership structure regardless of which spelling
@@ -802,7 +816,7 @@ def capacity_guard(client: Any, settings: Any, *, run_id: str = "") -> CapacityG
     report = CapacityGuardReport(
         checked_at=iso(utcnow()) or "",
         dry_run=bool(getattr(client, "dry_run", False)),
-        stop_threshold=int(getattr(settings, "aura_node_stop", AURA_NODE_STOP) or AURA_NODE_LIMIT),
+        stop_threshold=stop_threshold(settings),
         node_limit=int(getattr(settings, "aura_node_cap", AURA_NODE_LIMIT) or AURA_NODE_LIMIT),
         edge_limit=int(getattr(settings, "aura_edge_cap", AURA_EDGE_LIMIT) or AURA_EDGE_LIMIT),
     )
