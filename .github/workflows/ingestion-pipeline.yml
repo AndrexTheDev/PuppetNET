@@ -1,7 +1,7 @@
 name: Python ingestion pipeline
 on:
   push:
-    branches: [main, arena/322dea42-puppetnet]
+    branches: [main, arena/48cd7919-puppetnet]
     paths:
       - 'packages/pipeline/**'
       - 'tests/**.py'

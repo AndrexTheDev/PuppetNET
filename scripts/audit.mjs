@@ -463,9 +463,14 @@ function auditSeo() {
   });
 
   // A public, indexable deployment needs these files; their absence means
-  // crawlers get a 404 on /robots.txt and no sitemap to follow.
+  // crawlers get a 404 on /robots.txt and no sitemap to follow. The v2 static
+  // export serves two documents (`/` and `/dashboard/`) from `apps/web/public`,
+  // and keeps the v1 console with its own directives under `/legacy/`.
+  const seoEmitterWired = /emit-seo-files\.mjs/.test(read("scripts/pages-build.mjs") || "")
+    || /emit-seo-files\.mjs/.test(read(".github/workflows/pages_deploy.yml") || "");
   for (const [relative, why] of [["web/robots.txt", "crawl directives and the sitemap location"],
-    ["web/404.html", "what Cloudflare Pages serves for an unknown path"]]) {
+    ["web/404.html", "what Cloudflare Pages serves for an unknown path"],
+    ["apps/web/public/robots.txt", "crawl directives at the root of the Next static export"]]) {
     if (!exists(relative)) {
       finding("seo/missingFile", "seo", "medium", relative, relative,
         `${relative} is missing — it carries ${why}`, `Add ${relative}.`);
@@ -474,23 +479,24 @@ function auditSeo() {
   // A sitemap needs absolute URLs, and the deployment origin is not known at
   // commit time, so it is emitted at deploy time — but only if that is wired up.
   // A committed sitemap with a guessed hostname would be worse than none.
-  if (!exists("web/sitemap.xml")) {
+  if (!exists("web/sitemap.xml") && !exists("apps/web/public/sitemap.xml")) {
     const emitter = exists("scripts/emit-seo-files.mjs");
-    const wired = /emit-seo-files\.mjs/.test(read(".github/workflows/pages_deploy.yml") || "");
-    if (!emitter || !wired) {
-      finding("seo/missingFile", "seo", "medium", "web/sitemap.xml", "deploy",
-        "no sitemap, and no emitter wired into the Pages deploy to produce one",
-        "Add scripts/emit-seo-files.mjs and run it before `pages deploy`.");
+    if (!emitter || !seoEmitterWired) {
+      finding("seo/missingFile", "seo", "medium", "apps/web/public/sitemap.xml", "deploy",
+        "no sitemap, and no emitter wired into the Pages build to produce one",
+        "Add scripts/emit-seo-files.mjs and run it from scripts/pages-build.mjs "
+        + "(the Pages Git Integration build gate) before `next build`.");
     }
   }
-  if (exists("web/robots.txt")) {
-    const robots = read("web/robots.txt");
+  for (const robotsPath of ["web/robots.txt", "apps/web/public/robots.txt"]) {
+    if (!exists(robotsPath)) continue;
+    const robots = read(robotsPath);
     if (!/^User-agent:\s*\*/m.test(robots)) {
-      finding("seo/robotsDirectives", "seo", "medium", "web/robots.txt", "web/robots.txt",
+      finding("seo/robotsDirectives", "seo", "medium", robotsPath, robotsPath,
         "robots.txt has no User-agent: * block", "Say something to every crawler.");
     }
-    if (/^Sitemap:/m.test(robots) && !/emit-seo-files/.test(read(".github/workflows/pages_deploy.yml") || "")) {
-      finding("seo/robotsSitemap", "seo", "low", "web/robots.txt", "web/robots.txt",
+    if (/^Sitemap:/m.test(robots) && !seoEmitterWired) {
+      finding("seo/robotsSitemap", "seo", "low", robotsPath, robotsPath,
         "a Sitemap line is committed but nothing regenerates it per deployment",
         "Let scripts/emit-seo-files.mjs own that line.");
     }
@@ -1020,7 +1026,10 @@ function auditPython() {
       "subprocess with shell=True interpolates into a shell", "Pass an argument list."],
     [/\bpickle\.load\b|\bmarshal\.load\b/g, "high", "python/pickle",
       "unpickling untrusted bytes is code execution", "Use JSON or a schema."],
-    [/\beval\s*\(|\bexec\s*\(/g, "high", "python/eval",
+    // A bare `eval(`/`exec(` is dynamic code execution. The lookbehind keeps
+    // attribute calls out: `self.model.eval()` is PyTorch's inference-mode
+    // switch, not the builtin, and the GLiNER engine legitimately needs it.
+    [/(?<![\w.])eval\s*\(|(?<![\w.])exec\s*\(/g, "high", "python/eval",
       "dynamic code execution", "Replace with a dispatch table."],
     [/\bos\.system\s*\(/g, "medium", "python/osSystem",
       "os.system runs a shell string", "Use subprocess with a list."],
@@ -1048,6 +1057,10 @@ function auditPython() {
       scan(file, regex, (_match, where, line) => {
         if (/^\s*#/.test(line)) return;
         if (isTest && id === "python/assert") return;
+        // A method *named* eval — the offline model double in tests/test_gliner.py
+        // mirrors PyTorch's `Module.eval()` — defines an API, it does not execute
+        // a string. Only a call of the builtin is the hazard.
+        if (id === "python/eval" && /^\s*(async\s+)?def\s+(eval|exec)\s*\(/.test(line)) return;
         finding(id, "security", severity, file, where, `${message} — ${line.slice(0, 70)}`, fix);
       });
     }
@@ -1079,6 +1092,10 @@ const HOST_BUDGET = {
   "registry.npmjs.org": { cost: "free", note: "dev-time vendoring only" },
   "pypi.org": { cost: "free", note: "dev-time installs only" },
   "files.pythonhosted.org": { cost: "free", note: "dev-time installs only" },
+  "download.pytorch.org": { cost: "free", note: "CI-only CPU wheel index for the optional GLiNER extra; the shipped code never calls it" },
+  "huggingface.co": { cost: "free", note: "GLiNER model weights on a cold cache (opted-in ingestion only); Apache-2.0 model, no API key, no paid endpoint" },
+  "tile.openstreetmap.org": { cost: "free, donation-funded shared service", note: "opt-in map tiles after an explicit user click, viewport-only, browser-cached; honour operations.osmfoundation.org/policies/tiles/ and use an approved provider for high traffic" },
+  "www.openstreetmap.org": { cost: "free", note: "attribution/copyright link rendered in the map control, never fetched as an API" },
   "offshoreleaks.icij.org": { cost: "free", note: "ICIJ Offshore Leaks, public-domain data" },
   "www.icij.org": { cost: "free", note: "ICIJ public pages" },
   "opencorporates.com": { cost: "free tier, then PAID", note: "anonymous use is throttled hard; an API key needs a paid plan for volume — keep it optional and off by default" },
@@ -1138,9 +1155,17 @@ const isFixtureHost = (host) => !host.includes(".") || /\.(test|invalid|local|ex
 function auditCostAndSupplyChain() {
   // The generated ledger and this script are excluded: a report that quotes a
   // finding, and a blocklist that names what it forbids, are not calls.
+  //
+  // Generated build output (`apps/web/.next`, `apps/web/out`) and vendored
+  // third-party bundles are excluded too. They are not this repository's source:
+  // a minified library carries its homepage and licence URLs, so scanning them
+  // invents "external hosts" that nothing here ever resolves — and `out/` only
+  // exists after a local build, which would make the ledger depend on whether
+  // somebody ran `npm run ci:pages` before `npm run audit`.
   const codeFiles = walk(".", (relative) => /\.(js|mjs|cjs|py|yml|yaml|toml|html|css|json)$/.test(relative)
     && !/package-lock\.json$/.test(relative)
-    && !/^web\/vendor\//.test(relative)
+    && !/(^|\/)vendor\//.test(relative)
+    && !/^apps\/web\/(\.next|out)\//.test(relative)
     && !/^docs\/audit\//.test(relative)
     && relative !== "scripts/audit.mjs"
     && !/^node_modules\//.test(relative));
@@ -1274,7 +1299,7 @@ function auditOperations() {
   }
   const crons = [];
   for (const file of workflows) {
-    scan(file, /- cron:\s*"([^"]+)"/g, (match, where) => {
+    scan(file, /- cron:\s*['"]([^'"]+)['"]/g, (match, where) => {
       const expression = match[1];
       const parts = expression.trim().split(/\s+/);
       if (parts.length !== 5) {

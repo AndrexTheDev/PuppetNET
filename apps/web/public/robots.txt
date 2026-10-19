@@ -1,0 +1,29 @@
+# =============================================================================
+#  PuppetNET 2.0 — crawler directives for the static Next.js export
+# =============================================================================
+#
+#  This file is the root of the Cloudflare Pages deployment (`/robots.txt`).
+#  The retained v1 analyst console keeps its own directives under
+#  `/legacy/robots.txt`; both are origin-free on purpose.
+#
+#  The v2 frontend is a static export with two crawlable documents: the landing
+#  page (`/`) and the WebGL dashboard (`/dashboard/`). Everything the dashboard
+#  shows is client-side state — imported JSON, the fictional demo fixture or a
+#  read-only Worker API response behind a bearer token — so there are no deep
+#  links to index and nothing to paginate. No graph data is ever rendered
+#  server-side, and no investigation result is crawlable.
+#
+#  A `Sitemap:` line has to be absolute, and this repository is committed long
+#  before anybody knows which domain will serve it. `npm run emit:seo --
+#  --origin https://puppetnet-console.pages.dev` (or `SITE_ORIGIN` in the Pages
+#  build environment) rewrites that line here and writes
+#  `apps/web/public/sitemap.xml`, which `next build` copies into `out/`. The
+#  committed file therefore never guesses a hostname.
+#
+#  Running a private investigative deployment? Replace the Allow below with
+#  `Disallow: /` and serve `X-Robots-Tag: noindex, nofollow` from
+#  `apps/web/public/_headers` — see docs/web-console.md#hardening.
+# =============================================================================
+
+User-agent: *
+Allow: /

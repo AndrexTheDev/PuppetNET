@@ -80,6 +80,8 @@ docs/audit/
 # Written at deploy time from the deployment origin (npm run emit:seo). A
 # committed sitemap would have to guess a hostname; see docs/web-console.md.
 web/sitemap.xml
+apps/web/public/sitemap.xml
+apps/web/public/legacy/sitemap.xml
 
 # Rendered by `npm run screenshots`; CI uploads them as a build artefact.
 .screenshots/
