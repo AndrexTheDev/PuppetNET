@@ -88,6 +88,8 @@ source duplication; use a symlink-capable checkout.
 settings, watch paths, secrets, production gates and GLiNER limitations.
 [Worker provisioning](docs/worker-provisioning.md) is the KV/secret/deploy runbook, with
 `npm run provision:worker` automating the whole sequence.
+[48-hour monitoring checklist](docs/operations/monitoring-checklist.md) covers the first two
+production days: KV write budget, AuraDB growth, snapshot age and escalation.
 [`cloudflare-builds.json`](cloudflare-builds.json) records dashboard settings; it is
 **not** an automatically applied Cloudflare configuration schema.
 

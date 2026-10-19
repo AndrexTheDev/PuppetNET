@@ -1,3 +1,17 @@
+> **Status 2.0 (October 2026):** most of this document describes the historical v1
+> workflow set (`ci.yml`, `hourly_ingest.yml`, `daily_ingest.yml`, …). Those files are
+> kept unchanged under [`legacy-workflows/`](legacy-workflows/) and are **not active**.
+> The repository runs exactly one workflow,
+> [`.github/workflows/ingestion-pipeline.yml`](../.github/workflows/ingestion-pipeline.yml):
+> it tests `packages/pipeline` on every push and pull request that touches it, runs
+> daily at `17 5 * * *`, and can be dispatched manually. Its ingestion job writes to
+> Neo4j only when the repository variable `ENABLE_INGESTION` is `true` and the
+> `NEO4J_*` secrets exist. Worker gates run through `npm run ci:worker`, deployment
+> through [worker-provisioning.md](worker-provisioning.md), and the first 48 hours of
+> production through
+> [operations/monitoring-checklist.md](operations/monitoring-checklist.md). The sections
+> below remain as the v1 design reference.
+
 # Operations
 
 How the pipeline runs unattended, what it leaves behind, and what to do when it
@@ -10,9 +24,18 @@ Related: [configuration](configuration.md) · [graph schema](graph-schema.md) ·
 
 ## 1. Automation
 
-Seven workflows live in [`.github/workflows/`](../.github/workflows): `ci.yml`,
-`hourly_ingest.yml`, `daily_ingest.yml`, `weekly_ingest.yml`, `graph_maintenance.yml`,
-`pages_deploy.yml` (documented with the console) and `screenshots.yml` (below).
+The 2.0 repository ships one workflow,
+[`ingestion-pipeline.yml`](../.github/workflows/ingestion-pipeline.yml): a `tests` job
+(pytest, ruff, an offline multilingual NLP contract) and an `ingestion` job that is
+gated on `github.ref == 'refs/heads/main'`, `vars.ENABLE_INGESTION == 'true'` and an
+explicit `workflow_dispatch` input. The historical seven-workflow v1 set is archived
+under [`legacy-workflows/`](legacy-workflows/) and is described below for reference.
+
+### The archived v1 workflow set
+
+At v1, seven workflows lived in `.github/workflows/`: `ci.yml`, `hourly_ingest.yml`,
+`daily_ingest.yml`, `weekly_ingest.yml`, `graph_maintenance.yml`, `pages_deploy.yml`
+and `screenshots.yml`.
 
 ### The tiered cadence
 
