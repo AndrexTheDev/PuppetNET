@@ -3,6 +3,7 @@ name = "puppetnet-web"
 pages_build_output_dir = "./out"
 compatibility_date = "2026-10-01"
 # Git integration: apps/web; build: cd ../.. && npm ci && npm run ci:pages
+# Deploy command: none (Pages publishes out/); manual: npm run deploy:pages at repo root.
 # Watch includes: apps/web/*, package.json, package-lock.json,
 # scripts/pages-build.mjs, tests/web_smoke.mjs, tests/helpers/*
 # No Worker runtime or Pages Functions: Next output is entirely static.
