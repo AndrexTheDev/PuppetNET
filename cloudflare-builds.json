@@ -1,0 +1,41 @@
+{
+  "_note": "Documented dashboard settings; NOT an auto-consumed Cloudflare config file. Paths are relative to repository root, with no leading slash. Root lockfile and test dependencies are intentionally included.",
+  "pages": {
+    "rootDirectory": "apps/web",
+    "productionBranch": "main",
+    "buildCommand": "cd ../.. && npm ci --no-audit --no-fund && npm run ci:pages",
+    "outputDirectory": "out",
+    "environment": {
+      "NODE_VERSION": "22",
+      "NEXT_TELEMETRY_DISABLED": "1"
+    },
+    "watchPaths": [
+      "apps/web/*",
+      "package.json",
+      "package-lock.json",
+      "scripts/pages-build.mjs",
+      "tests/web_smoke.mjs",
+      "tests/helpers/*",
+      "apps/worker/worker.js"
+    ]
+  },
+  "worker": {
+    "rootDirectory": "apps/worker",
+    "productionBranch": "main",
+    "buildCommand": "cd ../.. && npm ci --no-audit --no-fund && npm run ci:worker",
+    "deployCommand": "npm run deploy",
+    "previewCommand": "npm exec -- wrangler versions upload",
+    "environment": {
+      "NODE_VERSION": "22"
+    },
+    "watchPaths": [
+      "apps/worker/*",
+      "package.json",
+      "package-lock.json",
+      "scripts/worker-build.mjs",
+      "tests/worker_smoke.mjs",
+      "tests/helpers/*",
+      "tests/test_robots.py"
+    ]
+  }
+}

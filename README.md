@@ -1,36 +1,55 @@
-# PuppetNET 2.0 — zero-cost monorepo scaffold
+# PuppetNET 2.0 — decoupled hybrid CI/CD
 
-Integrated baseline: `arena/01a0df64-puppetnet`, commit `127ab47`.
-This session prepares integration on `arena/322dea42-puppetnet`; `main` is not modified.
+Open-source OSINT ingestion, entity recognition and graph analysis. Baseline history
+through `arena/01a0df64-puppetnet` commit `127ab47` is integrated into the session branch
+`arena/322dea42-puppetnet`. Integration into `main` is proposed by PR #1; this session
+does not modify or push directly to `main`.
 
-| Path | Component |
-| --- | --- |
-| `apps/web` | Next.js 15 static export, including the existing analyst console at `/legacy/index.html` |
-| `apps/worker` | Existing Cloudflare Worker relay and read-only graph API, Free configuration |
-| `packages/pipeline` | Existing Python ingestion, NLP, graph analytics and Telegram tools |
-| `tests` | Existing regression tests plus monorepo/budget contract tests |
+| Component | Source | Build / execution owner |
+| --- | --- | --- |
+| Next.js 15 static frontend | `apps/web` | Cloudflare Pages Git Integration |
+| Relay and read-only graph API | `apps/worker` | Cloudflare Workers Builds |
+| Python tests, GLiNER NLP, Neo4j ingestion | `packages/pipeline` | GitHub Actions standard Linux runner |
 
-This is a scaffold, **not a React rewrite** of the existing console. The home page embeds
-it same-origin. Root compatibility symlinks preserve the old imports, scripts and tools;
-there is only one source of truth per component. Use a checkout with symlink support.
+The Next frontend is a static shell around the retained analyst console at
+`/legacy/index.html`, not a completed React rewrite. `output: 'export'` generates
+`apps/web/out` during `next build` (Next 15 does not use the old `next export` command).
+There are no Pages Functions, SSR routes or hosted model APIs.
 
-## Local verification
+## Local development / verification
 
 ```sh
 npm ci
-npm run dev                    # Next development server on 0.0.0.0:3000
-npm run build                  # apps/web/out: deployable static files
-npm run test:scaffold
-npm test                       # Worker and existing console regression tests
+npm run dev
+npm run ci:pages                  # console regression gate + static Next build
+npm run ci:worker                 # Worker regression gate, no deployment
+npm run test:scaffold             # monorepo/build configuration contracts
+npm run deploy -w @puppetnet/worker -- --dry-run --outdir /tmp/puppetnet-worker
 python -m venv .venv
 . .venv/bin/activate
 pip install -e './packages/pipeline[dev]'
 python -m pytest -q -m 'not integration'
-ruff check packages/pipeline
-python packages/pipeline/ingest.py --dry-run --list-sources
+ruff check packages/pipeline tests/test_gliner.py tests/test_hybrid_ci.py
 ```
 
-See [deployment, budget and migration notes](docs/2.0-scaffold.md).
-The old documentation remains as historical reference, not as the current deployment
-contract: [legacy overview](docs/legacy-README.md). Old expensive schedules live under
-`docs/legacy-workflows/` and **are not executed** by GitHub Actions.
+GLiNER CPU inference is an optional install (`packages/pipeline[gliner]`), selected
+with `NLP_BACKEND=gliner`. Tests use offline model doubles; production ingestion loads
+real model weights. spaCy remains the default for backwards-compatible local runs.
+Root compatibility symlinks retain the previous Python/console/tooling paths without
+source duplication; use a symlink-capable checkout.
+
+## Deployment and operation
+
+[Hybrid setup guide](docs/2.0-scaffold.md) contains the exact Pages and Workers Builds
+settings, watch paths, secrets, production gates and GLiNER limitations.
+[`cloudflare-builds.json`](cloudflare-builds.json) records dashboard settings; it is
+**not** an automatically applied Cloudflare configuration schema.
+
+GitHub Actions has **no build/deploy JavaScript jobs and no artificial minute gate**.
+Standard hosted runner execution in this public repository is free under GitHub's
+public-repository policy; normal service, concurrency and artifact limits still apply.
+Daily ingestion is disabled until `ENABLE_INGESTION=true` and database secrets exist.
+
+Older docs and workflows under `docs/legacy-*` describe the v1 architecture only.
+The historical static audit is not a v2 certification. Current runtime regressions,
+Python CI and the Cloudflare build gates are the active checks.

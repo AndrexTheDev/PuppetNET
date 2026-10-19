@@ -211,6 +211,9 @@ class Settings:
     spacy_models: list[str] = field(
         default_factory=lambda: ["en_core_web_trf", "en_core_web_lg", "en_core_web_md", "en_core_web_sm"]
     )
+    nlp_backend: str = "spacy"
+    gliner_model: str = "urchade/gliner_small-v2.1"
+    gliner_threshold: float = 0.5
     nlp_enabled: bool = True
     nlp_max_chars_per_doc: int = 400_000
     nlp_max_sentences_per_doc: int = 1_500
@@ -443,6 +446,12 @@ class Settings:
 
     def validate(self) -> None:
         problems: list[str] = []
+        if self.nlp_backend not in {"spacy", "gliner"}:
+            problems.append("NLP_BACKEND must be spacy or gliner")
+        if not 0 < self.gliner_threshold <= 1:
+            problems.append("GLINER_THRESHOLD must be in (0, 1]")
+        if not self.gliner_model.strip():
+            problems.append("GLINER_MODEL must not be empty")
         if not self.dry_run:
             if not self.neo4j_uri:
                 problems.append("NEO4J_URI is required")
@@ -602,6 +611,9 @@ def load_settings(env: dict[str, str] | None = None, *, validate: bool = True) -
             http_user_agent=_env_str("HTTP_USER_AGENT", Settings.http_user_agent),
             respect_robots_txt=_env_bool("RESPECT_ROBOTS_TXT", True),
             spacy_models=models,
+            nlp_backend=_env_str("NLP_BACKEND", "spacy"),
+            gliner_model=_env_str("GLINER_MODEL", "urchade/gliner_small-v2.1"),
+            gliner_threshold=_env_float("GLINER_THRESHOLD", 0.5),
             nlp_enabled=_env_bool("NLP_ENABLED", True),
             nlp_max_chars_per_doc=_env_int("NLP_MAX_CHARS_PER_DOC", 400_000),
             nlp_max_sentences_per_doc=_env_int("NLP_MAX_SENTENCES_PER_DOC", 1_500),

@@ -13,17 +13,13 @@ test('compatibility paths point to the single monorepo source', () => {
   for (const [old, current] of [['worker.js','apps/worker/worker.js'], ['puppetnet','packages/pipeline/puppetnet'], ['web','apps/web/public/legacy']])
     assert.equal(fs.realpathSync(old), fs.realpathSync(current));
 });
-test('only bounded, serialized CI and opt-in daily ingest remain active', () => {
-  assert.deepEqual(fs.readdirSync('.github/workflows').sort(), ['ci.yml','ingest.yml']);
-  for (const file of ['ci.yml', 'ingest.yml']) {
-    const text = read(`.github/workflows/${file}`);
-    assert.match(text, /group: puppetnet-free-tier/);
-    assert.match(text, /cancel-in-progress: false/);
-    assert.match(text, /node scripts\/ci-budget.mjs/);
-    assert.match(text, /timeout-minutes: (10|20)\n/);
-    assert.doesNotMatch(text, /strategy:|macos-|windows-/);
-  }
-  assert.match(read('.github/workflows/ingest.yml'), /ENABLE_FREE_INGEST == 'true'/);
+test('only Python Actions remain, with no artificial consumption guard', () => {
+  assert.deepEqual(fs.readdirSync('.github/workflows'), ['ingestion-pipeline.yml']);
+  const text = read('.github/workflows/ingestion-pipeline.yml');
+  assert.match(text, /group: puppetnet-python-ingestion/);
+  assert.match(text, /runs-on: ubuntu-latest/);
+  assert.doesNotMatch(text, /ci-budget|setup-node|npm |wrangler|actions: read/);
+  assert.ok(!fs.existsSync('scripts/ci-budget.mjs'));
 });
 test('Free-only deployment defaults and no client-side secrets', () => {
   const worker = read('apps/worker/wrangler.toml');
@@ -40,14 +36,13 @@ test('Next headers allow its scripts and same-origin legacy iframe', () => {
   assert.doesNotMatch(headers.split('/legacy/*')[0], /script-src|frame-src 'none'/);
 });
 
-test('monthly admission is conservative, paginated and fails closed', async () => {
-  const { spawnSync } = await import('node:child_process');
-  const guard = new URL('../scripts/ci-budget.mjs', import.meta.url).href;
-  for (const [count, ok, expected] of [[90, true, 0], [91, true, 1], [0, false, 1]]) {
-    const script = `globalThis.fetch = async () => ({ ok: ${ok}, status: 403, json: async () => ({ workflow_runs: Array(${count}).fill({}) }) }); await import(${JSON.stringify(guard)});`;
-    const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
-      env: { ...process.env, GH_TOKEN: 'fixture-not-a-real-token', GITHUB_REPOSITORY: 'fixture/repo' }, encoding: 'utf8'
-    });
-    assert.equal(result.status, expected, result.stderr);
-  }
+test('Cloudflare build owners and watch paths are explicitly decoupled', () => {
+  const settings = JSON.parse(read('cloudflare-builds.json'));
+  assert.equal(settings.pages.rootDirectory, 'apps/web');
+  assert.equal(settings.worker.rootDirectory, 'apps/worker');
+  assert.ok(settings.pages.watchPaths.includes('apps/web/*'));
+  assert.ok(settings.worker.watchPaths.includes('apps/worker/*'));
+  assert.match(settings.pages.buildCommand, /ci:pages/);
+  assert.match(settings.worker.buildCommand, /ci:worker/);
+  assert.match(settings.worker.previewCommand, /versions upload/);
 });

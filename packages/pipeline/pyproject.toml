@@ -37,6 +37,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# CPU-local inference; model weights downloaded separately, never an API key.
+gliner = ["gliner==0.2.29", "torch>=2.2,<3", "transformers>=4.51.3,<5"]
+
 # en_core_web_trf (transformer-backed NER + parser). Heavy: pulls torch.
 trf = [
     "torch>=2.1",

@@ -739,7 +739,12 @@ def _probe_spacy(settings: Settings) -> tuple[bool, str]:
     try:
         from puppetnet.parsing.nlp_engine import NLPEngine
 
-        engine = NLPEngine(settings, eager_load=True)
+        if settings.nlp_backend == "gliner":
+            from puppetnet.parsing.gliner_engine import GLiNEREngine
+
+            engine = GLiNEREngine(settings)
+        else:
+            engine = NLPEngine(settings, eager_load=True)
         detail = f"backend={engine.backend} parser={engine.has_parser} ner={engine.has_ner}"
         if engine.load_errors:
             detail += f" | fallbacks: {'; '.join(engine.load_errors)[:220]}"

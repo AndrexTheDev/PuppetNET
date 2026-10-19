@@ -361,8 +361,13 @@ class IngestPipeline:
         if not self.settings.nlp_enabled:
             self.logger.info("NLP_ENABLED=false — skipping the spaCy load")
             return
-        with timed(self.logger, "spaCy pipeline load"):
-            self.nlp = NLPEngine(self.settings)
+        with timed(self.logger, "NLP pipeline load"):
+            if self.settings.nlp_backend == "gliner":
+                from .parsing.gliner_engine import GLiNEREngine
+
+                self.nlp = GLiNEREngine(self.settings)
+            else:
+                self.nlp = NLPEngine(self.settings)
         self.logger.info("NLP backend: %s", self.nlp.backend)
         if self.nlp.load_errors:
             if self.nlp.available:

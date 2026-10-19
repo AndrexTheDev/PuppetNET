@@ -1,10 +1,23 @@
-# PuppetNET pipeline
+# PuppetNET Python pipeline
 
-Python ingestion and NLP engine, retained from commit 127ab47.
+From repository root:
 
-From the repository root: `pip install -e ".[dev]"` (compatibility path),
-or `pip install -e "./packages/pipeline[dev]"`.
-Run `python packages/pipeline/ingest.py --dry-run --list-sources`.
+```sh
+pip install -e './packages/pipeline[dev]'
+python -m pytest -q -m 'not integration'
+python packages/pipeline/ingest.py --dry-run --list-sources
+```
 
-Configuration lives in `config/sources.yaml` beside this file.
-The process working directory controls local report/state paths. No paid models or keys are required.
+Optional CPU GLiNER:
+
+```sh
+pip install 'torch>=2.2,<3' --index-url https://download.pytorch.org/whl/cpu
+pip install -e './packages/pipeline[gliner]'
+NLP_BACKEND=gliner DRY_RUN=true python packages/pipeline/ingest.py --doctor
+```
+
+GLiNER weights download on first use; no paid inference API. Set `NLP_BACKEND=gliner`
+to select it explicitly, otherwise spaCy remains the local default. See
+`docs/2.0-scaffold.md` at repository root for model/relationship limitations and live
+Neo4j setup. Source configuration is in `config/sources.yaml` beside this file.
+Report/state locations are relative to the process working directory.
