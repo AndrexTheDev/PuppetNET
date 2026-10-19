@@ -5,18 +5,68 @@ workers_dev = true
 
 # Deploy ONLY to a Workers Free account. Its platform quota is 100,000
 # requests/day; exhausted quota must fail closed, not upgrade to paid usage.
-# No Queues/paid bindings enabled. Optional Free KV binding: see docs/2.0-scaffold.md.
+# No Queues or paid bindings are enabled. The two KV namespaces below are on
+# the Free tier and are what make locks and health snapshots cross-isolate.
 [limits]
 cpu_ms = 10
 
 [vars]
-GLOBAL_RPM = "30"
+GLOBAL_RPM = "900"
 HOST_RATE_PER_SEC = "0.25"
 HOST_BURST = "2"
-GRAPH_RATE_PER_SEC = "1"
+# Database-backed routes. The code clamps both to 25/min and 25 burst; a value
+# above that is ignored, so 25 is a policy, not a suggestion. Lower it on a
+# busy console if AuraDB Free shows latency.
+GRAPH_RPM = "25"
+GRAPH_CLIENT_RPM = "25"
+GRAPH_RATE_PER_SEC = "0.4"
+GRAPH_BURST = "25"
 GRAPH_PUBLIC_READ = "false"
 GRAPH_MAX_NODES = "250"
 KV_SYNC_INTERVAL_MS = "60000"
+GRAPH_KV_SYNC_INTERVAL_MS = "300000"
+# Optional: the status dashboard is token-protected unless this is true.
+STATUS_PUBLIC = "false"
+
+# ---------------------------------------------------------------------------
+# Workers KV (Free: 100k reads / 1k writes / 1k deletes per day)
+#
+# Both namespaces are required for the distributed locks, the shared rate
+# buckets and the health snapshots. The placeholder ids below make `wrangler
+# deploy` fail loudly until an operator creates the namespaces — that is the
+# intended failure mode, because a deploy with a wrong/absent id silently drops
+# every cross-isolate guarantee.
+#
+#   npx wrangler kv namespace create PUPPETNET_RATE_LIMIT
+#   npx wrangler kv namespace create PUPPETNET_RESULTS
+#
+# then copy each returned id (and preview_id, if using preview deployments).
+# ---------------------------------------------------------------------------
+[[kv_namespaces]]
+binding = "RATE_LIMIT_KV"
+id = "00000000000000000000000000000000"
+preview_id = "00000000000000000000000000000000"
+
+[[kv_namespaces]]
+binding = "RESULT_KV"
+id = "00000000000000000000000000000000"
+preview_id = "00000000000000000000000000000000"
+
+# ---------------------------------------------------------------------------
+# Cron Triggers (Workers Free: 5 per account, 1-minute minimum)
+#
+#   0 */12 * * *  keep-alive: one bounded write against AuraDB every 12 hours.
+#                 AuraDB Free pauses after 72 hours without a write query, so
+#                 this leaves a six-fold margin even after a missed run.
+#   23 */3 * * *  free-tier snapshot: node/relationship counts, Cloudflare
+#                 request analytics and the rate-limit state for /status.
+#
+# `0 */36 * * *` is not usable: the hour field is 0-23, so a 36-hour step
+# selects hour 0 and means "daily" (some parsers reject the step). A 5-field
+# cron cannot express "every 36 hours"; 12 hours preserves the intent.
+# ---------------------------------------------------------------------------
+[triggers]
+crons = ["0 */12 * * *", "23 */3 * * *"]
 
 # Workers Builds Git integration (dashboard, not a Wrangler build-watch field):
 # root=apps/worker; build=cd ../.. && npm ci && npm run ci:worker

@@ -28,14 +28,15 @@ boundaries are where they are.
                  │ HTTPS (Authorization: Bearer …)
                  ▼
 ┌──────────────────────────── Cloudflare Worker (worker.js) ────────────────────────────────────┐
-│  /health  /stats  /fetch  /tasks/{id}  /cache                                                 │
+│  /health  /stats  /fetch  /tasks/{id}  /cache   /graph/*   /status                           │
 │   • fingerprint pool (UA ↔ sec-ch-ua ↔ platform kept coherent), rotated per attempt            │
 │   • host profiles: per-API rate ceiling, API-mode UA, credentials at egress                    │
 │   • per-host token bucket: in-isolate memory, reconciled with RATE_LIMIT_KV                    │
-│   • global requests/minute safety valve                                                        │
+│   • global requests/minute safety valve; graph API capped at 25/min per fleet and per caller   │
 │   • robots.txt fetch + cache, crawl-delay honoured                                             │
-│   • over budget → FETCH_QUEUE with a delay → 202 + task id → result in RESULT_KV               │
-│   • SSRF guards: HTTPS-only, private networks blocked, host deny-list                          │
+│   • deferred task when a queue is bound, otherwise 429 with retry_after                        │
+│   • SSRF guards on every hop: HTTPS-only, private networks blocked, ports, redirect re-checks  │
+│   • cron 0 */12 (keep-alive write) and 23 */3 (free-tier snapshot) → /status dashboard         │
 └───────────────────────────────────────────────────────────────────────────────────────────────┘
                  │
                  ▼
@@ -251,11 +252,28 @@ calculated edges are pruned after `ANALYTICS_PRUNE_DAYS`.
 
 ---
 
+## 6. Edge hardening and free-tier maintenance
+
+The Worker is documented in [edge-relay.md](edge-relay.md); the security and
+cost controls — the 25/min database budget, the redirect-aware SSRF guard, the
+KV leases, the two cron schedules, the AuraDB heartbeat and the `/status`
+dashboard — have their own reference in [worker-hardening.md](worker-hardening.md).
+Their shape is dictated by the free tier: one AuraDB instance that pauses after
+72 hours without a *write*, 100 000 Worker requests/day, and KV at 100 000 reads
+but only 1 000 writes/day. Every control is chosen to sit inside those numbers
+rather than to be theoretically ideal (see the design-decision rows below).
+
+---
+
 ## Design decisions worth knowing
 
 | Decision | Why |
 | --- | --- |
 | Relay first, direct fallback second | IP rotation is the point of the Worker; but a Worker outage must not stop a daily harvest. |
+| The database budget is 25/min and cannot be raised by configuration | AuraDB Free has no burst headroom. A tuning knob that can be set above the safe value is not a control; `GRAPH_RPM` is clamped down, never up. |
+| Locks are KV leases, not Durable Objects | KV is eventually consistent and cannot be a true mutex, so the work under the lock is idempotent (one `MERGE`, one snapshot overwrite). A DO would be correct and would also be a paid binding. |
+| The keep-alive writes, the Python ping reads | Neo4j counts only writes as activity. `keep_alive.py`'s `RETURN 1` proves reachability; the cron's single `MERGE (:_PuppetNetHeartbeat)` is what actually resets the 72-hour pause. |
+| The dashboard shows `n/a`, never a fabricated zero | A per-isolate counter is not the account's daily request count. `/status` reads Cloudflare Analytics or says it is not configured. |
 | Host profiles pin politeness, not the client | A hand-run loop or a bad config must not be able to hammer Wikidata into a project-wide ban. The Worker takes `min(client, profile)`, so a caller can be slower but never faster. |
 | API hosts get an honest UA, not a rotating fingerprint | Wikidata, OpenCorporates and RapidAPI publish "identify your tool" policies. A Cloudflare Worker's IP range is shared, so spoofing a browser there gets *everyone* blocked. Rotation stays on for real websites. |
 | Credentials injected at the edge, per call | A token in a Queue message, a KV cache key or a response body is a token in a log. Injecting inside `performFetch` and redacting the URL keeps secrets off the runner and out of the report. |

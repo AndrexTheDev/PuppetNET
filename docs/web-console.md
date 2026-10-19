@@ -385,11 +385,17 @@ relationship types, `escapeCypher` for the literals in a copy-paste query. CSV: 
 guard described above. HTML: escaping described above. URL: junk and hostile parameters
 ignored or clamped.
 
-**Availability.** Per-isolate rate limiting on the graph API, a payload ceiling (an
-oversized result is refused, not shipped), a request timeout with `AbortController`,
-bounded traversal (depth ≤ 4, hops ≤ 12, weighted hops ≤ 4, 20 000 enumerated paths) and
-a demo fallback that keeps the console usable when the API is down — while telling the
-analyst it is showing synthetic data.
+**Availability.** The graph API runs on a hard **25 requests/minute** budget, enforced
+per caller (by `CF-Connecting-IP`) and fleet-wide, because the free AuraDB instance has
+no burst headroom. A console that navigates quickly can therefore see
+`429 graph_rate_limited` with `retry_after`; the UI keeps the last render, caches
+responses for 60 s server-side and shows the budget in its status bar rather than
+retrying in a loop. Beyond the budget there is a payload ceiling (an oversized result is
+refused, not shipped), a request timeout with `AbortController`, bounded traversal
+(depth ≤ 4, hops ≤ 12, weighted hops ≤ 4, 20 000 enumerated paths) and a demo fallback
+that keeps the console usable when the API is down — while telling the analyst it is
+showing synthetic data. The rationale and the full limit list are in
+[worker-hardening.md § 1](worker-hardening.md#1-the-25-requestsminute-database-budget).
 
 **Supply chain.** Four MIT libraries, committed with their licence texts and reproduced
 by `npm run vendor:libs`, which fails if an installed version does not match

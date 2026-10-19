@@ -533,11 +533,19 @@ python graph_analytics.py --guard --json | jq '{nodes, entities, stop_threshold,
 
 ### The 72-hour pause
 
-AuraDB Free pauses an instance after **72 hours without a connection**. The
-single workflow's `keep-alive` job runs on the daily schedule and executes
-`python keep_alive.py`, whose only statement is `RETURN 1 AS ok`. It is a
-separate job from `ingestion`: disabling ingestion must not let the database
-fall asleep, and the heartbeat must not pay for the NLP install.
+AuraDB Free pauses an instance after **72 hours of inactivity**, and Neo4j
+defines inactivity as *no write query* — read queries do not reset the timer.
+There are therefore two complementary heartbeats:
+
+| Where | Schedule | Statement | What it proves / does |
+| --- | --- | --- | --- |
+| Worker cron (`wrangler.toml`) | `0 */12 * * *` | bounded `MERGE (:_PuppetNetHeartbeat {id})` | a real write every 12 h — this is what prevents the pause |
+| GitHub workflow → `keep_alive.py` | daily | `RETURN 1 AS ok` | the runner's credentials reach the database; a paused instance wakes |
+
+The Worker cron is the primary mechanism: it does not depend on the repository's
+Actions schedule (which GitHub disables on inactive repositories) and it runs
+even when no ingestion is happening. The Python job stays because it is the only
+heartbeat that also validates the *pipeline's* connection settings end to end.
 
 ```bash
 python keep_alive.py --json          # one ping; exit 2 when the database does not answer
@@ -545,7 +553,14 @@ python keep_alive.py --loop --interval-minutes 360   # long-running host
 ```
 
 A response slower than 5 s is reported as `woke_from_pause: true`. The ping is
-read-only — it creates nothing, so it can never consume the node budget.
+read-only — it creates nothing, so it can never consume the node budget. The
+cron's `MERGE` on a fixed id grows the graph by at most **one** node, and that
+node is the only thing the keep-alive ever writes. Both heartbeats are visible
+on the Worker's `/status` page (`Letzter Keep-Alive`); see
+[worker-hardening.md](worker-hardening.md#4-cron-triggers).
+
+Do not "fix" a paused instance by deleting the heartbeat node: pausing is not
+caused by the node, and a write on an already-paused database is what wakes it.
 
 **Alerts, locally**
 

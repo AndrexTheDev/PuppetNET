@@ -45,7 +45,9 @@ import {
   fakeNeo4jTxResponse,
 } from "./helpers/fake_neo4j.mjs";
 
-const worker = (await import("../worker.js")).default;
+const workerModule = await import("../worker.js");
+const worker = workerModule.default;
+const internals = workerModule.__internals;
 
 const SECRETS = {
   PROXY_AUTH_TOKEN: "relay-token-abc123",
@@ -186,6 +188,19 @@ function check(name, fn) {
 }
 
 console.log("worker.js host profiles — behavioural smoke test");
+
+/**
+ * Graph checks start from a clean database budget.
+ *
+ * The 25/min ceiling is a module-level window; without this every check after
+ * the 25th request in the file would test the limiter instead of the route it
+ * names. The dedicated limit test still issues its own 26 requests in a row.
+ */
+function graphCheck(name, fn) {
+  internals.resetGraphRateLimits();
+  return check(name, fn);
+}
+
 
 // --- 1. Wikidata SPARQL: form POST, API identity, politeness ceiling --------
 await check("wikidata SPARQL is relayed as a polite form POST", async () => {
@@ -502,7 +517,7 @@ function assertNoGraphSecrets(text, label) {
 }
 
 // --- G1. /graph/health: public, informative, credential-free ----------------
-await check("/graph/health rewrites the bolt URI, authenticates, and leaks nothing", async () => {
+await graphCheck("/graph/health rewrites the bolt URI, authenticates, and leaks nothing", async () => {
   neo4jCalls.length = 0;
   const res = await graph("/graph/health", { token: null });
 
@@ -533,7 +548,7 @@ await check("/graph/health rewrites the bolt URI, authenticates, and leaks nothi
 });
 
 // --- G2. /graph/overview: shaping, ceilings and the ORDER BY allowlist ------
-await check("/graph/overview returns the console's node/edge shapes under a ceiling", async () => {
+await graphCheck("/graph/overview returns the console's node/edge shapes under a ceiling", async () => {
   neo4jCalls.length = 0;
   const res = await graph("/graph/overview?limit=4&metric=betweenness");
 
@@ -577,7 +592,7 @@ await check("/graph/overview returns the console's node/edge shapes under a ceil
   assertReadOnlyAndParameterised("/graph/overview");
 });
 
-await check("/graph/overview refuses to interpolate a caller-supplied metric", async () => {
+await graphCheck("/graph/overview refuses to interpolate a caller-supplied metric", async () => {
   neo4jCalls.length = 0;
   const res = await graph(`/graph/overview?limit=3&metric=${encodeURIComponent("anomaly_score DESC, e.name")}`);
 
@@ -596,7 +611,7 @@ await check("/graph/overview refuses to interpolate a caller-supplied metric", a
   assertReadOnlyAndParameterised("/graph/overview metric clamp");
 });
 
-await check("/graph/overview clamps an absurd limit to the configured ceiling", async () => {
+await graphCheck("/graph/overview clamps an absurd limit to the configured ceiling", async () => {
   neo4jCalls.length = 0;
   const res = await graph("/graph/overview?limit=999999");
   assert.equal(res.status, 200, res.text.slice(0, 400));
@@ -610,7 +625,7 @@ await check("/graph/overview clamps an absurd limit to the configured ceiling", 
 });
 
 // --- G3. /graph/search: index first, scan as fallback -----------------------
-await check("/graph/search uses the full-text index when it is online", async () => {
+await graphCheck("/graph/search uses the full-text index when it is online", async () => {
   neo4jCalls.length = 0;
   const res = await graph("/graph/search?q=kastelion&limit=5");
 
@@ -628,7 +643,7 @@ await check("/graph/search uses the full-text index when it is online", async ()
   assertReadOnlyAndParameterised("/graph/search");
 });
 
-await check("/graph/search falls back to a deterministic scan when the index is gone", async () => {
+await graphCheck("/graph/search falls back to a deterministic scan when the index is gone", async () => {
   neo4jBehaviour.noFulltextIndex = true;
   try {
     neo4jCalls.length = 0;
@@ -663,7 +678,7 @@ await check("/graph/search falls back to a deterministic scan when the index is 
 });
 
 // --- G4. /graph/node: inspector payload -------------------------------------
-await check("/graph/node returns the node, its ties, its neighbours and its citations", async () => {
+await graphCheck("/graph/node returns the node, its ties, its neighbours and its citations", async () => {
   neo4jCalls.length = 0;
   const res = await graph(`/graph/node?key=${encodeURIComponent(O_MERIDIAN)}`);
 
@@ -684,7 +699,7 @@ await check("/graph/node returns the node, its ties, its neighbours and its cita
   assertReadOnlyAndParameterised("/graph/node");
 });
 
-await check("/graph/node 404s on an unknown key and 400s without one", async () => {
+await graphCheck("/graph/node 404s on an unknown key and 400s without one", async () => {
   const missing = await graph(`/graph/node?key=${encodeURIComponent(P_UNKNOWN)}`);
   assert.equal(missing.status, 404);
   assert.equal(missing.body.ok, false);
@@ -696,7 +711,7 @@ await check("/graph/node 404s on an unknown key and 400s without one", async () 
 });
 
 // --- G5. /graph/neighbors: the N-degree engine ------------------------------
-await check("/graph/neighbors clamps depth and generates a level-by-level walk", async () => {
+await graphCheck("/graph/neighbors clamps depth and generates a level-by-level walk", async () => {
   neo4jCalls.length = 0;
   const res = await graph(`/graph/neighbors?key=${encodeURIComponent(P_KASTELION)}&depth=99&limit=50`);
 
@@ -716,7 +731,7 @@ await check("/graph/neighbors clamps depth and generates a level-by-level walk",
   assertReadOnlyAndParameterised("/graph/neighbors");
 });
 
-await check("/graph/neighbors applies weight and type filters to every hop", async () => {
+await graphCheck("/graph/neighbors applies weight and type filters to every hop", async () => {
   neo4jCalls.length = 0;
   const strong = await graph(`/graph/neighbors?key=${encodeURIComponent(P_KASTELION)}&depth=2&min_weight=0.8`);
   assert.equal(strong.status, 200, strong.text.slice(0, 400));
@@ -750,7 +765,7 @@ await check("/graph/neighbors applies weight and type filters to every hop", asy
   assert.deepEqual(bogus.body.filters.types, ["OWNS"], "types outside the relation vocabulary must be ignored");
 });
 
-await check("/graph/neighbors returns a filtered-out node itself rather than nothing", async () => {
+await graphCheck("/graph/neighbors returns a filtered-out node itself rather than nothing", async () => {
   // Tallow Creek has one tie, weaker than the filter. A naive `UNWIND []` walk
   // would collapse the whole query and 404 on a node that plainly exists.
   const res = await graph(`/graph/neighbors?key=${encodeURIComponent(F_TALLOW)}&depth=2&min_weight=0.95`);
@@ -762,7 +777,7 @@ await check("/graph/neighbors returns a filtered-out node itself rather than not
 });
 
 // --- G6. /graph/path: shortest chain and handshake --------------------------
-await check("/graph/path finds the shortest chain between two entities", async () => {
+await graphCheck("/graph/path finds the shortest chain between two entities", async () => {
   neo4jCalls.length = 0;
   const res = await graph(`/graph/path?from=${encodeURIComponent(P_KASTELION)}&to=${encodeURIComponent(A_TAIL)}`);
 
@@ -786,7 +801,7 @@ await check("/graph/path finds the shortest chain between two entities", async (
   assertReadOnlyAndParameterised("/graph/path");
 });
 
-await check("/graph/path reports an unreachable pair instead of failing", async () => {
+await graphCheck("/graph/path reports an unreachable pair instead of failing", async () => {
   const res = await graph(`/graph/path?from=${encodeURIComponent(P_KASTELION)}&to=${encodeURIComponent(P_UNKNOWN)}`);
   assert.equal(res.status, 200, res.text.slice(0, 400));
   assert.equal(res.body.found, false);
@@ -800,7 +815,7 @@ await check("/graph/path reports an unreachable pair instead of failing", async 
   assert.equal(missing.status, 400);
 });
 
-await check("/graph/path bounds the weighted cost search and clamps its inputs", async () => {
+await graphCheck("/graph/path bounds the weighted cost search and clamps its inputs", async () => {
   neo4jCalls.length = 0;
   const weighted = await graph(
     `/graph/path?from=${encodeURIComponent(P_KASTELION)}&to=${encodeURIComponent(A_TAIL)}&cost=inverse-weight&max_hops=12`
@@ -829,7 +844,7 @@ await check("/graph/path bounds the weighted cost search and clamps its inputs",
 });
 
 // --- G7. /graph/table: paged metadata --------------------------------------
-await check("/graph/table pages nodes, edges and sources with server-side totals", async () => {
+await graphCheck("/graph/table pages nodes, edges and sources with server-side totals", async () => {
   const nodes = await graph("/graph/table?subject=nodes&limit=2&skip=1&sort=name&order=asc");
   assert.equal(nodes.status, 200, nodes.text.slice(0, 400));
   assert.equal(nodes.body.subject, "nodes");
@@ -861,7 +876,7 @@ await check("/graph/table pages nodes, edges and sources with server-side totals
 });
 
 // --- G8. Auth, method and configuration ------------------------------------
-await check("the graph API gates itself: token, relay fallback, opt-in public read", async () => {
+await graphCheck("the graph API gates itself: token, relay fallback, opt-in public read", async () => {
   neo4jCalls.length = 0;
   const anonymous = await graph("/graph/overview?limit=2", { token: null });
   assert.equal(anonymous.status, 401, "a private graph must require a token");
@@ -893,7 +908,7 @@ await check("the graph API gates itself: token, relay fallback, opt-in public re
   assert.equal(headerToken, 200, "x-graph-token is accepted for a browser that cannot set Authorization");
 });
 
-await check("the graph API is GET-only, rejects unknown routes, and can be switched off", async () => {
+await graphCheck("the graph API is GET-only, rejects unknown routes, and can be switched off", async () => {
   const posted = await graph("/graph/overview?limit=2", { method: "POST" });
   assert.equal(posted.status, 405, "a read-only API must not accept writes");
   assert.equal(posted.body.error.code, "method_not_allowed");
@@ -907,7 +922,7 @@ await check("the graph API is GET-only, rejects unknown routes, and can be switc
   assert.equal(disabled.body.error.code, "graph_disabled");
 });
 
-await check("an unconfigured database fails closed without touching the network", async () => {
+await graphCheck("an unconfigured database fails closed without touching the network", async () => {
   neo4jCalls.length = 0;
   const res = await graph("/graph/overview?limit=2", {
     envOverrides: { NEO4J_URI: "", NEO4J_PASSWORD: "" },
@@ -932,7 +947,7 @@ await check("an unconfigured database fails closed without touching the network"
 });
 
 // --- G9. Upstream failure mapping ------------------------------------------
-await check("Neo4j failures map to honest HTTP statuses without leaking detail", async () => {
+await graphCheck("Neo4j failures map to honest HTTP statuses without leaking detail", async () => {
   neo4jBehaviour.unauthorized = true;
   try {
     const res = await graph("/graph/overview?limit=2");
@@ -966,7 +981,7 @@ await check("Neo4j failures map to honest HTTP statuses without leaking detail",
 });
 
 // --- G10. Rate limiting and caching ----------------------------------------
-await check("graph queries share a token bucket, so a burst cannot stall the database", async () => {
+await graphCheck("graph queries share a token bucket, so a burst cannot stall the database", async () => {
   const env = makeGraphEnv({ GRAPH_RATE_PER_SEC: "0.01", GRAPH_BURST: "2" });
   neo4jCalls.length = 0;
 
@@ -988,7 +1003,7 @@ await check("graph queries share a token bucket, so a burst cannot stall the dat
 // enough to assert on without waiting the 100 s that drain would need.
 await sleep(150);
 
-await check("a cached graph response costs one query and stores no credential", async () => {
+await graphCheck("a cached graph response costs one query and stores no credential", async () => {
   const store = new Map();
   const kv = {
     async get(key, type) {
@@ -1027,7 +1042,7 @@ await check("a cached graph response costs one query and stores no credential", 
 });
 
 // --- G11. Response ceiling --------------------------------------------------
-await check("an oversized graph response is refused rather than shipped", async () => {
+await graphCheck("an oversized graph response is refused rather than shipped", async () => {
   const res = await graph("/graph/overview?limit=6", { envOverrides: { GRAPH_MAX_RESPONSE_BYTES: "512" } });
   assert.equal(res.status, 502);
   assert.equal(res.body.error.code, "response_too_large");
@@ -1035,13 +1050,13 @@ await check("an oversized graph response is refused rather than shipped", async 
 });
 
 // --- G12. The console's contract with the relay's /health -------------------
-await check("/health advertises the graph API without exposing it", async () => {
+await graphCheck("/health advertises the graph API without exposing it", async () => {
   const res = await relay("/health");
   assert.equal(res.status, 200, res.text.slice(0, 300));
   assert.equal(res.body.bindings.graph_api, false, "the relay env has no NEO4J_* secrets, so the graph API is off");
   assert.equal(res.body.bindings.graph_token, false);
   assert.equal(res.body.graph_api, "/graph/health");
-  assert.equal(res.body.version, "1.6.2");
+  assert.equal(res.body.version, internals.WORKER_VERSION);
   assertNoSecrets(res.text, "/health");
 
   const configured = await graph("/health", { token: null });
@@ -1051,7 +1066,7 @@ await check("/health advertises the graph API without exposing it", async () => 
 });
 
 // --- G13. CORS: one origin per answer, and only an allowed one --------------
-await check("CORS answers per request, and only for origins the operator allowed", async () => {
+await graphCheck("CORS answers per request, and only for origins the operator allowed", async () => {
   const list = "https://console.example, https://mirror.example";
 
   // The wildcard deployment, which is what the shipped console runs against.
@@ -1115,7 +1130,7 @@ await check("CORS answers per request, and only for origins the operator allowed
 });
 
 // --- G14. The SSRF guard: loopback in every notation ------------------------
-await check("the SSRF guard refuses loopback in every notation it can be written", async () => {
+await graphCheck("the SSRF guard refuses loopback in every notation it can be written", async () => {
   // Every case is https on purpose. Under the default ENFORCE_HTTPS a plaintext
   // URL is refused for being plaintext, which would make this suite pass whether
   // or not the address guard works at all — the mutation that deleted the
@@ -1220,7 +1235,7 @@ async function robotsVerdict(host, robotsText, path) {
   return relay("/fetch", { url: `https://${host}${path}`, respect_robots: true }, SECRETS.PROXY_AUTH_TOKEN, env);
 }
 
-await check("the robots evaluator honours the rules, not the longest line of the file", async () => {
+await graphCheck("the robots evaluator honours the rules, not the longest line of the file", async () => {
   // This is the case that used to fail: `Disallow: /private` matched `/public`,
   // because the regex built for a pattern without a trailing `$` ended in an
   // alternative that matches any non-empty path. With longest-match precedence,
@@ -1276,7 +1291,7 @@ await check("the robots evaluator honours the rules, not the longest line of the
 // origin sees. The Python side makes the same promise for the direct transport
 // (`header/U/NSAFE_HEADERS`), and the two lists are deliberately not identical:
 // this one is the edge's, and the edge is where those headers appear.
-await check("caller headers travel, hop-by-hop and edge-set names do not", async () => {
+await graphCheck("caller headers travel, hop-by-hop and edge-set names do not", async () => {
   const response = await relay("/fetch", {
     url: "https://caller.example/page",
     headers: {
@@ -1316,7 +1331,7 @@ await check("caller headers travel, hop-by-hop and edge-set names do not", async
 // and "allowed" in the runner would make the answer depend on which transport
 // happened to serve the request. `tests/test_robots.py::RFC_FIXTURES` is the same
 // table — change one, change both.
-await check("robots evaluation matches the RFC fixtures and the Python transport", async () => {
+await graphCheck("robots evaluation matches the RFC fixtures and the Python transport", async () => {
   const { parseRobots, isPathAllowed } = (await import("../worker.js")).__internals;
   const verdict = (rules, path, agent) => isPathAllowed(parseRobots(rules), path, agent).allowed;
 
@@ -1366,7 +1381,7 @@ await check("robots evaluation matches the RFC fixtures and the Python transport
     "one crawler's crawl delay must not throttle the others");
 });
 
-await check("an unreadable robots.txt is reported as unavailable, not as a verdict", async () => {
+await graphCheck("an unreadable robots.txt is reported as unavailable, not as a verdict", async () => {
   // RFC 9309 §2.3.1.4: an unreachable robots.txt means complete disallow. The old
   // fail-open answer was a free crawl for anyone who could break their own rules
   // file — but the client must still be able to tell "you may not" from "I could
@@ -1405,7 +1420,7 @@ await check("an unreadable robots.txt is reported as unavailable, not as a verdi
 });
 
 // --- G16. Workers KV Free allows 1k writes/day: only hot hosts may spend them ---
-await check("KV writes go to hot hosts only, so an hourly news run cannot drain the free quota", async () => {
+await graphCheck("KV writes go to hot hosts only, so an hourly news run cannot drain the free quota", async () => {
   // The relay is expected to be *polite* rather than to coordinate: a host that
   // receives one request in a sync window has no shared budget to defend, and a
   // KV read or write for it is pure quota spend. Before this rule, every served

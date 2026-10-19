@@ -55,15 +55,27 @@ for labels, cost arithmetic, graph confidence and the opt-in live tests.
 The v1.7 graph layer adds APOC entity resolution (`entity_resolution.py`), an exact
 ownership-cycle detector and a Cypher `PUPPET_MASTER_OF` blend of PageRank, betweenness and
 in-degree (`graph_analytics.py --puppet-master --cycles`). New entity nodes stop at 90 % of
-the free-tier ceiling (`AURA_NODE_STOP=180000`), and a daily `RETURN 1` heartbeat
-(`keep_alive.py`) keeps the instance from pausing after 72 idle hours. See
-[operations](docs/operations.md#the-180-000-node-stop).
+the free-tier ceiling (`AURA_NODE_STOP=180000`). AuraDB pauses after 72 hours without a
+*write*, so the Worker's cron writes a single `:_PuppetNetHeartbeat` node every 12 hours;
+the daily `RETURN 1` in `keep_alive.py` stays as the end-to-end credential check. See
+[operations](docs/operations.md#the-72-hour-pause) and
+[edge hardening](docs/worker-hardening.md).
 The frontend adds one statically prerendered profile page per published entity
 (`/entity/<slug>/`) with Schema.org JSON-LD, static Open Graph cards, a generated
 `sitemap.xml`, a fully keyboard-operable graph and a real table alternative to the WebGL
 canvas. Still a zero-cost `output: 'export'` deployment: no SSR, no Pages Functions. See
 [entity pages](docs/entity-pages.md) and the
 [dashboard guide](docs/webgl-dashboard.md#keyboard-navigation-wcag-21-aa).
+The v1.7 edge layer is hardened for the free tier and maintained by cron: the graph
+API is capped at **25 database requests/minute** (per caller and fleet-wide, clamped in
+code), every outbound fetch is SSRF-checked on **each redirect hop** with credentials
+stripped across origins, and `[triggers]` in `wrangler.toml` schedules the AuraDB
+keep-alive (`0 */12 * * *`) and a free-tier snapshot (`23 */3 * * *`). The snapshot feeds a
+server-rendered `/status` dashboard — no script, token-protected, `n/a` instead of invented
+numbers — showing Workers requests today, AuraDB nodes/relationships against the 200 000 /
+400 000 ceilings, the live graph budget and the last keep-alive. Distributed locks are KV
+leases, so no paid Durable Object or Queue is involved. See
+[worker-hardening.md](docs/worker-hardening.md).
 Root compatibility symlinks retain the previous Python/console/tooling paths without
 source duplication; use a symlink-capable checkout.
 

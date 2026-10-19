@@ -24,6 +24,9 @@
  *  Routes
  *  ------
  *   GET    /health            liveness + build metadata            (public)
+ *   GET    /status            free-tier health dashboard (HTML)    (auth, opt-in public)
+ *   GET    /status.json       same data as JSON                    (auth, opt-in public)
+ *   POST   /status/refresh    run a live AuraDB probe now           (auth)
  *   GET    /stats             rate-limit / queue counters          (auth)
  *   POST   /fetch             proxy a request                      (auth)
  *   GET    /fetch?url=...     same, convenience form                (auth)
@@ -38,18 +41,23 @@
  *  before any egress is performed.
  *
  *  Bindings (wrangler.toml)
- *   - RATE_LIMIT_KV : KV namespace  (token buckets, robots.txt cache)
+ *   - RATE_LIMIT_KV : KV namespace  (token buckets, robots.txt cache, locks)
  *   - RESULT_KV     : KV namespace  (response cache, queued task results)
  *   - FETCH_QUEUE   : Queue producer (deferred requests)
- *   - Secrets       : PROXY_AUTH_TOKEN / PROXY_AUTH_TOKENS
+ *   - Secrets       : PROXY_AUTH_TOKEN / PROXY_AUTH_TOKENS,
+ *                     NEO4J_URI / NEO4J_USERNAME / NEO4J_PASSWORD,
+ *                     CF_API_TOKEN / CF_ACCOUNT_ID (optional analytics)
+ *   - Cron Triggers : keep-alive (every 12 h) and health snapshot (every 3 h)
  *
  *  All bindings are optional: the Worker degrades to a stateless relay with
- *  per-isolate rate limiting when KV/Queues are not attached.
+ *  per-isolate rate limiting when KV/Queues are not attached. Distributed
+ *  locks are advisory — see `acquireLock` — because Workers KV is eventually
+ *  consistent; they exist to stop duplicate cron work, not to serialise writes.
  * ============================================================================
  */
 
 const WORKER_NAME = "puppetnet-edge-relay";
-const WORKER_VERSION = "1.6.2";
+const WORKER_VERSION = "1.7.0";
 
 /* -------------------------------------------------------------------------- */
 /*  Tunables (env-overridable)                                                */
@@ -64,8 +72,21 @@ const DEFAULTS = Object.freeze({
   MAX_HOST_BURST: 20,
   /** Global safety valve across all hosts (protects free-tier quotas). */
   GLOBAL_RPM: 900,
+  /** Hard ceiling for database-backed requests. AuraDB Free is one 200k-node
+   *  instance; 25/min leaves the console responsive without letting one client
+   *  turn a page refresh loop into a database incident. Not raisable. */
+  GRAPH_RPM: 25,
+  GRAPH_CLIENT_RPM: 25,
+  /** Distributed graph-bucket sync cadence. Every sync is one KV read and one
+   *  write; 5 minutes keeps a constantly-used API under 300 writes/day. */
+  GRAPH_KV_SYNC_INTERVAL_MS: 300_000,
   /** Cross-isolate KV synchronisation cadence for a bucket. */
   KV_SYNC_INTERVAL_MS: 20_000,
+  /** Failed bearer attempts before an address is briefly locked out. */
+  AUTH_FAILURE_LIMIT: 10,
+  AUTH_FAILURE_WINDOW_MS: 15 * 60_000,
+  /** Redirect chain limit for the SSRF guard. */
+  MAX_REDIRECTS: 5,
   /** Response / body caps. */
   MAX_RESPONSE_BYTES: 8 * 1024 * 1024,
   MAX_CONTROL_BODY_BYTES: 256 * 1024,
@@ -331,6 +352,14 @@ function corsHeaders(env) {
     // Every route answers JSON, including the ones that echo a path or an error
     // message back; nosniff keeps a browser from guessing otherwise.
     "X-Content-Type-Options": "nosniff",
+    // The Worker is an API, never a browsable page: no framing, no referrer
+    // leak of a token-bearing URL, no device permissions. HSTS is harmless on
+    // the workers.dev host and correct on a custom domain.
+    "Referrer-Policy": "no-referrer",
+    "X-Frame-Options": "DENY",
+    "Cross-Origin-Resource-Policy": "same-origin",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+    "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
   };
   // Access-Control-Allow-Origin names exactly one origin, or `*`. Joining a list
   // into it — what this function used to do — produces a value every browser
@@ -374,6 +403,16 @@ function errorResponse(code, message, status, extra = {}, env = {}) {
 function readConfig(env) {
   return {
     hostRatePerSec: num(env.HOST_RATE_PER_SEC, DEFAULTS.HOST_RATE_PER_SEC, DEFAULTS.MIN_HOST_RATE_PER_SEC, 1000),
+    // Lower it, never raise it: the ceiling belongs to the database, not to a
+    // deployment variable.
+    graphRpm: Math.min(DEFAULTS.GRAPH_RPM, num(env.GRAPH_RPM, DEFAULTS.GRAPH_RPM, 1, DEFAULTS.GRAPH_RPM)),
+    graphClientRpm: Math.min(DEFAULTS.GRAPH_CLIENT_RPM, num(env.GRAPH_CLIENT_RPM, DEFAULTS.GRAPH_CLIENT_RPM, 1, DEFAULTS.GRAPH_CLIENT_RPM)),
+    graphKvSyncIntervalMs: num(env.GRAPH_KV_SYNC_INTERVAL_MS, DEFAULTS.GRAPH_KV_SYNC_INTERVAL_MS, 60_000, 3_600_000),
+    authFailureLimit: num(env.AUTH_FAILURE_LIMIT, DEFAULTS.AUTH_FAILURE_LIMIT, 3, 1000),
+    authFailureWindowMs: num(env.AUTH_FAILURE_WINDOW_MS, DEFAULTS.AUTH_FAILURE_WINDOW_MS, 60_000, 86_400_000),
+    maxRedirects: num(env.MAX_REDIRECTS, DEFAULTS.MAX_REDIRECTS, 0, 10),
+    blockedPorts: String(env.BLOCKED_TARGET_PORTS || "22,23,25,445,1433,2375,2376,3306,5432,6379,9200,11211,27017")
+      .split(",").map((value) => parseInt(value.trim(), 10)).filter((value) => Number.isInteger(value) && value > 0 && value < 65536),
     hostBurst: num(env.HOST_BURST, DEFAULTS.HOST_BURST, 1, DEFAULTS.MAX_HOST_BURST),
     minHostRatePerSec: num(env.MIN_HOST_RATE_PER_SEC, DEFAULTS.MIN_HOST_RATE_PER_SEC, 0.001, 100),
     maxHostBurst: num(env.MAX_HOST_BURST, DEFAULTS.MAX_HOST_BURST, 1, 1000),
@@ -773,14 +812,22 @@ function checkGlobalRate(cfg) {
  * in a single run and left the fleet without shared rate limits for the rest of
  * the day. See `docs/edge-relay.md` § Free-tier KV budget.
  */
-async function syncBucketWithKv(env, cfg, host, local) {
+async function syncBucketWithKv(env, cfg, host, local, policy) {
   if (!env.RATE_LIMIT_KV) return local;
   const key = `rl:${host}`;
   const now = nowMs();
   const hot = local.hits >= 2 || local.denied === true;
   if (!hot) return local;
   const last = localSyncState.get(host) || 0;
-  if (now - last < cfg.kvSyncIntervalMs) return local;
+  // The graph API has its own (much slower) sync cadence: its budget is a
+  // database-protection ceiling, and publishing it every 20 s would spend the
+  // KV Free write quota on a namespace that also stores locks and cache entries.
+  const interval = policy && policy.kv_sync_interval_ms
+    ? Math.max(cfg.kvSyncIntervalMs, policy.kv_sync_interval_ms)
+    : cfg.kvSyncIntervalMs;
+  if (now - last < interval) return local;
+  const effectiveRate = (policy && policy.rate) || cfg.hostRatePerSec;
+  const effectiveBurst = (policy && policy.burst) || cfg.hostBurst;
   localSyncState.set(host, now);
 
   let remote = null;
@@ -796,8 +843,8 @@ async function syncBucketWithKv(env, cfg, host, local) {
     // cfg.maxHostBurst here let a neighbour's bucket refill far above the burst
     // it was written with, so the conservative merge below compared against an
     // inflated number and dropped the constraint instead of applying it.
-    const remoteBurst = num(remote.burst, cfg.hostBurst, 1, cfg.maxHostBurst);
-    const remoteRefilled = refill({ tokens: remote.tokens, ts: remote.ts }, remote.rate || cfg.hostRatePerSec, remoteBurst, now);
+    const remoteBurst = num(remote.burst, effectiveBurst, 1, cfg.maxHostBurst);
+    const remoteRefilled = refill({ tokens: remote.tokens, ts: remote.ts }, remote.rate || effectiveRate, remoteBurst, now);
     if (remoteRefilled.tokens < local.tokens) {
       local.tokens = remoteRefilled.tokens;
       local.ts = now;
@@ -807,8 +854,8 @@ async function syncBucketWithKv(env, cfg, host, local) {
   try {
     await env.RATE_LIMIT_KV.put(
       key,
-      JSON.stringify({ tokens: local.tokens, ts: local.ts, rate: cfg.hostRatePerSec, burst: cfg.hostBurst, v: WORKER_VERSION }),
-      { expirationTtl: Math.max(120, Math.ceil(3600 / Math.max(0.01, cfg.hostRatePerSec))) }
+      JSON.stringify({ tokens: local.tokens, ts: local.ts, rate: effectiveRate, burst: effectiveBurst, v: WORKER_VERSION }),
+      { expirationTtl: Math.max(120, Math.ceil(3600 / Math.max(0.01, effectiveRate))) }
     );
   } catch (err) {
     console.warn(`[ratelimit] KV write failed for ${host}: ${err && err.message}`);
@@ -846,7 +893,7 @@ async function acquireHostToken(env, cfg, host, cost, requestedPolicy) {
   bucket.hits += 1;
 
   refill(bucket, ratePerSec, burst, now);
-  bucket = await syncBucketWithKv(env, cfg, host, bucket);
+  bucket = await syncBucketWithKv(env, cfg, host, bucket, { rate: ratePerSec, burst, kv_sync_interval_ms: requestedPolicy && requestedPolicy.kv_sync_interval_ms });
   refill(bucket, ratePerSec, burst, nowMs());
 
   if (bucket.tokens >= cost) {
@@ -866,7 +913,7 @@ async function acquireHostToken(env, cfg, host, cost, requestedPolicy) {
   bucket.denied = true;
   localBuckets.set(host, bucket);
   if (env.RATE_LIMIT_KV) {
-    syncBucketWithKv(env, cfg, host, bucket).catch(() => {});
+    syncBucketWithKv(env, cfg, host, bucket, { rate: ratePerSec, burst, kv_sync_interval_ms: requestedPolicy && requestedPolicy.kv_sync_interval_ms }).catch(() => {});
   }
   return { allowed: false, remaining: bucket.tokens, retryAfter, policy };
 }
@@ -884,6 +931,139 @@ function rateLimitSnapshot() {
   }
   hosts.sort((a, b) => a.host.localeCompare(b.host));
   return hosts.slice(0, 500);
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Caller identity, per-client windows and auth throttling                   */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Cloudflare sets `CF-Connecting-IP` at the edge and overwrites any caller
+ * value, so it is the only address header worth trusting. `X-Forwarded-For`
+ * is deliberately not consulted: the relay is reachable directly, and a
+ * caller-controlled header would let one client mint unlimited identities
+ * (and evade the 25/min database budget).
+ */
+function clientAddress(request) {
+  if (!request || !request.headers) return "";
+  return String(request.headers.get("cf-connecting-ip") || request.headers.get("x-real-ip") || "").trim();
+}
+
+/**
+ * The address is hashed before it becomes a key. Distribution across millions
+ * of callers does not need the plaintext, and a KV/rate-limit key is exactly
+ * the kind of place an IP should not linger. The salt is optional; without it
+ * the hash is only a privacy speed bump, not a cryptographic commitment.
+ */
+function clientFingerprint(request, env) {
+  const address = clientAddress(request);
+  if (!address) return "shared";
+  return fnv1a(`${(env && env.CLIENT_KEY_SALT) || "puppetnet-edge"}:${address}`);
+}
+
+const graphClients = new Map(); // fingerprint -> { minute, count }
+const authFailures = new Map(); // fingerprint -> { count, first, until }
+const graphWindow = { minute: -1, count: 0 };
+
+function pruneCallerState(now) {
+  if (graphClients.size < 512 && authFailures.size < 512) return;
+  const minute = Math.floor(now / 60000);
+  for (const [key, entry] of graphClients) {
+    if (entry.minute !== minute) graphClients.delete(key);
+  }
+  for (const [key, entry] of authFailures) {
+    if (entry.until < now && now - entry.first > 3600_000) authFailures.delete(key);
+  }
+}
+
+/**
+ * Hard per-caller budget for the database-backed routes.
+ *
+ * A fixed window is used instead of the token bucket because the requirement is
+ * a ceiling per clock minute ("25 requests/minute"), not a smooth rate: the
+ * bucket still decides burst shaping, this decides the minute. In-isolate only —
+ * KV is not linearizable and a read/write per caller would spend the Free-tier
+ * write quota faster than the database saves it.
+ */
+function checkClientGraphRate(request, env, cfg) {
+  const now = nowMs();
+  const minute = Math.floor(now / 60000);
+  const key = clientFingerprint(request, env);
+  pruneCallerState(now);
+  let entry = graphClients.get(key);
+  if (!entry || entry.minute !== minute) {
+    entry = { minute, count: 0 };
+    graphClients.set(key, entry);
+  }
+  if (graphWindow.minute !== minute) {
+    graphWindow.minute = minute;
+    graphWindow.count = 0;
+  }
+  graphWindow.count += 1;
+  const resetSeconds = Math.max(1, Math.ceil(((minute + 1) * 60000 - now) / 1000));
+  if (entry.count >= cfg.graphClientRpm) {
+    return { allowed: false, remaining: 0, limit: cfg.graphClientRpm, resetSeconds, retryAfter: resetSeconds };
+  }
+  entry.count += 1;
+  return { allowed: true, remaining: cfg.graphClientRpm - entry.count, limit: cfg.graphClientRpm, resetSeconds, retryAfter: 0 };
+}
+
+function rateHeaders(budget) {
+  return {
+    "X-RateLimit-Limit": String(budget.limit),
+    "X-RateLimit-Remaining": String(Math.max(0, budget.remaining)),
+    "X-RateLimit-Reset": String(budget.resetSeconds),
+  };
+}
+
+/** How many seconds a brute-forcing address is locked out for, if any. */
+function authLockSeconds(request, env, cfg) {
+  const entry = authFailures.get(clientFingerprint(request, env));
+  if (!entry || !entry.until) return 0;
+  const left = entry.until - nowMs();
+  return left > 0 ? Math.ceil(left / 1000) : 0;
+}
+
+function recordAuthFailure(request, env, cfg) {
+  const key = clientFingerprint(request, env);
+  const now = nowMs();
+  let entry = authFailures.get(key);
+  if (!entry || now - entry.first > cfg.authFailureWindowMs) entry = { count: 0, first: now, until: 0 };
+  entry.count += 1;
+  // Ten bad tokens in a quarter of an hour is a credential-stuffing attempt,
+  // not a typo. The lock is per address and in-isolate: a wrong token from one
+  // caller must not decide anything for the harvest runner on another address.
+  if (entry.count >= cfg.authFailureLimit) entry.until = now + cfg.authFailureWindowMs;
+  authFailures.set(key, entry);
+}
+
+function clearAuthFailures(request, env) {
+  authFailures.delete(clientFingerprint(request, env));
+}
+
+/** Test hook: reset only the database budget, leaving relay balances intact. */
+function resetGraphRateLimits() {
+  graphClients.clear();
+  graphWindow.minute = -1;
+  graphWindow.count = 0;
+  localBuckets.delete(GRAPH_RATE_HOST);
+  localSyncState.delete(GRAPH_RATE_HOST);
+  graphHealthCache.at = 0;
+  graphHealthCache.payload = null;
+}
+
+/** Test hook: reset every module-level counter so a suite can isolate checks. */
+function resetRateLimits() {
+  localBuckets.clear();
+  localSyncState.clear();
+  globalWindow.minute = 0;
+  globalWindow.count = 0;
+  graphClients.clear();
+  authFailures.clear();
+  graphWindow.minute = -1;
+  graphWindow.count = 0;
+  graphHealthCache.at = 0;
+  graphHealthCache.payload = null;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1015,11 +1195,11 @@ async function checkRobots(env, cfg, url, userAgent, respectRobots) {
     try {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 8000);
-      const resp = await fetch(robotsUrl, {
+      const { response: resp } = await guardedFetch(robotsUrl, {
         headers: { "User-Agent": userAgent, Accept: "text/plain,*/*;q=0.5" },
         signal: controller.signal,
         cf: { cacheEverything: false },
-      });
+      }, cfg, { maxRedirects: 2 });
       clearTimeout(timer);
       if (resp.ok) {
         text = (await resp.text()).slice(0, 512 * 1024);
@@ -1077,6 +1257,12 @@ function validateTargetUrl(rawUrl, cfg) {
   if (cfg.enforceHttps && parsed.protocol !== "https:") {
     return { error: "Plaintext HTTP is disabled by policy (set ENFORCE_HTTPS=false to override)" };
   }
+  // `https://user:pass@host/` is not a target, it is a credential on its way
+  // into a log line and a redirect chain. The relay injects the credentials it
+  // owns at egress; it never forwards a caller's.
+  if (parsed.username || parsed.password) {
+    return { error: "URLs may not embed credentials" };
+  }
   // Two normalisations before any comparison, because the URL parser hands out
   // names that look different and resolve identically:
   //   - a trailing dot is the DNS root and changes nothing about where the name
@@ -1090,6 +1276,19 @@ function validateTargetUrl(rawUrl, cfg) {
   // guard belongs to WHATWG, and the test asserts it stays that way.
   const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.+$/, "");
   if (!host) return { error: "Empty host" };
+  // An IPv6 zone index (`fe80::1%25eth0`) addresses a local interface, and the
+  // WHATWG parser hands it through. There is no legitimate public target that
+  // needs one.
+  if (host.includes("%")) return { error: "IPv6 zone identifiers are not routable targets" };
+
+  // Port policy is a blocklist, not an allowlist: the relay legitimately talks
+  // to public APIs on 8080/8443 and to a local Neo4j on 7474, so an allowlist
+  // would break documented deployments. These are the ports that turn an SSRF
+  // into direct access to a database, cache, admin agent or mail relay.
+  const port = parsed.port ? Number(parsed.port) : (parsed.protocol === "https:" ? 443 : 80);
+  if (cfg.blockedPorts && cfg.blockedPorts.includes(port)) {
+    return { error: `Port ${port} is blocked by policy` };
+  }
 
   for (const suffix of cfg.blockedHostSuffixes) {
     if (host === suffix || host.endsWith(`.${suffix}`)) return { error: `Host blocked by policy: ${host}` };
@@ -1127,6 +1326,141 @@ function validateTargetUrl(rawUrl, cfg) {
     }
   }
   return { url: parsed };
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Redirect-safe fetch (the other half of the SSRF guard)                    */
+/* -------------------------------------------------------------------------- */
+
+const REDIRECT_STATUS = Object.freeze(new Set([301, 302, 303, 307, 308]));
+
+/** Headers that authenticate us to one origin and must not follow a redirect. */
+const CREDENTIAL_HEADERS = Object.freeze([
+  "authorization", "cookie", "proxy-authorization", "x-api-key", "x-rapidapi-key",
+  "x-rapidapi-host", "x-proxy-token", "x-graph-token", "x-status-token",
+]);
+
+function withoutCredentials(headers) {
+  const next = new Headers();
+  headers.forEach((value, key) => {
+    if (!CREDENTIAL_HEADERS.includes(key.toLowerCase())) next.set(key, value);
+  });
+  return next;
+}
+
+/**
+ * `fetch` with manual redirects, re-validating every hop.
+ *
+ * `redirect: "follow"` is the SSRF hole that survives every hostname check:
+ * `https://allowed.example/r` may answer `302 Location: http://169.254.169.254/`
+ * and the runtime follows it internally, so the guard never sees the second URL.
+ * This helper asks for the 3xx itself, resolves `Location` against the current
+ * URL, refuses a downgrade to plaintext (ENFORCE_HTTPS still applies), drops
+ * credentials when the origin changes, and returns the chain for the response
+ * report — with every URL already safe.
+ *
+ * It cannot resolve DNS. An edge Worker has no resolver API, so a public
+ * hostname that resolves to a private address is the platform's egress policy
+ * territory, not something a JS check can decide. What this layer does guarantee
+ * is that no literal private address, encoded address, blocked port or
+ * plaintext hop gets a request, including through a redirect.
+ */
+async function guardedFetch(rawUrl, init, cfg, options = {}) {
+  const maxRedirects = options.maxRedirects === undefined ? cfg.maxRedirects : options.maxRedirects;
+  let current;
+  try {
+    current = new URL(rawUrl);
+  } catch (_) {
+    const err = new Error("Malformed URL");
+    err.ssrf = true;
+    err.code = "invalid_target";
+    throw err;
+  }
+  let headers = new Headers(init.headers || {});
+  let method = String(init.method || "GET").toUpperCase();
+  let body = init.body;
+  const baseInit = { ...init };
+  const chain = [];
+
+  for (let hop = 0; ; hop += 1) {
+    const verdict = validateTargetUrl(current.toString(), cfg);
+    if (verdict.error) {
+      const err = new Error(verdict.error);
+      err.ssrf = true;
+      err.code = "invalid_target";
+      err.blocked_url = current.toString();
+      err.chain = chain;
+      throw err;
+    }
+    current = verdict.url;
+    const response = await fetch(current.toString(), {
+      ...baseInit,
+      method,
+      headers,
+      body: method === "GET" || method === "HEAD" ? undefined : body,
+      redirect: "manual",
+    });
+    const location = response.headers.get("location");
+    if (!REDIRECT_STATUS.has(response.status) || !location) {
+      return { response, url: current, redirects: chain };
+    }
+    if (hop >= maxRedirects) {
+      // maxRedirects = 0 is the caller asking for the 3xx itself
+      // (`follow_redirects: false`); any other limit is a loop or a chain that
+      // is too long to reason about, and returning the last hop would hide it.
+      if (maxRedirects === 0) return { response, url: current, redirects: chain };
+      const err = new Error(`More than ${maxRedirects} redirects`);
+      err.ssrf = true;
+      err.code = "too_many_redirects";
+      err.chain = chain;
+      throw err;
+    }
+    let next;
+    try {
+      next = new URL(location, current);
+    } catch (_) {
+      const err = new Error("Redirect target is not a valid URL");
+      err.ssrf = true;
+      err.code = "invalid_redirect";
+      err.chain = chain;
+      throw err;
+    }
+    if (next.origin !== current.origin) headers = withoutCredentials(headers);
+    // Browser semantics: 303 always becomes GET; 301/302 turn a POST into GET.
+    if (response.status === 303 || ((response.status === 301 || response.status === 302) && method !== "GET" && method !== "HEAD")) {
+      method = "GET";
+      body = undefined;
+      headers.delete("content-type");
+      headers.delete("content-length");
+    }
+    chain.push({ status: response.status, from: current.toString(), to: next.toString() });
+    current = next;
+  }
+}
+
+/**
+ * The Neo4j endpoint is operator configuration, not caller input — but a typo
+ * (`https://10.0.0.5:7474`) is exactly the private-network reach this Worker is
+ * supposed to make impossible, so it goes through the same address policy.
+ * Local plaintext development stays possible, and only that.
+ */
+function validateNeo4jEndpoint(env) {
+  const base = neo4jHttpBase(env);
+  if (!base) return "NEO4J_URI is not set on this Worker (or is a plaintext URI to a non-local host)";
+  let parsed;
+  try {
+    parsed = new URL(base);
+  } catch (_) {
+    return "NEO4J_URI is not a valid URL";
+  }
+  const local = /^(localhost|127\.0\.0\.1|\[::1\])$/i.test(parsed.hostname);
+  const cfg = readConfig(env);
+  const verdict = validateTargetUrl(base, {
+    ...cfg,
+    enforceHttps: false, // neo4jHttpBase already refuses remote plaintext
+    allowPrivateNetworks: cfg.allowPrivateNetworks || local,
+  });
+  return verdict.error || "";
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1303,17 +1637,15 @@ async function performFetch(task, env, cfg, meta = {}) {
       scrapeShield: false,
       minify: false,
     };
-    if (outgoing.resolve_override) cfOptions.resolveOverride = outgoing.resolve_override;
 
     try {
-      const upstream = await fetch(targetRaw, {
+      const { response: upstream, url: finalUrl, redirects } = await guardedFetch(targetRaw, {
         method,
         headers,
         body: method === "GET" || method === "HEAD" ? undefined : body,
-        redirect: outgoing.follow_redirects === false ? "manual" : "follow",
         signal: controller.signal,
         cf: cfOptions,
-      });
+      }, cfg, { maxRedirects: outgoing.follow_redirects === false ? 0 : cfg.maxRedirects });
       clearTimeout(timer);
       lastStatus = upstream.status;
 
@@ -1339,8 +1671,9 @@ async function performFetch(task, env, cfg, meta = {}) {
         ok: upstream.ok,
         status: upstream.status,
         status_text: upstream.statusText,
-        url: redactUrl(upstream.url || targetRaw, hostProfile),
+        url: redactUrl(finalUrl.toString() || targetRaw, hostProfile),
         request_url: reportUrl,
+        redirects: redirects.map((hop) => ({ ...hop, from: redactUrl(hop.from, hostProfile), to: redactUrl(hop.to, hostProfile) })),
         method,
         content_type: contentType,
         headers: responseHeaders,
@@ -1360,6 +1693,14 @@ async function performFetch(task, env, cfg, meta = {}) {
       };
     } catch (err) {
       clearTimeout(timer);
+      if (err && err.ssrf) {
+        // Deterministic refusal: retrying the same redirect chain would only
+        // repeat the same blocked hop.
+        lastError = err;
+        attemptsLog.push({ attempt, error: err.message, blocked: err.blocked_url || null, ua: fingerprint });
+        lastStatus = 0;
+        break;
+      }
       lastError = err && err.name === "AbortError" ? new Error(`timeout after ${task.timeout_ms}ms`) : err;
       attemptsLog.push({ attempt, error: String(lastError && lastError.message), ua: fingerprint });
       if (attempt < task.max_attempts) {
@@ -1375,6 +1716,7 @@ async function performFetch(task, env, cfg, meta = {}) {
     request_url: reportUrl,
     method,
     error: lastError ? String(lastError.message) : `upstream returned ${lastStatus}`,
+    ssrf_blocked: Boolean(lastError && lastError.ssrf),
     attempts: task.max_attempts,
     attempts_log: attemptsLog,
     elapsed_ms: nowMs() - startedAt,
@@ -1435,7 +1777,6 @@ function normaliseTask(input, cfg, defaults = {}) {
     origin: input.origin || defaults.origin,
     user_agent: input.user_agent || defaults.user_agent,
     accept: input.accept || defaults.accept,
-    resolve_override: input.resolve_override || defaults.resolve_override,
     fingerprint_salt: input.fingerprint_salt || defaults.fingerprint_salt || "",
     follow_redirects: input.follow_redirects !== false,
     cache_buster: input.cache_buster ?? defaults.cache_buster ?? "off",
@@ -1723,6 +2064,8 @@ function handleHealth(request, env, cfg) {
         graph_public_read: String(env.GRAPH_PUBLIC_READ || "false").toLowerCase() === "true",
       },
       graph_api: "/graph/health",
+      status: "/status",
+      cron: { keepalive: CRON_KEEPALIVE, health: CRON_HEALTH },
       host_profiles: Object.values(HOST_PROFILES).map((profile) => ({
         label: profile.label,
         api_mode: Boolean(profile.api),
@@ -1736,6 +2079,8 @@ function handleHealth(request, env, cfg) {
       })),
       limits: {
         global_rpm: cfg.globalRpm,
+        graph_rpm: cfg.graphRpm,
+        graph_client_rpm: cfg.graphClientRpm,
         host_rate_per_sec: cfg.hostRatePerSec,
         host_burst: cfg.hostBurst,
         max_response_bytes: cfg.maxResponseBytes,
@@ -1756,6 +2101,14 @@ function handleStats(env, cfg) {
       ok: true,
       version: WORKER_VERSION,
       global: { minute: globalWindow.minute, count: globalWindow.count, rpm_limit: cfg.globalRpm },
+      graph: {
+        minute: graphWindow.minute,
+        count: graphWindow.count,
+        rpm_limit: cfg.graphRpm,
+        clients: graphClients.size,
+        health_cached: Boolean(graphHealthCache.payload),
+        health_age_ms: graphHealthCache.at ? nowMs() - graphHealthCache.at : null,
+      },
       local_buckets: rateLimitSnapshot(),
       bindings: { rate_limit_kv: Boolean(env.RATE_LIMIT_KV), result_kv: Boolean(env.RESULT_KV), queue: Boolean(env.FETCH_QUEUE) },
     },
@@ -1795,6 +2148,11 @@ function handleStats(env, cfg) {
  */
 
 const GRAPH_RATE_HOST = "graph:neo4j";
+
+/** In-isolate cache for the three-query health probe. Public, so it must not
+ *  become a free database load generator; 60 s is short enough to notice an
+ *  outage and long enough that a refresh loop cannot multiply the probe. */
+const graphHealthCache = { at: 0, payload: null };
 
 const GRAPH_LIMITS = Object.freeze({
   DEFAULT_NODES: 250,
@@ -1891,8 +2249,13 @@ function readGraphConfig(env) {
     enabled: String(env.GRAPH_API_ENABLED ?? "true").toLowerCase() !== "false",
     publicRead: String(env.GRAPH_PUBLIC_READ ?? "false").toLowerCase() === "true",
     database: String(env.NEO4J_DATABASE || "neo4j").trim() || "neo4j",
-    ratePerSec: num(env.GRAPH_RATE_PER_SEC, 4, 0.05, 200),
-    burst: num(env.GRAPH_BURST, 8, 1, 200),
+    // Both values are capped at the database budget, not at a "reasonable API
+    // default". GRAPH_RATE_PER_SEC=200 in an operator's environment must not be
+    // able to turn the console into a load generator against AuraDB Free.
+    ratePerSec: num(env.GRAPH_RATE_PER_SEC, DEFAULTS.GRAPH_RPM / 60, 0.01, DEFAULTS.GRAPH_RPM / 60),
+    burst: num(env.GRAPH_BURST, DEFAULTS.GRAPH_RPM, 1, DEFAULTS.GRAPH_RPM),
+    clientRpm: DEFAULTS.GRAPH_CLIENT_RPM,
+    healthCacheSeconds: num(env.GRAPH_HEALTH_CACHE_SECONDS, 60, 5, 3600),
     cacheTtlSeconds: num(env.GRAPH_CACHE_TTL_SECONDS, 60, 0, 86400),
     timeoutMs: num(env.GRAPH_TIMEOUT_MS, 20000, 1000, 60000),
     maxNodes: num(env.GRAPH_MAX_NODES, GRAPH_LIMITS.MAX_NODES, 1, 5000),
@@ -2014,6 +2377,10 @@ async function neo4jQuery(env, gcfg, statements, ctx) {
   }
   const password = String(env.NEO4J_PASSWORD || "");
   if (!password) throw graphError("neo4j_unconfigured", "NEO4J_PASSWORD is not set on this Worker", 503);
+  const endpointProblem = validateNeo4jEndpoint(env);
+  if (endpointProblem) {
+    throw graphError("neo4j_unconfigured", `Neo4j endpoint rejected: ${endpointProblem}`, 503);
+  }
   const user = String(env.NEO4J_USERNAME || env.NEO4J_USER || "neo4j");
 
   const url = `${base}/db/${encodeURIComponent(gcfg.database)}/tx/commit`;
@@ -2024,6 +2391,9 @@ async function neo4jQuery(env, gcfg, statements, ctx) {
   try {
     const response = await fetch(url, {
       method: "POST",
+      // A database transaction endpoint never legitimately redirects, and
+      // following one would carry the Basic credentials to the new origin.
+      redirect: "error",
       signal: controller.signal,
       headers: {
         "content-type": "application/json",
@@ -2216,6 +2586,30 @@ function trimList(list, max) {
 /* ---- handlers ------------------------------------------------------------ */
 
 async function handleGraphHealth(request, env, cfg, gcfg) {
+  // Public and unauthenticated, so it must be the cheapest route in the file.
+  // Before this gate one loop over `/graph/health` ran three Cypher statements
+  // per request — a free database load generator with a public URL.
+  const budget = checkClientGraphRate(request, env, cfg);
+  if (!budget.allowed) {
+    return errorResponse(
+      "graph_rate_limited",
+      `Health budget exhausted: at most ${budget.limit} database-backed requests per minute`,
+      429,
+      { retry_after: budget.retryAfter, headers: rateHeaders(budget) },
+      env
+    );
+  }
+
+  const now = nowMs();
+  if (graphHealthCache.payload && now - graphHealthCache.at < gcfg.healthCacheSeconds * 1000) {
+    return jsonResponse(
+      { ...graphHealthCache.payload, cached: true, age_ms: now - graphHealthCache.at },
+      200,
+      { "X-PuppetNET-Cache": "HIT", ...rateHeaders(budget) },
+      env
+    );
+  }
+
   const configured = graphConfigured(env);
   let counts = null;
   let probeError = null;
@@ -2242,41 +2636,41 @@ async function handleGraphHealth(request, env, cfg, gcfg) {
     }
   }
 
-  return jsonResponse(
-    {
-      ok: Boolean(configured && !probeError),
-      worker: WORKER_NAME,
-      version: WORKER_VERSION,
-      time: new Date().toISOString(),
-      graph: {
-        api: "graph/1",
-        configured: configured,
-        // The host only: a URI can carry credentials, and /graph/health is public.
-        host: neo4jPublicHost(env),
-        database: gcfg.database,
-        public_read: gcfg.publicRead,
-        cache_ttl_seconds: gcfg.cacheTtlSeconds,
-        path_alternatives: gcfg.alternatives,
-        limits: {
-          max_nodes: Math.min(gcfg.maxNodes, GRAPH_LIMITS.MAX_NODES),
-          default_nodes: GRAPH_LIMITS.DEFAULT_NODES,
-          max_depth: Math.min(gcfg.maxDepth, GRAPH_LIMITS.MAX_DEPTH),
-          max_hops: Math.min(gcfg.maxHops, GRAPH_LIMITS.MAX_HOPS),
-          max_table_rows: GRAPH_LIMITS.MAX_TABLE_ROWS,
-          rate_per_sec: gcfg.ratePerSec,
-          burst: gcfg.burst,
-        },
-        counts: counts,
-        error: probeError,
+  const payload = {
+    ok: Boolean(configured && !probeError),
+    worker: WORKER_NAME,
+    version: WORKER_VERSION,
+    time: new Date().toISOString(),
+    graph: {
+      api: "graph/1",
+      enabled: gcfg.enabled,
+      configured: configured,
+      // The host only: a URI can carry credentials, and /graph/health is public.
+      host: neo4jPublicHost(env),
+      database: gcfg.database,
+      public_read: gcfg.publicRead,
+      cache_ttl_seconds: gcfg.cacheTtlSeconds,
+      path_alternatives: gcfg.alternatives,
+      limits: {
+        max_nodes: Math.min(gcfg.maxNodes, GRAPH_LIMITS.MAX_NODES),
+        default_nodes: GRAPH_LIMITS.DEFAULT_NODES,
+        max_depth: Math.min(gcfg.maxDepth, GRAPH_LIMITS.MAX_DEPTH),
+        max_hops: Math.min(gcfg.maxHops, GRAPH_LIMITS.MAX_HOPS),
+        max_table_rows: GRAPH_LIMITS.MAX_TABLE_ROWS,
+        rate_per_sec: gcfg.ratePerSec,
+        burst: gcfg.burst,
+        rpm: cfg.graphRpm,
+        client_rpm: cfg.graphClientRpm,
       },
-      endpoints: ["/graph/health", "/graph/overview", "/graph/search", "/graph/node", "/graph/neighbors", "/graph/path", "/graph/table"],
+      counts: counts,
+      error: probeError,
     },
-    // 200 even when unhealthy: a monitoring probe needs the detail, and the
-    // `ok` flag carries the verdict (same contract as /health).
-    200,
-    {},
-    env
-  );
+    endpoints: ["/graph/health", "/graph/overview", "/graph/search", "/graph/node", "/graph/neighbors", "/graph/path", "/graph/table"],
+  };
+
+  graphHealthCache.at = now;
+  graphHealthCache.payload = payload;
+  return jsonResponse(payload, 200, { "X-PuppetNET-Cache": "MISS", ...rateHeaders(budget) }, env);
 }
 
 async function graphOverview(params, env, gcfg) {
@@ -2830,8 +3224,16 @@ async function handleGraph(request, env, cfg, gcfg, ctx, path, url) {
     return errorResponse("method_not_allowed", "The graph API is read-only and only accepts GET", 405, { allow: "GET" }, env);
   }
 
+  const lockSeconds = authLockSeconds(request, env, cfg);
+  if (lockSeconds > 0) {
+    return errorResponse("auth_locked", "Too many failed authentication attempts", 429, { retry_after: lockSeconds }, env);
+  }
   const auth = graphAuthorised(request, env, gcfg);
-  if (!auth.ok) return errorResponse("unauthorised", auth.reason, 401, {}, env);
+  if (!auth.ok) {
+    recordAuthFailure(request, env, cfg);
+    return errorResponse("unauthorised", auth.reason, 401, { headers: { "WWW-Authenticate": 'Bearer realm="puppetnet-graph"' } }, env);
+  }
+  clearAuthFailures(request, env);
 
   const route = path.replace(/^\/graph\/?/, "") || "";
   const handlers = {
@@ -2852,6 +3254,20 @@ async function handleGraph(request, env, cfg, gcfg, ctx, path, url) {
     return errorResponse("global_rate_limited", "Worker-wide request budget exhausted for this minute", 429, { retry_after: globalCheck.retryAfter }, env);
   }
 
+  // The database budget: 25/client/minute. This is checked before the cache on
+  // purpose — a refresh loop must not be able to serve itself free responses
+  // and then burst the database the moment an entry expires.
+  const clientBudget = checkClientGraphRate(request, env, cfg);
+  if (!clientBudget.allowed) {
+    return errorResponse(
+      "graph_rate_limited",
+      `Graph budget exhausted: at most ${clientBudget.limit} database-backed requests per minute`,
+      429,
+      { retry_after: clientBudget.retryAfter, limit: clientBudget.limit, headers: rateHeaders(clientBudget) },
+      env
+    );
+  }
+
   const params = url.searchParams;
   const cacheKey = await cacheKeyFor(`graph/${route}?${params.toString()}`, "GET", { db: gcfg.database, v: WORKER_VERSION });
   if (gcfg.cacheTtlSeconds > 0) {
@@ -2859,7 +3275,7 @@ async function handleGraph(request, env, cfg, gcfg, ctx, path, url) {
     if (hit) {
       // took_ms describes the work behind *this* response; re-serving the number
       // measured when the entry was written reports a query time nobody just paid.
-      return jsonResponse({ ...hit.result, cached: true, took_ms: 0, auth_mode: auth.mode }, 200, { "X-PuppetNET-Cache": "HIT" }, env);
+      return jsonResponse({ ...hit.result, cached: true, took_ms: 0, auth_mode: auth.mode }, 200, { "X-PuppetNET-Cache": "HIT", ...rateHeaders(clientBudget) }, env);
     }
   }
 
@@ -2879,6 +3295,7 @@ async function handleGraph(request, env, cfg, gcfg, ctx, path, url) {
   }, GRAPH_RATE_HOST, 1, {
     rate_per_sec: gcfg.ratePerSec,
     burst: gcfg.burst,
+    kv_sync_interval_ms: cfg.graphKvSyncIntervalMs,
   });
   if (!budget.allowed) {
     return errorResponse("graph_rate_limited", "Graph query budget exhausted — the free-tier database is protected from bursts", 429, {
@@ -2907,6 +3324,7 @@ async function handleGraph(request, env, cfg, gcfg, ctx, path, url) {
       "X-PuppetNET-Cache": "MISS",
       "X-PuppetNET-Took-Ms": String(elapsed),
       "X-PuppetNET-Ratelimit-Remaining": String(Math.floor(budget.remaining)),
+      ...rateHeaders(clientBudget),
     }, env);
   } catch (err) {
     if (err && err.graphError) {
@@ -2916,6 +3334,750 @@ async function handleGraph(request, env, cfg, gcfg, ctx, path, url) {
     }
     throw err;
   }
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Free-tier budget, distributed locks and cron jobs                         */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Published Free-plan limits, kept next to the code that spends them.
+ * Sources: Cloudflare Workers limits (100k requests/day, 5 cron triggers per
+ * account), Workers KV limits (100k reads, 1k writes/deletes per day), and
+ * Neo4j AuraDB Free quotas (200k nodes, 400k relationships, auto-pause after
+ * 72 hours without a *write*).
+ */
+const FREE_TIER = Object.freeze({
+  WORKERS_REQUESTS_PER_DAY: 100_000,
+  KV_READS_PER_DAY: 100_000,
+  KV_WRITES_PER_DAY: 1_000,
+  AURA_NODES: 200_000,
+  AURA_RELATIONSHIPS: 400_000,
+  AURA_PAUSE_HOURS: 72,
+});
+
+/**
+ * Keep-alive every 12 hours: six times a day versus the 72-hour pause window,
+ * so two consecutive missed runs still leave a full day of margin.
+ *
+ * The obvious "every 36 hours" schedule is not expressible in a five-field
+ * cron: the hour field only runs 0-23, so a 36-hour step selects hour 0 and
+ * silently means "daily" (some parsers reject it outright). Twelve hours is
+ * the closest valid expression that preserves the intent with real margin, and
+ * it costs two cron invocations per day out of the account's five.
+ */
+const CRON_KEEPALIVE = "0 */12 * * *";
+const CRON_HEALTH = "23 */3 * * *";
+
+const HEALTH_SNAPSHOT_KEY = "health:snapshot";
+const HEALTH_KEEPALIVE_KEY = "health:keepalive";
+const HEALTH_LEDGER_PREFIX = "health:daily:";
+
+const localLocks = new Map();
+
+/** KV helpers that never turn a quota error into a request failure. */
+async function readKvJson(env, key) {
+  if (!env.RATE_LIMIT_KV) return null;
+  try {
+    return await env.RATE_LIMIT_KV.get(key, "json");
+  } catch (err) {
+    console.warn(`[kv] read ${key} failed: ${err && err.message}`);
+    return null;
+  }
+}
+
+async function writeKvJson(env, key, value, ttlSeconds) {
+  if (!env.RATE_LIMIT_KV) return false;
+  try {
+    await env.RATE_LIMIT_KV.put(key, JSON.stringify(value), {
+      expirationTtl: Math.max(60, Math.ceil(ttlSeconds || 86400)),
+    });
+    return true;
+  } catch (err) {
+    console.warn(`[kv] write ${key} failed: ${err && err.message}`);
+    return false;
+  }
+}
+
+/**
+ * A best-effort distributed lock in Workers KV.
+ *
+ * KV is an eventually consistent, last-write-wins store: it cannot provide a
+ * linearizable mutex, and this function does not pretend otherwise. Every read
+ * and write is one KV operation, and another colo may still hold a stale view
+ * for up to a minute. What it *does* provide is the property the cron jobs
+ * need: a long-lived lease that stops a retried or duplicated invocation from
+ * running a database probe twice, with an expiry so a crashed run cannot wedge
+ * the schedule. Jobs under the lock are idempotent (`MERGE` heartbeat,
+ * snapshot overwrite) precisely because the lock is advisory.
+ *
+ * Without a KV binding the lock degrades to isolate memory, which is exact
+ * within that isolate and useless across them — reported as `backend: memory`.
+ */
+async function acquireLock(env, name, ttlSeconds, meta = {}) {
+  const key = `lock:${name}`;
+  const now = nowMs();
+  const until = now + ttlSeconds * 1000;
+  const owner = (crypto.randomUUID ? crypto.randomUUID() : `${now}-${Math.random().toString(36).slice(2)}`);
+
+  if (!env.RATE_LIMIT_KV) {
+    const held = localLocks.get(key);
+    if (held && held.until > now) {
+      return { acquired: false, backend: "memory", owner: held.owner, until: held.until, remaining_ms: held.until - now };
+    }
+    localLocks.set(key, { owner, until });
+    return { acquired: true, backend: "memory", owner, until };
+  }
+
+  let existing = null;
+  try {
+    existing = await env.RATE_LIMIT_KV.get(key, "json");
+  } catch (err) {
+    console.warn(`[lock] read ${name} failed: ${err && err.message}`);
+  }
+  if (existing && Number(existing.until) > now) {
+    return { acquired: false, backend: "kv", owner: existing.owner, until: existing.until, remaining_ms: existing.until - now };
+  }
+  const record = { owner, until, acquired_at: now, ttl_seconds: ttlSeconds, ...meta };
+  try {
+    await env.RATE_LIMIT_KV.put(key, JSON.stringify(record), { expirationTtl: Math.max(60, Math.ceil(ttlSeconds)) });
+  } catch (err) {
+    // A lock we cannot publish is not a distributed lock. The caller may still
+    // run its idempotent job; the degradation is reported, not hidden.
+    localLocks.set(key, { owner, until });
+    return { acquired: true, backend: "memory", owner, until, degraded: String((err && err.message) || err) };
+  }
+  localLocks.set(key, { owner, until });
+  return { acquired: true, backend: "kv", owner, until, advisory: true };
+}
+
+async function releaseLock(env, name, owner) {
+  const key = `lock:${name}`;
+  const held = localLocks.get(key);
+  if (held && held.owner === owner) localLocks.delete(key);
+  if (!env.RATE_LIMIT_KV) return false;
+  try {
+    const current = await env.RATE_LIMIT_KV.get(key, "json");
+    if (current && current.owner === owner) {
+      await env.RATE_LIMIT_KV.delete(key);
+      return true;
+    }
+  } catch (err) {
+    console.warn(`[lock] release ${name} failed: ${err && err.message}`);
+  }
+  return false;
+}
+
+/** UTC day key for the daily ledger; quota resets at 00:00 UTC. */
+function dayKey(now = nowMs()) {
+  return new Date(now).toISOString().slice(0, 10);
+}
+
+/**
+ * Cloudflare's own request counter for this script, via the GraphQL Analytics
+ * API. Optional: the token needs Account Analytics:Read. Without it the
+ * dashboard reports "n/a" instead of inventing a number from one isolate.
+ */
+async function probeWorkersUsage(env) {
+  const account = String(env.CF_ACCOUNT_ID || "").trim();
+  const token = String(env.CF_API_TOKEN || "").trim();
+  if (!account || !token) {
+    return { available: false, source: "not_configured", requests_today: null };
+  }
+  const since = new Date();
+  since.setUTCHours(0, 0, 0, 0);
+  const query = `query Usage($account: String!, $script: String!, $since: Time!, $until: Time!) {
+    viewer {
+      accounts(filter: { accountTag: $account }) {
+        workersInvocationsAdaptive(limit: 100, filter: {
+          scriptName: $script, datetime_geq: $since, datetime_leq: $until
+        }) {
+          sum { requests errors subrequests }
+        }
+      }
+    }
+  }`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 5000);
+  try {
+    const response = await fetch("https://api.cloudflare.com/client/v4/graphql", {
+      method: "POST",
+      // Fixed host, Bearer token: never let a redirect move it somewhere else.
+      redirect: "error",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify({
+        query,
+        variables: {
+          account,
+          script: String(env.CF_WORKER_SCRIPT_NAME || WORKER_NAME),
+          since: since.toISOString(),
+          until: new Date().toISOString(),
+        },
+      }),
+      signal: controller.signal,
+    });
+    const body = await response.json().catch(() => null);
+    if (!response.ok || !body || (body.errors && body.errors.length)) {
+      return { available: false, source: "graphql_error", requests_today: null, status: response.status };
+    }
+    const rows = body?.data?.viewer?.accounts?.[0]?.workersInvocationsAdaptive || [];
+    const requestsToday = rows.reduce((sum, row) => sum + Number((row.sum && row.sum.requests) || 0), 0);
+    const errors = rows.reduce((sum, row) => sum + Number((row.sum && row.sum.errors) || 0), 0);
+    return { available: true, source: "cloudflare_graphql", requests_today: requestsToday, errors_today: errors };
+  } catch (err) {
+    return {
+      available: false,
+      source: "unreachable",
+      requests_today: null,
+      error: String((err && err.message) || err).slice(0, 200),
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Counts for the dashboard: one node scan and one relationship scan. */
+async function probeAura(env, gcfg) {
+  if (!graphConfigured(env)) {
+    return { available: false, configured: false, error: "NEO4J_URI/NEO4J_PASSWORD not configured" };
+  }
+  const started = nowMs();
+  try {
+    const res = await neo4jQuery(env, gcfg, [
+      { statement: "MATCH (n) RETURN count(n) AS nodes" },
+      { statement: "MATCH ()-[r]->() RETURN count(r) AS relationships" },
+    ]);
+    const nodeRow = rowsOf(res.results[0])[0] || {};
+    const relRow = rowsOf(res.results[1])[0] || {};
+    return {
+      available: true,
+      configured: true,
+      nodes: toFloat(nodeRow.nodes, 0),
+      relationships: toFloat(relRow.relationships, 0),
+      latency_ms: nowMs() - started,
+      database: gcfg.database,
+      host: neo4jPublicHost(env),
+    };
+  } catch (err) {
+    return {
+      available: false,
+      configured: true,
+      error: err && err.code ? err.code : "probe_failed",
+      message: String((err && err.message) || err).slice(0, 240),
+      latency_ms: nowMs() - started,
+      database: gcfg.database,
+      host: neo4jPublicHost(env),
+    };
+  }
+}
+
+function percentOf(used, limit) {
+  if (used === null || used === undefined || !limit) return null;
+  return Math.round((Number(used) / limit) * 1000) / 10;
+}
+
+/** The dashboard's data model. Everything unmeasured is null, never zero. */
+function buildSnapshot({ env, cfg, aura, workers, keepalive, previous, cron, durationMs }) {
+  const graphUsed = graphWindow.minute === Math.floor(nowMs() / 60000) ? graphWindow.count : 0;
+  const previousStatus = previous && previous.last_run ? previous.last_run : {};
+  const snapshot = {
+    worker: { name: WORKER_NAME, version: WORKER_VERSION, colo: null },
+    generated_at: new Date().toISOString(),
+    last_run: {
+      at: new Date().toISOString(),
+      cron: cron || null,
+      duration_ms: durationMs ?? null,
+      keepalive_locked: previousStatus.keepalive_locked || null,
+    },
+    workers: {
+      requests_today: workers.available ? workers.requests_today : null,
+      limit: FREE_TIER.WORKERS_REQUESTS_PER_DAY,
+      percent: workers.available ? percentOf(workers.requests_today, FREE_TIER.WORKERS_REQUESTS_PER_DAY) : null,
+      source: workers.source,
+      errors_today: workers.available ? workers.errors_today ?? null : null,
+    },
+    aura: aura && aura.available
+      ? {
+        available: true,
+        nodes: aura.nodes,
+        relationships: aura.relationships,
+        node_limit: FREE_TIER.AURA_NODES,
+        relationship_limit: FREE_TIER.AURA_RELATIONSHIPS,
+        node_percent: percentOf(aura.nodes, FREE_TIER.AURA_NODES),
+        relationship_percent: percentOf(aura.relationships, FREE_TIER.AURA_RELATIONSHIPS),
+        latency_ms: aura.latency_ms,
+        database: aura.database,
+        host: aura.host,
+      }
+      : {
+        available: false,
+        configured: Boolean(aura && aura.configured),
+        error: aura ? aura.error : "not_probed",
+        message: aura ? aura.message : undefined,
+        node_limit: FREE_TIER.AURA_NODES,
+        relationship_limit: FREE_TIER.AURA_RELATIONSHIPS,
+        host: aura ? aura.host : neo4jPublicHost(env),
+      },
+    rate: {
+      graph_rpm: cfg.graphRpm,
+      client_rpm: cfg.graphClientRpm,
+      used_this_minute: graphUsed,
+      remaining_this_minute: Math.max(0, cfg.graphRpm - graphUsed),
+      host_buckets: localBuckets.size,
+      global_rpm: cfg.globalRpm,
+    },
+    kv: {
+      bound: Boolean(env.RATE_LIMIT_KV),
+      reads_limit: FREE_TIER.KV_READS_PER_DAY,
+      writes_limit: FREE_TIER.KV_WRITES_PER_DAY,
+      lock_backend: env.RATE_LIMIT_KV ? "kv" : "memory",
+    },
+    keepalive: keepalive || null,
+    ok: Boolean(aura && aura.available),
+    degraded: [],
+    warnings: [],
+  };
+  if (!env.RATE_LIMIT_KV) snapshot.degraded.push("KV nicht gebunden: Sperren und Verlaufsdaten sind nur pro Isolate gültig.");
+  if (!workers.available) snapshot.degraded.push(`Workers-Nutzung nicht verfügbar (${workers.source}).`);
+  if (!aura || !aura.available) snapshot.degraded.push("AuraDB nicht erreichbar oder nicht konfiguriert.");
+  if (snapshot.aura.node_percent !== null && snapshot.aura.node_percent >= 90) {
+    snapshot.warnings.push(`AuraDB ist zu ${snapshot.aura.node_percent} % gefüllt — der 180 000-Knoten-Stopp der Pipeline greift bei 90 %.`);
+  }
+  return snapshot;
+}
+
+async function updateDailyLedger(env, snapshot, kind) {
+  const key = `${HEALTH_LEDGER_PREFIX}${dayKey()}`;
+  const existing = (await readKvJson(env, key)) || {
+    date: dayKey(),
+    health_runs: 0,
+    keepalive_runs: 0,
+    keepalive_failures: 0,
+    workers_requests: null,
+    aura_nodes: null,
+    aura_relationships: null,
+  };
+  existing.updated_at = snapshot.generated_at;
+  if (kind === "health") existing.health_runs += 1;
+  if (kind === "keepalive") {
+    existing.keepalive_runs += 1;
+    if (snapshot.keepalive_ok === false) existing.keepalive_failures += 1;
+  }
+  if (snapshot.workers && snapshot.workers.requests_today !== null) existing.workers_requests = snapshot.workers.requests_today;
+  if (snapshot.aura && snapshot.aura.available) {
+    existing.aura_nodes = snapshot.aura.nodes;
+    existing.aura_relationships = snapshot.aura.relationships;
+  }
+  await writeKvJson(env, key, existing, 14 * 86400);
+  return existing;
+}
+
+/**
+ * Keep-alive against AuraDB Free.
+ *
+ * Neo4j's Free-tier FAQ defines inactivity as *three days without a write
+ * query*; read queries do not reset the timer. A `RETURN 1` heartbeat (what the
+ * Python job does) therefore proves reachability but does not itself prevent the
+ * pause. The cron writes one bounded node instead — a single `MERGE` on a fixed
+ * id, so the graph grows by at most one node no matter how often it runs.
+ */
+async function runKeepAlive(env, cfg, meta = {}) {
+  const gcfg = readGraphConfig(env);
+  const started = nowMs();
+  if (!gcfg.enabled || !graphConfigured(env)) {
+    return { ok: false, skipped: "graph_not_configured", duration_ms: nowMs() - started };
+  }
+  const lock = await acquireLock(env, "keepalive", 600, { job: "keepalive", cron: meta.cron || null });
+  if (!lock.acquired) {
+    const record = {
+      ok: false,
+      skipped: "locked",
+      holder: lock.owner,
+      remaining_ms: lock.remaining_ms,
+      backend: lock.backend,
+      at: new Date().toISOString(),
+    };
+    await writeKvJson(env, HEALTH_KEEPALIVE_KEY, record, 7 * 86400);
+    return record;
+  }
+  let result;
+  try {
+    const res = await neo4jQuery(env, gcfg, [{
+      statement: "MERGE (h:_PuppetNetHeartbeat {id: $id}) "
+        + "SET h.last_seen = datetime(), h.worker = $worker, h.version = $version "
+        + "RETURN toString(h.last_seen) AS last_seen",
+      parameters: {
+        id: String(env.KEEPALIVE_NODE_ID || "puppetnet-edge-cron"),
+        worker: WORKER_NAME,
+        version: WORKER_VERSION,
+      },
+    }]);
+    const row = rowsOf(res.results[0])[0] || {};
+    result = {
+      ok: true,
+      last_seen: row.last_seen || new Date().toISOString(),
+      latency_ms: nowMs() - started,
+      lock: lock.backend,
+      cron: meta.cron || null,
+      at: new Date().toISOString(),
+    };
+  } catch (err) {
+    result = {
+      ok: false,
+      error: err && err.code ? err.code : "keepalive_failed",
+      message: String((err && err.message) || err).slice(0, 240),
+      latency_ms: nowMs() - started,
+      lock: lock.backend,
+      cron: meta.cron || null,
+      at: new Date().toISOString(),
+    };
+    console.error(`[cron] keep-alive failed: ${result.error}`);
+  } finally {
+    await releaseLock(env, "keepalive", lock.owner);
+  }
+  await writeKvJson(env, HEALTH_KEEPALIVE_KEY, result, 7 * 86400);
+  await updateDailyLedger(env, {
+    generated_at: result.at,
+    workers: null,
+    aura: null,
+    keepalive_ok: result.ok,
+  }, "keepalive");
+  return result;
+}
+
+async function runHealthCheck(env, cfg, meta = {}) {
+  const started = nowMs();
+  const lock = await acquireLock(env, "health", 900, { job: "health", cron: meta.cron || null });
+  if (!lock.acquired) {
+    return { ok: false, skipped: "locked", holder: lock.owner, remaining_ms: lock.remaining_ms, backend: lock.backend };
+  }
+  try {
+    const gcfg = readGraphConfig(env);
+    const previous = await readKvJson(env, HEALTH_SNAPSHOT_KEY);
+    const keepalive = (await readKvJson(env, HEALTH_KEEPALIVE_KEY))
+      || (previous && previous.keepalive) || null;
+    const [aura, workers] = await Promise.all([probeAura(env, gcfg), probeWorkersUsage(env)]);
+    const snapshot = buildSnapshot({
+      env,
+      cfg,
+      aura,
+      workers,
+      keepalive,
+      previous,
+      cron: meta.cron || null,
+      durationMs: nowMs() - started,
+    });
+    snapshot.lock = { backend: lock.backend, advisory: Boolean(lock.advisory) };
+    if (!snapshot.keepalive) snapshot.degraded.push("Noch kein Keep-Alive-Lauf aufgezeichnet.");
+    await writeKvJson(env, HEALTH_SNAPSHOT_KEY, snapshot, 30 * 86400);
+    await updateDailyLedger(env, snapshot, "health");
+    return snapshot;
+  } finally {
+    await releaseLock(env, "health", lock.owner);
+  }
+}
+
+function cronJobName(cron) {
+  const value = String(cron || "").trim();
+  if (value === CRON_KEEPALIVE) return "keepalive";
+  if (value === CRON_HEALTH) return "health";
+  if (!value) return "manual";
+  // A schedule added in the dashboard that wrangler.toml does not know about:
+  // run both idempotent jobs rather than doing nothing and looking healthy.
+  return "all";
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Free-tier health dashboard                                                */
+/* -------------------------------------------------------------------------- */
+
+const STATUS_HTML_HEADERS = Object.freeze({
+  "Content-Type": "text/html; charset=utf-8",
+  "Cache-Control": "no-store",
+  "X-Robots-Tag": "noindex, nofollow",
+  "X-Frame-Options": "DENY",
+  "Referrer-Policy": "no-referrer",
+  // No script on this page at all: it renders server-side and refreshes with a
+  // meta tag. `default-src 'none'` would also block the inline stylesheet, so
+  // style-src is the single exception, and it cannot execute anything.
+  "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+});
+
+function escapeHtml(value) {
+  return String(value === null || value === undefined ? "" : value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function formatNumber(value) {
+  if (value === null || value === undefined || !Number.isFinite(Number(value))) return "n/a";
+  try {
+    return new Intl.NumberFormat("de-DE").format(Number(value));
+  } catch (_) {
+    return String(value);
+  }
+}
+
+function statusAuthorised(request, env, options = {}) {
+  const allowPublic = options.allowPublic !== false;
+  if (allowPublic && String(env.STATUS_PUBLIC || "false").toLowerCase() === "true") {
+    return { ok: true, mode: "public" };
+  }
+  const tokens = [env.STATUS_TOKEN, env.GRAPH_API_TOKEN, env.GRAPH_API_TOKENS, env.PROXY_AUTH_TOKEN, env.PROXY_AUTH_TOKENS]
+    .flatMap((raw) => String(raw || "").split(","))
+    .map((token) => token.trim())
+    .filter(Boolean);
+  if (!tokens.length) {
+    return { ok: false, reason: "STATUS_TOKEN (or GRAPH_API_TOKEN / PROXY_AUTH_TOKEN) is not configured" };
+  }
+  const header = request.headers.get("authorization") || "";
+  const match = /^Bearer\s+(.+)$/i.exec(header);
+  const presented = (match ? match[1] : request.headers.get("x-status-token") || "").trim();
+  if (!presented) return { ok: false, reason: "Missing bearer token" };
+  for (const token of tokens) {
+    if (constantTimeEqual(presented, token)) return { ok: true, mode: "token" };
+  }
+  return { ok: false, reason: "Invalid token" };
+}
+
+/**
+ * Stored snapshot first, live probe only when asked.
+ *
+ * A dashboard refresh every 60 seconds must not become 1 440 full graph counts
+ * a day. The cron writes the snapshot; this route reads it and falls back to a
+ * clearly-labelled runtime view when no cron has run yet.
+ */
+async function statusSnapshot(env, cfg, options = {}) {
+  const stored = await readKvJson(env, HEALTH_SNAPSHOT_KEY);
+  const storedAt = stored && stored.generated_at ? Date.parse(stored.generated_at) : NaN;
+  const ageMs = Number.isFinite(storedAt) ? nowMs() - storedAt : null;
+
+  if (!options.live && stored && ageMs !== null && ageMs < 15 * 60_000) {
+    return { ...stored, cached: true, cache_age_ms: ageMs };
+  }
+  if (options.live) {
+    // A live probe runs two full graph scans, so it takes the same kind of
+    // advisory lease as the cron. Without it, an operator holding down
+    // "refresh" (or a script polling /status?live=1) turns the dashboard into
+    // the very load it exists to detect. A locked probe answers from the
+    // stored snapshot and says why, never with an error page.
+    const lease = await acquireLock(env, "status-live", 30, { job: "status-live" });
+    if (!lease.acquired) {
+      if (stored) {
+        return {
+          ...stored,
+          cached: true,
+          cache_age_ms: ageMs,
+          refresh: { ok: false, skipped: "locked", holder: lease.owner || null },
+        };
+      }
+      return {
+        ...buildSnapshot({
+          env,
+          cfg,
+          aura: { available: false, configured: graphConfigured(env), error: "probe_skipped" },
+          workers: { available: false, source: "not_probed", requests_today: null },
+          keepalive: null,
+          previous: null,
+          cron: null,
+          durationMs: null,
+        }),
+        cached: false,
+        refresh: { ok: false, skipped: "locked", holder: lease.owner || null },
+      };
+    }
+    let fresh;
+    try {
+      fresh = await runHealthCheck(env, cfg, { cron: null });
+    } finally {
+      await releaseLock(env, "status-live", lease.owner);
+    }
+    if (fresh && fresh.generated_at) return { ...fresh, cached: false };
+    if (stored) return { ...stored, cached: true, cache_age_ms: ageMs, refresh: fresh };
+    return {
+      ...buildSnapshot({
+        env,
+        cfg,
+        aura: { available: false, configured: graphConfigured(env), error: "probe_skipped" },
+        workers: { available: false, source: "not_probed", requests_today: null },
+        keepalive: null,
+        previous: null,
+        cron: null,
+        durationMs: null,
+      }),
+      cached: false,
+      refresh: fresh,
+    };
+  }
+  if (stored) return { ...stored, cached: true, cache_age_ms: ageMs };
+  return {
+    ...buildSnapshot({
+      env,
+      cfg,
+      aura: { available: false, configured: graphConfigured(env), error: "not_probed" },
+      workers: { available: false, source: "not_probed", requests_today: null },
+      keepalive: null,
+      previous: null,
+      cron: null,
+      durationMs: null,
+    }),
+    cached: false,
+    note: "Noch kein Cron-Lauf gespeichert. Eine Live-Prüfung gibt es unter /status?live=1 (Token erforderlich).",
+  };
+}
+
+function renderStatusPage(snapshot) {
+  const healthy = snapshot.ok === true;
+  const degraded = !healthy || (snapshot.degraded && snapshot.degraded.length > 0);
+  const state = healthy && !degraded ? "ok" : healthy ? "degraded" : "down";
+  const stateLabel = state === "ok" ? "Betriebsbereit" : state === "degraded" ? "Eingeschränkt" : "Gestört";
+
+  const card = (label, used, limit, extra) => {
+    const percent = used !== null && used !== undefined && limit ? Math.min(100, (Number(used) / limit) * 100) : 0;
+    const shown = used === null || used === undefined ? "n/a" : formatNumber(used);
+    return `<article class="card">
+      <p class="label">${escapeHtml(label)}</p>
+      <p class="value">${escapeHtml(shown)}<span>${limit ? ` / ${formatNumber(limit)}` : ""}</span></p>
+      <div class="bar" role="img" aria-label="${escapeHtml(`${label}: ${shown}${limit ? ` von ${formatNumber(limit)}` : ""}`)}"><span style="width:${percent.toFixed(1)}%"></span></div>
+      <p class="hint">${escapeHtml(extra || "")}</p>
+    </article>`;
+  };
+
+  const aura = snapshot.aura || {};
+  const workers = snapshot.workers || {};
+  const rate = snapshot.rate || {};
+  const keepalive = snapshot.keepalive;
+  const lastRun = snapshot.last_run || {};
+
+  const degradedList = (snapshot.degraded || []).length
+    ? `<ul class="warn">${snapshot.degraded.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`
+    : `<p class="hint">Alle konfigurierten Prüfungen antworten.</p>`;
+
+  const keepaliveRow = keepalive
+    ? `<tr><td>Keep-Alive</td><td class="${keepalive.ok ? "good" : "bad"}">${keepalive.ok ? "ok" : escapeHtml(keepalive.error || keepalive.skipped || "fehlgeschlagen")}</td><td>${escapeHtml(keepalive.at || "—")}</td><td>${keepalive.latency_ms !== undefined ? `${formatNumber(keepalive.latency_ms)} ms` : "—"}</td></tr>`
+    : `<tr><td>Keep-Alive</td><td class="muted">noch kein Lauf</td><td>—</td><td>—</td></tr>`;
+
+  const auraRow = aura.available
+    ? `<tr><td>AuraDB</td><td class="good">erreichbar</td><td>${escapeHtml(aura.database || "neo4j")}</td><td>${formatNumber(aura.latency_ms)} ms</td></tr>`
+    : `<tr><td>AuraDB</td><td class="bad">${escapeHtml(aura.configured === false ? "nicht konfiguriert" : (aura.error || "nicht erreichbar"))}</td><td>${escapeHtml(aura.host || "—")}</td><td>—</td></tr>`;
+
+  return `<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<meta http-equiv="refresh" content="60">
+<title>PuppetNET Edge — Free-Tier-Status</title>
+<style>
+:root{color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;background:#0b111c;color:#e6edf8;font:14px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif}
+.shell{max-width:1080px;margin:0 auto;padding:40px 24px 64px}
+.eyebrow{margin:0;font-size:10px;letter-spacing:.18em;color:#7f93ad;text-transform:uppercase}
+h1{margin:8px 0 6px;font-size:30px;font-weight:600;letter-spacing:-.02em}
+h2{font-size:15px;letter-spacing:.02em;margin:0 0 14px;color:#c8d6e8}
+.lede{margin:0;color:#93a6bf;max-width:70ch}
+.badge{display:inline-block;margin-top:18px;padding:5px 11px;border-radius:999px;font-size:11px;font-weight:600;letter-spacing:.04em}
+.badge.ok{background:#123a31;color:#6fe3c3;border:1px solid #2c6b58}
+.badge.degraded{background:#3a3315;color:#e8d07f;border:1px solid #6c5c25}
+.badge.down{background:#3d1f1f;color:#ff9f92;border:1px solid #7a3a35}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;margin:28px 0}
+.card{background:linear-gradient(150deg,#121d2c,#0f1926);border:1px solid #223144;border-radius:10px;padding:18px 18px 16px}
+.card .label{margin:0;font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:#8498b2}
+.card .value{margin:8px 0 12px;font-size:26px;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.card .value span{font-size:12px;color:#7f93ad;letter-spacing:0}
+.bar{height:6px;border-radius:3px;background:#1b2a3d;overflow:hidden}
+.bar span{display:block;height:100%;background:linear-gradient(90deg,#3fbfa5,#7ceae0)}
+.card .hint{margin:10px 0 0;font-size:11px;color:#7f93ad}
+.panel{background:#101a28;border:1px solid #223144;border-radius:10px;padding:20px;margin-top:18px}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th,td{text-align:left;padding:9px 6px;border-bottom:1px solid #1f2d40;vertical-align:top}
+th{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:#8398b3}
+td.good{color:#7de3c8}
+td.bad{color:#ffab9d}
+td.muted{color:#8292ab}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:#b9d6e6}
+.warn{margin:10px 0 0;padding-left:18px;color:#e8c98a;font-size:12px}
+.warn li{margin:4px 0}
+.footer{margin-top:28px;display:flex;flex-wrap:wrap;gap:14px;justify-content:space-between;color:#6f829b;font-size:11px}
+a{color:#7ceae0}
+@media (max-width:620px){h1{font-size:24px}.shell{padding:26px 16px 48px}.card .value{font-size:22px}}
+</style>
+</head>
+<body>
+<main class="shell">
+<header>
+<p class="eyebrow">PuppetNET Edge · Free-Tier</p>
+<h1>Status und Budget</h1>
+<p class="lede">Diese Seite zählt nur, was der Worker selbst messen kann. Cloudflare-Requests stammen aus der Analytics-API, der AuraDB-Verbrauch aus einem Cron-Probe. Kein Skript, kein Tracking, kein externer Asset-Request.</p>
+<span class="badge ${state}">${escapeHtml(stateLabel)}</span>
+</header>
+
+<section class="grid" aria-label="Free-Tier-Verbrauch">
+${card("Workers Requests heute", workers.requests_today, workers.limit, workers.source === "cloudflare_graphql" ? "Quelle: Cloudflare Analytics API" : `Quelle: ${workers.source || "unbekannt"}`)}
+${card("AuraDB Knoten", aura.available ? aura.nodes : null, aura.node_limit, aura.available ? `Datenbank ${aura.database || "neo4j"}` : (aura.message || aura.error || "nicht konfiguriert"))}
+${card("AuraDB Beziehungen", aura.available ? aura.relationships : null, aura.relationship_limit, aura.available ? "Grenze: 400 000" : "ohne Live-Probe nicht verfügbar")}
+${card("Graph-Anfragen diese Minute", rate.used_this_minute, rate.graph_rpm, `Limit ${rate.client_rpm}/Client/Minute · ${rate.remaining_this_minute} frei`)}
+</section>
+
+<section class="panel" aria-labelledby="checks-heading">
+<h2 id="checks-heading">Letzte Prüfungen</h2>
+<table>
+<thead><tr><th scope="col">Prüfung</th><th scope="col">Ergebnis</th><th scope="col">Zeitpunkt (UTC)</th><th scope="col">Dauer</th></tr></thead>
+<tbody>
+${keepaliveRow}
+${auraRow}
+<tr><td>Snapshot</td><td>${snapshot.cached ? "gespeichert" : "frisch"}</td><td>${escapeHtml(lastRun.at || snapshot.generated_at || "—")}</td><td>${lastRun.duration_ms !== null && lastRun.duration_ms !== undefined ? `${formatNumber(lastRun.duration_ms)} ms` : "—"}</td></tr>
+</tbody>
+</table>
+</section>
+
+<section class="panel" aria-labelledby="budget-heading">
+<h2 id="budget-heading">Hinweise</h2>
+${snapshot.note ? `<p class="hint">${escapeHtml(snapshot.note)}</p>` : ""}
+${degradedList}
+<p class="hint">KV-Free-Limits: ${formatNumber(snapshot.kv ? snapshot.kv.reads_limit : null)} Reads · ${formatNumber(snapshot.kv ? snapshot.kv.writes_limit : null)} Writes pro Tag. Sperr-Backend: <code>${escapeHtml(snapshot.kv ? snapshot.kv.lock_backend : "unbekannt")}</code>. Cron: <code>${escapeHtml(CRON_KEEPALIVE)}</code> (Keep-Alive) und <code>${escapeHtml(CRON_HEALTH)}</code> (Snapshot).</p>
+</section>
+
+<footer class="footer">
+<span>${escapeHtml(snapshot.worker ? snapshot.worker.name : "puppetnet-edge-relay")} @ ${escapeHtml(snapshot.worker ? snapshot.worker.version : "?")} · Stand ${escapeHtml(snapshot.generated_at || "")}</span>
+<span><a href="/status.json">JSON</a> · <a href="/health">Liveness</a></span>
+</footer>
+</main>
+</body>
+</html>`;
+}
+
+async function handleStatus(request, url, env, cfg) {
+  const live = url.searchParams.get("live") === "1";
+  // A live probe costs two full graph scans. It is allowed for a public
+  // dashboard only when the operator explicitly opted in *and* the request is
+  // authenticated; `STATUS_PUBLIC` covers the read-only view, not the probe.
+  const auth = statusAuthorised(request, env, { allowPublic: !live });
+  if (!auth.ok) {
+    return errorResponse("unauthorised", auth.reason, 401, { headers: { "WWW-Authenticate": 'Bearer realm="puppetnet-status"' } }, env);
+  }
+  const snapshot = await statusSnapshot(env, cfg, { live });
+  if (url.pathname === "/status.json") {
+    return jsonResponse({ ...snapshot, auth_mode: auth.mode }, 200, { "X-Robots-Tag": "noindex, nofollow" }, env);
+  }
+  return new Response(renderStatusPage(snapshot), { status: 200, headers: { ...STATUS_HTML_HEADERS, Vary: "Origin" } });
+}
+
+async function handleStatusRefresh(request, env, cfg) {
+  const auth = statusAuthorised(request, env, { allowPublic: false });
+  if (!auth.ok) {
+    return errorResponse("unauthorised", auth.reason, 401, { headers: { "WWW-Authenticate": 'Bearer realm="puppetnet-status"' } }, env);
+  }
+  if (authLockSeconds(request, env, cfg) > 0) {
+    return errorResponse("auth_locked", "Too many failed attempts", 429, {}, env);
+  }
+  const snapshot = await statusSnapshot(env, cfg, { live: true });
+  return jsonResponse({ ok: snapshot.ok !== false, ...snapshot, auth_mode: auth.mode }, 200, { "X-Robots-Tag": "noindex, nofollow" }, env);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -2951,10 +4113,25 @@ export default {
         return await handleGraph(request, reqEnv, cfg, gcfg, ctx, path, url);
       }
 
+      // The status dashboard carries its own token set (STATUS_TOKEN, or the
+      // graph/relay token) and is never public unless STATUS_PUBLIC=true.
+      if ((path === "/status" || path === "/status.json") && request.method === "GET") {
+        return await handleStatus(request, url, reqEnv, cfg);
+      }
+      if (path === "/status/refresh" && request.method === "POST") {
+        return await handleStatusRefresh(request, reqEnv, cfg);
+      }
+
+      const lockSeconds = authLockSeconds(request, reqEnv, cfg);
+      if (lockSeconds > 0) {
+        return errorResponse("auth_locked", "Too many failed authentication attempts", 429, { retry_after: lockSeconds }, reqEnv);
+      }
       const auth = authorised(request, reqEnv);
       if (!auth.ok) {
-        return errorResponse("unauthorised", auth.reason, 401, {}, reqEnv);
+        recordAuthFailure(request, reqEnv, cfg);
+        return errorResponse("unauthorised", auth.reason, 401, { headers: { "WWW-Authenticate": 'Bearer realm="puppetnet"' } }, reqEnv);
       }
+      clearAuthFailures(request, reqEnv);
 
       if (path === "/stats" && request.method === "GET") return handleStats(reqEnv, cfg);
       if (path === "/cache" && request.method === "DELETE") return handleCachePurge(request, reqEnv);
@@ -3048,8 +4225,16 @@ export default {
   },
 
   /**
-   * Cron (e.g. "30 4 * * *"): prune empty local buckets so long-lived isolates
-   * do not leak memory, and warm the KV view of the busiest hosts.
+   * Cron dispatcher. `wrangler.toml` declares two schedules:
+   *
+   *   `0 * /12 * * *` — keep-alive (AuraDB Free pauses after 72 h without a
+   *                     write; two runs a day leaves a six-fold margin)
+   *   `23 * /3 * * *` — free-tier snapshot (node/relationship counts)
+   *
+   * The expression is read from `event.cron`, so an operator adding a schedule
+   * in the dashboard gets the idempotent pair rather than silence. Every run
+   * first prunes isolate state: a long-lived isolate must not accumulate
+   * per-host buckets or rate-limit windows forever.
    */
   async scheduled(event, env, ctx) {
     const cfg = readConfig(env);
@@ -3062,14 +4247,56 @@ export default {
         pruned += 1;
       }
     }
+    for (const [name, lock] of localLocks.entries()) {
+      if (lock.until <= now) localLocks.delete(name);
+    }
     globalWindow.count = 0;
-    console.log(`[scheduled] pruned ${pruned} idle buckets; ${localBuckets.size} active; global rpm limit ${cfg.globalRpm}`);
+    graphWindow.count = 0;
+    graphWindow.minute = Math.floor(now / 60000);
+    pruneCallerState(now);
+
+    const cron = event && event.cron ? String(event.cron) : "";
+    const job = cronJobName(cron);
+    const started = nowMs();
+    const results = {};
+    if (job === "keepalive" || job === "all") {
+      results.keepalive = await runKeepAlive(env, cfg, { cron });
+    }
+    if (job === "health" || job === "all") {
+      results.health = await runHealthCheck(env, cfg, { cron });
+    }
+    console.log(
+      `[scheduled] cron=${cron || "manual"} job=${job} pruned=${pruned} `
+      + `keepalive=${results.keepalive ? (results.keepalive.ok ? "ok" : results.keepalive.skipped || results.keepalive.error || "fail") : "n/a"} `
+      + `health=${results.health ? (results.health.generated_at ? "ok" : results.health.skipped || "fail") : "n/a"} `
+      + `elapsed=${nowMs() - started}ms global_rpm=${cfg.globalRpm} graph_rpm=${cfg.graphRpm}`
+    );
+    return results;
   },
 };
 
 /* Exported for unit tests running under `node --test` / vitest. */
 export const __internals = {
   parseRobots,
+  guardedFetch,
+  validateNeo4jEndpoint,
+  withoutCredentials,
+  acquireLock,
+  releaseLock,
+  runKeepAlive,
+  runHealthCheck,
+  statusSnapshot,
+  statusAuthorised,
+  renderStatusPage,
+  buildSnapshot,
+  clientFingerprint,
+  checkClientGraphRate,
+  resetRateLimits,
+  resetGraphRateLimits,
+  WORKER_VERSION,
+  FREE_TIER,
+  CRON_KEEPALIVE,
+  CRON_HEALTH,
   isPathAllowed,
   robotPathMatches,
   pickFingerprint,

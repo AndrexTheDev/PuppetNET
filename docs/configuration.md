@@ -57,6 +57,17 @@ direct fallback must be available; `MAX_RUNTIME_SECONDS ≥ 60`; `NEO4J_BATCH_SI
 | `PROXY_CIRCUIT_BREAKER_COOLDOWN_SECONDS` | `worker_circuit_breaker_cooldown_seconds` | `300` | Half-opens afterwards to probe recovery. |
 | `DIRECT_FALLBACK_ENABLED` | `direct_fallback_enabled` | `true` | Turn off in production only if the relay is mandatory. |
 
+The Worker's **own** configuration is not read by the Python side: deploy-time
+secrets (`PROXY_AUTH_TOKEN`, `GRAPH_API_TOKEN`, `STATUS_TOKEN`, `NEO4J_*`,
+`CF_API_TOKEN`, `CF_ACCOUNT_ID`) and `[vars]` (`GLOBAL_RPM`, `GRAPH_RPM` /
+`GRAPH_CLIENT_RPM`, `STATUS_PUBLIC`, `KEEPALIVE_NODE_ID`, …) live in
+[`apps/worker/wrangler.toml`](../apps/worker/wrangler.toml) and
+[worker-hardening.md](worker-hardening.md). The two token names that appear on
+both sides (`PROXY_AUTH_TOKEN` here, `GRAPH_API_TOKEN` for the console) must
+match, or the relay returns `401`. Note that `GRAPH_RPM` and
+`GRAPH_CLIENT_RPM` are **ceilings**: the Worker clamps anything above 25 down to
+25, whatever the file says.
+
 ## Token-bucket delay queue (Worker-independent fallback)
 
 | Env var | Field | Default | Notes |
