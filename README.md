@@ -25,6 +25,7 @@ npm ci
 npm run dev
 npm run ci:pages                  # console regression gate + static Next build
 npm run ci:worker                 # Worker regression gate, no deployment
+npm run provision:worker -- --dry-run   # Cloudflare KV/secrets/deploy plan (no account calls)
 npm run audit                     # static, offline repository consistency ledger
 npm run emit:entities -- --input graph-export.json   # publish profile data (or --input -)
 npm run emit:seo -- --origin https://<your-pages-origin>   # sitemaps + Sitemap: lines
@@ -85,6 +86,8 @@ source duplication; use a symlink-capable checkout.
 
 [Hybrid setup guide](docs/2.0-scaffold.md) contains the exact Pages and Workers Builds
 settings, watch paths, secrets, production gates and GLiNER limitations.
+[Worker provisioning](docs/worker-provisioning.md) is the KV/secret/deploy runbook, with
+`npm run provision:worker` automating the whole sequence.
 [`cloudflare-builds.json`](cloudflare-builds.json) records dashboard settings; it is
 **not** an automatically applied Cloudflare configuration schema.
 

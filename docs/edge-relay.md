@@ -565,13 +565,18 @@ gets browser fingerprints, and that `/health` lists the profiles. CI runs both.
 
 ## Deploy
 
+The whole sequence below — namespace creation, id patching, secret generation,
+deployment and verification — is automated by `npm run provision:worker`; see
+[worker-provisioning.md](worker-provisioning.md) for the runbook, the flags and
+the troubleshooting table. The manual commands remain authoritative:
+
 ```bash
 npm i -g wrangler          # or: npx wrangler@latest
 wrangler login
 wrangler kv namespace create PUPPETNET_RATE_LIMIT   # binding RATE_LIMIT_KV
 wrangler kv namespace create PUPPETNET_RESULTS     # binding RESULT_KV
 # paste the ids / preview_ids into wrangler.toml, then:
-wrangler secret put PROXY_AUTH_TOKEN      # openssl rand -hex 32
+wrangler secret put PROXY_AUTH_TOKEN      # openssl rand -hex 32 (64 hex chars)
 # Optional — the host profiles inject these on the outgoing request:
 wrangler secret put OPENCORPORATES_API_TOKEN
 wrangler secret put ADSBEXCHANGE_API_KEY
@@ -581,13 +586,17 @@ wrangler secret put COMPANIES_HOUSE_API_KEY
 wrangler secret put NEO4J_URI             # neo4j+s://<instance>.databases.neo4j.io:7687
 wrangler secret put NEO4J_USERNAME
 wrangler secret put NEO4J_PASSWORD
-wrangler secret put GRAPH_API_TOKEN       # openssl rand -hex 16
-wrangler secret put STATUS_TOKEN          # optional; falls back to the graph/relay token
+wrangler secret put GRAPH_API_TOKEN       # openssl rand -hex 32 (64 hex chars)
+wrangler secret put STATUS_TOKEN          # openssl rand -hex 32; optional, falls back to the graph/relay token
 # Optional, only for the Workers-requests card on /status (Account Analytics: Read):
 wrangler secret put CF_API_TOKEN
 wrangler secret put CF_ACCOUNT_ID
 wrangler deploy
-npx wrangler triggers list                # must show 0 */12 * * * and 23 */3 * * *
+# Wrangler 4 has no `triggers list`. Verify the two schedules in the dashboard
+# (Worker → Settings → Trigger Events → Cron Triggers) or via the API:
+#   curl -s -H "Authorization: Bearer $CF_API_TOKEN" \
+#     "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/workers/scripts/puppetnet-edge-relay/schedules"
+# They must be 0 */12 * * * (keep-alive) and 23 */3 * * * (health snapshot).
 
 # workers_dev = true in the shipped wrangler.toml, so the Worker answers on
 # https://puppetnet-edge-relay.<subdomain>.workers.dev as well as on any route

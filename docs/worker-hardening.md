@@ -364,12 +364,15 @@ Verify after deploying:
 curl -s https://<worker>/health | jq '{version, bindings, limits}'
 curl -s -H "Authorization: Bearer $STATUS_TOKEN" https://<worker>/status.json | jq
 curl -s -o /dev/null -w '%{http_code}\n' https://<worker>/status   # 401 without a token
-npx wrangler triggers list                                          # both crons present
+curl -s -H "Authorization: Bearer $CF_API_TOKEN" \
+  "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/workers/scripts/puppetnet-edge-relay/schedules" | jq
+# or: dashboard → Worker → Settings → Trigger Events → Cron Triggers
 ```
 
 The placeholder namespace ids in `wrangler.toml` are intentional: `wrangler
 deploy` must fail until real ids are pasted in, rather than deploy a Worker whose
-locks silently fall back to isolate memory.
+locks silently fall back to isolate memory. [`npm run provision:worker`](worker-provisioning.md)
+creates the namespaces, patches the ids and runs the checks above in one step.
 
 ## 9. Failure modes and what to do
 

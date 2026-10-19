@@ -37,6 +37,8 @@ htmlcov/
 .env
 .env.*
 !.env.example
+.secrets.generated.env
+apps/worker/.secrets.generated.env
 *.pem
 *.key
 secrets.*
