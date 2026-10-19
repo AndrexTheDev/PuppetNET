@@ -44,6 +44,8 @@ def test_pages_and_worker_have_independent_build_paths():
         assert directory + '/*' in data[component]['watchPaths']
         assert 'package-lock.json' in data[component]['watchPaths']
     assert data['pages']['outputDirectory'] == 'out'
+    assert data['pages']['deployCommand'] is None
+    assert 'deploy:pages' in data['pages']['manualDeployCommand']
     assert 'versions upload' in data['worker']['previewCommand']
     assert 'pages_build_output_dir' in (ROOT / 'apps/web/wrangler.toml').read_text()
     assert 'main = "worker.js"' in (ROOT / 'apps/worker/wrangler.toml').read_text()

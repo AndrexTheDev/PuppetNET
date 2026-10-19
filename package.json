@@ -28,7 +28,8 @@
     "emit:entities": "node --import tsx scripts/emit-entity-data.ts",
     "emit:sitemap": "node scripts/generate-sitemap.mjs",
     "test:seo": "node --import tsx --test tests/seo.test.ts",
-    "test:a11y": "node --import tsx --test tests/a11y.test.tsx"
+    "test:a11y": "node --import tsx --test tests/a11y.test.tsx",
+    "deploy:pages": "npm exec --workspace=@puppetnet/worker -- wrangler pages deploy --cwd ../web"
   },
   "devDependencies": {
     "cose-base": "2.2.0",

@@ -50,6 +50,15 @@ test('Cloudflare build owners and watch paths are explicitly decoupled', () => {
   assert.ok(settings.pages.watchPaths.includes('apps/web/*'));
   assert.ok(settings.worker.watchPaths.includes('apps/worker/*'));
   assert.match(settings.pages.buildCommand, /ci:pages/);
+  assert.equal(settings.pages.deployCommand, null, 'native Pages must not run the Workers deploy command');
+  assert.match(settings.pages.manualDeployCommand, /deploy:pages/);
   assert.match(settings.worker.buildCommand, /ci:worker/);
   assert.match(settings.worker.previewCommand, /versions upload/);
+
+  const rootPackage = JSON.parse(read('package.json'));
+  assert.equal(
+    rootPackage.scripts['deploy:pages'],
+    'npm exec --workspace=@puppetnet/worker -- wrangler pages deploy --cwd ../web',
+  );
+  assert.equal(rootPackage.devDependencies.wrangler, undefined, 'the wrong root-level `npx wrangler deploy` must stay fail-closed');
 });
