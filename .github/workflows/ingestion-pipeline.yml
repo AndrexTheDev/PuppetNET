@@ -38,7 +38,9 @@ jobs:
           cache-dependency-path: packages/pipeline/pyproject.toml
       - run: pip install -e './packages/pipeline[dev]'
       - run: python -m pytest -q -m 'not integration'
-      - run: ruff check packages/pipeline tests/test_gliner.py tests/test_hybrid_ci.py tests/test_nlp_*.py tests/nlp_fakes.py
+      # Lint every test module, not a hand-maintained list: new suites
+      # (entity resolution, puppet master, keep-alive) must not escape CI.
+      - run: ruff check packages/pipeline tests
       - name: Offline multilingual NLP contract
         run: |
           python - <<'PYCODE'
