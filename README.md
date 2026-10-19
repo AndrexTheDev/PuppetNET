@@ -1,9 +1,10 @@
 # PuppetNET 2.0 — decoupled hybrid CI/CD
 
-Open-source OSINT ingestion, entity recognition and graph analysis. Baseline history
-through `arena/01a0df64-puppetnet` commit `127ab47` is integrated into the session branch
-`arena/322dea42-puppetnet`. Integration into `main` is delivered through PR #1; changes are authored on the
-session branch, never pushed directly to `main`. Check the PR for merge status.
+Open-source OSINT ingestion, entity recognition and graph analysis. The baseline history
+through `arena/01a0df64-puppetnet` commit `127ab47` is on `main`: PR #1 merged the
+monorepo, the decoupled hybrid CI/CD and the WebGL dashboard as `54cdd3b` (2026-10-19).
+Follow-up work is authored on the current session branch `arena/48cd7919-puppetnet` and
+integrated into `main` through a pull request, never pushed directly.
 
 | Component | Source | Build / execution owner |
 | --- | --- | --- |
@@ -24,6 +25,8 @@ npm ci
 npm run dev
 npm run ci:pages                  # console regression gate + static Next build
 npm run ci:worker                 # Worker regression gate, no deployment
+npm run audit                     # static, offline repository consistency ledger
+npm run emit:seo -- --origin https://<your-pages-origin>   # sitemaps + Sitemap: lines
 npm run test:scaffold             # monorepo/build configuration contracts
 npm run test:dashboard            # filters, LoD, evidence, 120k-element fixture
 npm run deploy -w @puppetnet/worker -- --dry-run --outdir /tmp/puppetnet-worker
