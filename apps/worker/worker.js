@@ -46,7 +46,8 @@
  *   - FETCH_QUEUE   : Queue producer (deferred requests)
  *   - Secrets       : PROXY_AUTH_TOKEN / PROXY_AUTH_TOKENS,
  *                     NEO4J_URI / NEO4J_USERNAME / NEO4J_PASSWORD,
- *                     CF_API_TOKEN / CF_ACCOUNT_ID (optional analytics)
+ *                     CF_API_TOKEN / CF_ACCOUNT_ID (optional analytics),
+ *                     TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID (optional alerts)
  *   - Cron Triggers : keep-alive (every 12 h) and health snapshot (every 3 h)
  *
  *  All bindings are optional: the Worker degrades to a stateless relay with
@@ -955,10 +956,56 @@ function clientAddress(request) {
  * the kind of place an IP should not linger. The salt is optional; without it
  * the hash is only a privacy speed bump, not a cryptographic commitment.
  */
-function clientFingerprint(request, env) {
-  const address = clientAddress(request);
-  if (!address) return "shared";
-  return fnv1a(`${(env && env.CLIENT_KEY_SALT) || "puppetnet-edge"}:${address}`);
+function clientFingerprint(request, env, credential = null) {
+  const address = clientAddress(request) || "shared";
+  const salt = (env && env.CLIENT_KEY_SALT) || "puppetnet-edge";
+  // Authentication failures always key on the address alone: if a presented
+  // (invalid) token were part of the key, rotating garbage tokens would mint a
+  // fresh lockout counter and defeat the brute-force guard.
+  if (!credential) return address === "shared" ? "shared" : fnv1a(`${salt}:${address}`);
+  // Multi-analyst fairness: two people behind one corporate NAT each bring
+  // their own valid token and therefore their own 25/min window. The token is
+  // folded in as a second FNV-1a digest so the raw secret never becomes a key
+  // (or a value in the map). Collisions can only merge two budgets, never widen
+  // one beyond the shared database bucket.
+  const tokenPrint = fnv1a(`${salt}:token:${credential}`);
+  return fnv1a(`${salt}:${address}:token:${tokenPrint}`);
+}
+
+/** Tokens recognised by the graph API, in either the singular or plural variable. */
+function graphTokenList(env) {
+  return [env.GRAPH_API_TOKEN, env.GRAPH_API_TOKENS]
+    .flatMap((raw) => String(raw || "").split(","))
+    .map((token) => token.trim())
+    .filter(Boolean);
+}
+
+function relayTokenList(env) {
+  return [env.PROXY_AUTH_TOKEN, env.PROXY_AUTH_TOKENS]
+    .flatMap((raw) => String(raw || "").split(","))
+    .map((token) => token.trim())
+    .filter(Boolean);
+}
+
+/** The credential as presented, accepting the same headers the API accepts. */
+function presentedCredential(request) {
+  const header = request.headers.get("authorization") || "";
+  const match = /^Bearer\s+(.+)$/i.exec(header);
+  return (match ? match[1] : request.headers.get("x-graph-token") || request.headers.get("x-proxy-token") || "").trim();
+}
+
+/**
+ * A credential worth fingerprinting: only a token that actually authenticates.
+ * An arbitrary header must not buy a fresh rate-limit identity, or the 25/min
+ * budget would be one random string away from unlimited.
+ */
+function validCallerToken(request, env) {
+  const presented = presentedCredential(request);
+  if (!presented) return null;
+  for (const token of [...graphTokenList(env), ...relayTokenList(env)]) {
+    if (constantTimeEqual(presented, token)) return presented;
+  }
+  return null;
 }
 
 const graphClients = new Map(); // fingerprint -> { minute, count }
@@ -985,10 +1032,10 @@ function pruneCallerState(now) {
  * KV is not linearizable and a read/write per caller would spend the Free-tier
  * write quota faster than the database saves it.
  */
-function checkClientGraphRate(request, env, cfg) {
+function checkClientGraphRate(request, env, cfg, credential = null) {
   const now = nowMs();
   const minute = Math.floor(now / 60000);
-  const key = clientFingerprint(request, env);
+  const key = clientFingerprint(request, env, credential);
   pruneCallerState(now);
   let entry = graphClients.get(key);
   if (!entry || entry.minute !== minute) {
@@ -1056,6 +1103,7 @@ function resetGraphRateLimits() {
 function resetRateLimits() {
   localBuckets.clear();
   localSyncState.clear();
+  localAlertSentAt = 0;
   globalWindow.minute = 0;
   globalWindow.count = 0;
   graphClients.clear();
@@ -2329,25 +2377,22 @@ function graphError(code, message, status, extra) {
  * touch the pipeline.
  */
 function graphAuthorised(request, env, gcfg) {
-  if (gcfg.publicRead) return { ok: true, mode: "public" };
-  const graphTokens = [env.GRAPH_API_TOKEN, env.GRAPH_API_TOKENS]
-    .flatMap((raw) => String(raw || "").split(","))
-    .map((token) => token.trim())
-    .filter(Boolean);
+  const graphTokens = graphTokenList(env);
+  const presented = presentedCredential(request);
 
-  const header = request.headers.get("authorization") || "";
-  const match = /^Bearer\s+(.+)$/i.exec(header);
-  const presented = (match ? match[1] : request.headers.get("x-graph-token") || request.headers.get("x-proxy-token") || "").trim();
-
-  if (graphTokens.length) {
-    if (!presented) return { ok: false, reason: "Missing bearer token for the graph API" };
+  if (graphTokens.length && presented) {
     for (const token of graphTokens) {
-      if (constantTimeEqual(presented, token)) return { ok: true, mode: "graph-token" };
+      if (constantTimeEqual(presented, token)) return { ok: true, mode: "graph-token", token: presented };
     }
     // Fall through: a deployment that only set PROXY_AUTH_TOKEN still works.
   }
   const relay = authorised(request, env);
-  if (relay.ok) return { ok: true, mode: "relay-token" };
+  if (relay.ok) return { ok: true, mode: "relay-token", token: presented || null };
+  // A public dashboard stays usable with no token — and with a stale one. The
+  // `token` field is what lets the rate limiter tell the two apart; an invalid
+  // credential never becomes an identity.
+  if (gcfg.publicRead) return { ok: true, mode: "public" };
+  if (graphTokens.length && !presented) return { ok: false, reason: "Missing bearer token for the graph API" };
   return { ok: false, reason: graphTokens.length ? "Invalid graph token" : relay.reason };
 }
 
@@ -2589,7 +2634,9 @@ async function handleGraphHealth(request, env, cfg, gcfg) {
   // Public and unauthenticated, so it must be the cheapest route in the file.
   // Before this gate one loop over `/graph/health` ran three Cypher statements
   // per request — a free database load generator with a public URL.
-  const budget = checkClientGraphRate(request, env, cfg);
+  // `/graph/health` is public, but a caller who presents a valid credential is
+  // still a distinct analyst and gets their own minute window.
+  const budget = checkClientGraphRate(request, env, cfg, validCallerToken(request, env));
   if (!budget.allowed) {
     return errorResponse(
       "graph_rate_limited",
@@ -3257,7 +3304,7 @@ async function handleGraph(request, env, cfg, gcfg, ctx, path, url) {
   // The database budget: 25/client/minute. This is checked before the cache on
   // purpose — a refresh loop must not be able to serve itself free responses
   // and then burst the database the moment an entry expires.
-  const clientBudget = checkClientGraphRate(request, env, cfg);
+  const clientBudget = checkClientGraphRate(request, env, cfg, auth.token || null);
   if (!clientBudget.allowed) {
     return errorResponse(
       "graph_rate_limited",
@@ -3357,8 +3404,21 @@ const FREE_TIER = Object.freeze({
 });
 
 /**
- * Keep-alive every 12 hours: six times a day versus the 72-hour pause window,
- * so two consecutive missed runs still leave a full day of margin.
+ * Keep-alive is deliberately pinned to the every-12-hours expression
+ * (`0 0,12 * * *`; wrangler.toml carries the equivalent step form).
+ *
+ * This is the state-free answer to the 72-hour AuraDB pause. The expression
+ * *is* the whole schedule: there is no "next run" record that can be lost or
+ * corrupt, and `runKeepAlive` has no branch that can skip the write. Given that
+ * Cloudflare fires the trigger, the heartbeat is guaranteed — the job cannot
+ * silently decide to do nothing. Twelve hours leaves a six-fold margin, so six
+ * consecutive trigger failures would be needed before the pause window closes;
+ * the daily Python `RETURN 1` adds an independent second heartbeat.
+ *
+ * The 100 % claim is scoped to the application logic on purpose: no in-Worker
+ * design can survive Cloudflare not executing the cron or the account's
+ * 100 000-request daily quota being exhausted. Those are platform
+ * dependencies, not schedule state, and the 12-hour cadence absorbs them.
  *
  * The obvious "every 36 hours" schedule is not expressible in a five-field
  * cron: the hour field only runs 0-23, so a 36-hour step selects hour 0 and
@@ -3366,12 +3426,21 @@ const FREE_TIER = Object.freeze({
  * the closest valid expression that preserves the intent with real margin, and
  * it costs two cron invocations per day out of the account's five.
  */
+// wrangler.toml: crons = ["0 */12 * * *", "23 */3 * * *"] — this one is the heartbeat.
 const CRON_KEEPALIVE = "0 */12 * * *";
 const CRON_HEALTH = "23 */3 * * *";
 
 const HEALTH_SNAPSHOT_KEY = "health:snapshot";
 const HEALTH_KEEPALIVE_KEY = "health:keepalive";
 const HEALTH_LEDGER_PREFIX = "health:daily:";
+
+// Telegram alerting is free (the Bot API has no paid tier) and needs no extra
+// infrastructure. One `alert:last_sent` key in KV is the whole throttle: it
+// costs a read per health run and a write only when a message is actually sent.
+const TELEGRAM_ALERT_KEY = "alert:last_sent";
+const TELEGRAM_ALERT_TTL_SECONDS = 6 * 3600;
+const TELEGRAM_TIMEOUT_MS = 5000;
+let localAlertSentAt = 0;
 
 const localLocks = new Map();
 
@@ -3571,6 +3640,123 @@ async function probeAura(env, gcfg) {
   }
 }
 
+/**
+ * Degradation that deserves a human, as opposed to data the deployment never
+ * configured. The Workers-usage card is optional (`CF_API_TOKEN`), and the
+ * keep-alive note is expected between the first deploy and the next 00:00/12:00
+ * cron; alerting on either would train the operator to ignore the bot.
+ */
+const IGNORED_ALERT_DEGRADED = [
+  /^Workers-Nutzung nicht verfügbar \(not_configured\)\.$/,
+  /^Noch kein Keep-Alive-Lauf aufgezeichnet\.$/,
+];
+
+function healthAlertReason(snapshot) {
+  if (!snapshot) return null;
+  if (snapshot.kv && snapshot.kv.write_failed) return "KV-Schreibfehler: health:snapshot konnte nicht gespeichert werden";
+  if (snapshot.aura && snapshot.aura.available === false) {
+    const code = snapshot.aura.error || (snapshot.aura.configured === false ? "neo4j_unconfigured" : "neo4j_error");
+    return `AuraDB nicht erreichbar (${code})`;
+  }
+  if (!snapshot.ok) return "Snapshot nicht betriebsbereit";
+  const relevant = (snapshot.degraded || []).filter((reason) => !IGNORED_ALERT_DEGRADED.some((pattern) => pattern.test(reason)));
+  if (relevant.length) return relevant.slice(0, 3).join(" ");
+  return null;
+}
+
+function telegramAlertText(snapshot, reason) {
+  const aura = snapshot.aura || {};
+  const workers = snapshot.workers || {};
+  const line = (label, value) => `${label}: ${value}`;
+  const text = [
+    `⚠️ PuppetNET Edge — ${snapshot.ok === false ? "Störung" : "eingeschränkt"}`,
+    line("Grund", reason),
+    aura.available
+      ? line("AuraDB", `${formatNumber(aura.nodes)} / ${formatNumber(aura.node_limit)} Knoten · ${formatNumber(aura.relationships)} / ${formatNumber(aura.relationship_limit)} Relationships`)
+      : line("AuraDB", `nicht erreichbar (${aura.error || "unbekannt"})`),
+    line("Workers heute", `${workers.requests_today === null || workers.requests_today === undefined ? "n/a" : formatNumber(workers.requests_today)} / ${formatNumber(workers.limit)}`),
+    line("Snapshot", snapshot.generated_at || new Date().toISOString()),
+    "Details: /status (Token erforderlich)",
+  ].join("\n");
+  // Telegram accepts 4 096 characters; stay well clear and strip control
+  // characters that a Neo4j error message could theoretically carry.
+  return text.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "").slice(0, 3900);
+}
+
+function redactTelegramToken(value, token) {
+  let text = String(value === undefined || value === null ? "" : value);
+  if (token) text = text.split(token).join("<redacted>");
+  return text.replace(/bot\d+:[A-Za-z0-9_-]+/g, "bot<redacted>");
+}
+
+/**
+ * Send one alert, at most once per six hours.
+ *
+ * The throttle key is written *before* the network call, so a Telegram timeout
+ * cannot turn the next cron run into a retry. The message is plain text (no
+ * parse_mode) and carries only dashboard-level numbers — never a token, a
+ * Neo4j host or a password. `guardedFetch` re-validates the endpoint and is
+ * called with `maxRedirects: 0`: a redirect would move a URL that contains the
+ * bot token to a different origin, which is exactly what must not happen.
+ */
+async function sendTelegramAlert(env, cfg, snapshot, reason) {
+  const token = String(env.TELEGRAM_BOT_TOKEN || "").trim();
+  const chatId = String(env.TELEGRAM_CHAT_ID || "").trim();
+  if (!token || !chatId) return { sent: false, skipped: "not_configured" };
+
+  const now = nowMs();
+  const stored = await readKvJson(env, TELEGRAM_ALERT_KEY);
+  const lastAt = Math.max(Number(stored && stored.at) || 0, localAlertSentAt || 0);
+  if (lastAt && now - lastAt < TELEGRAM_ALERT_TTL_SECONDS * 1000) {
+    return {
+      sent: false,
+      skipped: "throttled",
+      last_sent_at: new Date(lastAt).toISOString(),
+      retry_in_seconds: Math.ceil((TELEGRAM_ALERT_TTL_SECONDS * 1000 - (now - lastAt)) / 1000),
+    };
+  }
+
+  const record = { at: now, reason: String(reason).slice(0, 300), worker: WORKER_NAME };
+  localAlertSentAt = now;
+  await writeKvJson(env, TELEGRAM_ALERT_KEY, record, TELEGRAM_ALERT_TTL_SECONDS);
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TELEGRAM_TIMEOUT_MS);
+  try {
+    const { response } = await guardedFetch(
+      `https://api.telegram.org/bot${token}/sendMessage`,
+      {
+        method: "POST",
+        signal: controller.signal,
+        headers: { "content-type": "application/json", accept: "application/json" },
+        body: JSON.stringify({ chat_id: chatId, text: telegramAlertText(snapshot, reason), disable_web_page_preview: true }),
+      },
+      cfg,
+      { maxRedirects: 0 }
+    );
+    const body = await response.text().catch(() => "");
+    if (!response.ok) {
+      return {
+        sent: false,
+        skipped: "telegram_error",
+        status: response.status,
+        detail: redactTelegramToken(body, token).slice(0, 200),
+        at: new Date(now).toISOString(),
+      };
+    }
+    return { sent: true, at: new Date(now).toISOString() };
+  } catch (err) {
+    return {
+      sent: false,
+      skipped: "send_failed",
+      error: redactTelegramToken(err && err.message ? err.message : err, token).slice(0, 200),
+      at: new Date(now).toISOString(),
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function percentOf(used, limit) {
   if (used === null || used === undefined || !limit) return null;
   return Math.round((Number(used) / limit) * 1000) / 10;
@@ -3638,6 +3824,9 @@ function buildSnapshot({ env, cfg, aura, workers, keepalive, previous, cron, dur
     warnings: [],
   };
   if (!env.RATE_LIMIT_KV) snapshot.degraded.push("KV nicht gebunden: Sperren und Verlaufsdaten sind nur pro Isolate gültig.");
+  if (keepalive && keepalive.ok === false && !keepalive.skipped) {
+    snapshot.degraded.push(`Letzter Keep-Alive fehlgeschlagen (${keepalive.error || "unbekannt"}).`);
+  }
   if (!workers.available) snapshot.degraded.push(`Workers-Nutzung nicht verfügbar (${workers.source}).`);
   if (!aura || !aura.available) snapshot.degraded.push("AuraDB nicht erreichbar oder nicht konfiguriert.");
   if (snapshot.aura.node_percent !== null && snapshot.aura.node_percent >= 90) {
@@ -3769,6 +3958,14 @@ async function runHealthCheck(env, cfg, meta = {}) {
     });
     snapshot.lock = { backend: lock.backend, advisory: Boolean(lock.advisory) };
     if (!snapshot.keepalive) snapshot.degraded.push("Noch kein Keep-Alive-Lauf aufgezeichnet.");
+
+    // Alert before persisting, so the message can include the snapshot's
+    // degraded reasons. `sendTelegramAlert` is a no-op without both secrets and
+    // is throttled by `alert:last_sent` (6 h), so a broken probe cannot page
+    // anyone more often than four times a day.
+    let alertReason = healthAlertReason(snapshot);
+    if (alertReason) snapshot.alert = await sendTelegramAlert(env, cfg, snapshot, alertReason);
+
     if (meta.persist === false) {
       // A manual live probe can be repeated; the 1 000 KV writes/day budget
       // cannot. The caller still gets fresh data, but the stored snapshot is
@@ -3776,8 +3973,19 @@ async function runHealthCheck(env, cfg, meta = {}) {
       snapshot.persisted = false;
       return snapshot;
     }
-    await writeKvJson(env, HEALTH_SNAPSHOT_KEY, snapshot, 30 * 86400);
-    await updateDailyLedger(env, snapshot, "health");
+    const persisted = await writeKvJson(env, HEALTH_SNAPSHOT_KEY, snapshot, 30 * 86400);
+    if (env.RATE_LIMIT_KV && !persisted) {
+      // A bound KV that refuses the write is a hard degradation of the
+      // monitoring path itself: say so, and alert once if nothing has yet.
+      snapshot.kv = { ...snapshot.kv, write_failed: true, error: "kv_error" };
+      snapshot.ok = false;
+      snapshot.degraded.push("KV-Schreibfehler: Snapshot konnte nicht gespeichert werden.");
+      if (!alertReason) {
+        alertReason = healthAlertReason(snapshot);
+        snapshot.alert = await sendTelegramAlert(env, cfg, snapshot, alertReason);
+      }
+    }
+    if (persisted) await updateDailyLedger(env, snapshot, "health");
     return snapshot;
   } finally {
     await releaseLock(env, "health", lock.owner);
@@ -4051,6 +4259,13 @@ ${auraRow}
 <section class="panel" aria-labelledby="budget-heading">
 <h2 id="budget-heading">Hinweise</h2>
 ${snapshot.note ? `<p class="hint">${escapeHtml(snapshot.note)}</p>` : ""}
+${snapshot.alert ? `<p class="hint">Telegram: ${snapshot.alert.sent
+    ? `Alarm gesendet um ${escapeHtml(snapshot.alert.at || "")}`
+    : snapshot.alert.skipped === "throttled"
+      ? "Alarm unterdrückt (6-Stunden-Drosselung)"
+      : snapshot.alert.skipped === "not_configured"
+        ? "nicht konfiguriert"
+        : `Versand fehlgeschlagen (${escapeHtml(snapshot.alert.skipped || "unbekannt")})`}</p>` : ""}
 ${degradedList}
 <p class="hint">KV-Free-Limits: ${formatNumber(snapshot.kv ? snapshot.kv.reads_limit : null)} Reads · ${formatNumber(snapshot.kv ? snapshot.kv.writes_limit : null)} Writes pro Tag. Sperr-Backend: <code>${escapeHtml(snapshot.kv ? snapshot.kv.lock_backend : "unbekannt")}</code>. Cron: <code>${escapeHtml(CRON_KEEPALIVE)}</code> (Keep-Alive) und <code>${escapeHtml(CRON_HEALTH)}</code> (Snapshot).</p>
 </section>

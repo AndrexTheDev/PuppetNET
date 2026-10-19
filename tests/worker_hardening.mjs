@@ -61,7 +61,7 @@ async function check(name, fn) {
 }
 
 function makeKv(initial = new Map()) {
-  const ops = { gets: 0, puts: 0, deletes: 0 };
+  const ops = { gets: 0, puts: 0, deletes: 0, ttls: [] };
   return {
     store: initial,
     ops,
@@ -74,6 +74,7 @@ function makeKv(initial = new Map()) {
     },
     async put(key, value, options = {}) {
       ops.puts += 1;
+      ops.ttls.push({ key, ttl: options.expirationTtl });
       initial.set(key, String(value));
       return { key, value, options };
     },
@@ -107,6 +108,24 @@ function fakeNeo4j({ nodes = 1234, relationships = 5678, fail = false } = {}) {
     throw new Error(`unexpected upstream ${url.toString()}`);
   }
   return { stub, calls };
+}
+
+function telegramStub({ neo4jFail = false, telegramStatus = 200, redirectTo = null } = {}) {
+  const calls = [];
+  const neo = fakeNeo4j({ fail: neo4jFail });
+  const stub = async (target, init = {}) => {
+    const url = String(target);
+    if (url.startsWith("https://api.telegram.org/")) {
+      calls.push({ url, init });
+      if (redirectTo) return new Response(null, { status: 302, headers: { location: redirectTo } });
+      return new Response(JSON.stringify({ ok: telegramStatus < 300, result: { message_id: 1 } }), {
+        status: telegramStatus,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return neo.stub(target, init);
+  };
+  return { stub, calls, neo };
 }
 
 async function call(path, options = {}) {
@@ -176,6 +195,74 @@ await check("/graph/health caches its three-query probe", async () => {
     assert.equal(first.headers.get("x-puppetnet-cache"), "MISS");
     assert.equal(second.headers.get("x-puppetnet-cache"), "HIT");
     assert.equal(neo.calls.length, 1, "a refresh loop must not re-run the probe");
+  });
+});
+
+await check("a valid token separates analysts behind one NAT; anonymous stays per IP", async () => {
+  const neo = fakeNeo4j();
+  const env = {
+    ...BASE_ENV,
+    GRAPH_API_TOKENS: "analyst-a-token,analyst-b-token",
+    GRAPH_CLIENT_RPM: "2",
+    GRAPH_CACHE_TTL_SECONDS: "0",
+  };
+  const ip = { "cf-connecting-ip": "203.0.113.60" };
+
+  // Unit-level: the token half of the key is only present for a real credential.
+  const withToken = (token) => new Request("https://relay.example.invalid/graph/health", {
+    headers: { ...ip, authorization: `Bearer ${token}` },
+  });
+  const anonymous = new Request("https://relay.example.invalid/graph/health", { headers: ip });
+  const keyA = internals.clientFingerprint(withToken("analyst-a-token"), env, "analyst-a-token");
+  const keyB = internals.clientFingerprint(withToken("analyst-b-token"), env, "analyst-b-token");
+  assert.notEqual(keyA, keyB, "two analysts behind one address get different keys");
+  assert.notEqual(keyA, internals.clientFingerprint(anonymous, env), "a token key never equals the IP-only key");
+  assert.equal(
+    internals.clientFingerprint(anonymous, env),
+    internals.clientFingerprint(withToken("whatever"), env),
+    "the fingerprint helper without a credential is the anonymous IP key"
+  );
+
+  await withFetch(neo.stub, async () => {
+    for (const token of ["analyst-a-token", "analyst-b-token"]) {
+      for (let index = 0; index < 2; index += 1) {
+        const ok = await call("/graph/health", { env, token, headers: ip });
+        assert.equal(ok.status, 200, `${token} request ${index + 1} must be served: ${ok.text.slice(0, 120)}`);
+      }
+      const denied = await call("/graph/health", { env, token, headers: ip });
+      assert.equal(denied.status, 429, `${token} exhausts its own window`);
+      assert.match(denied.body.error.message, /Health budget exhausted/);
+    }
+
+    // Same address, no credential: its own IP-only window is untouched by the
+    // two exhausted analysts.
+    const publicEnv = { ...env, GRAPH_PUBLIC_READ: "true" };
+    const anonymousCall = await call("/graph/health", { env: publicEnv, token: null, headers: ip });
+    assert.equal(anonymousCall.status, 200, "anonymous traffic keeps the IP-only budget");
+  });
+});
+
+await check("an invalid token never mints a fresh rate-limit identity", async () => {
+  const env = {
+    ...BASE_ENV,
+    GRAPH_API_TOKENS: "analyst-a-token",
+    GRAPH_CLIENT_RPM: "1",
+    GRAPH_CACHE_TTL_SECONDS: "0",
+  };
+  const neo = fakeNeo4j();
+  const address = { "cf-connecting-ip": "203.0.113.61" };
+  await withFetch(neo.stub, async () => {
+    const firstBogus = await call("/graph/health", { env, token: "guess-1", headers: address });
+    assert.equal(firstBogus.status, 200);
+    // Same address, different garbage token: still the IP bucket, so the
+    // one-request window is already spent. Rotating bad tokens buys nothing.
+    const secondBogus = await call("/graph/health", { env, token: "guess-2", headers: address });
+    assert.equal(secondBogus.status, 429, "an invalid token must not create an identity");
+
+    const valid = await call("/graph/health", { env, token: "analyst-a-token", headers: address });
+    assert.equal(valid.status, 200, "the real analyst has an independent window");
+    const secondValid = await call("/graph/health", { env, token: "analyst-a-token", headers: address });
+    assert.equal(secondValid.status, 429, "the analyst window is one request per minute in this test");
   });
 });
 
@@ -446,6 +533,149 @@ await check("cron expressions are valid five-field schedules and not the 36-hour
   assert.notEqual(internals.CRON_KEEPALIVE, "0 */36 * * *");
   assert.match(internals.CRON_KEEPALIVE, /^0 \*\/12 /);
   assert.match(internals.CRON_HEALTH, /^\d+ \*\/3 /);
+});
+
+await check("the graph route keys its window by token, not just the address", async () => {
+  const env = {
+    ...BASE_ENV,
+    GRAPH_API_TOKENS: "route-a-token,route-b-token",
+    GRAPH_CLIENT_RPM: "1",
+    GRAPH_CACHE_TTL_SECONDS: "0",
+  };
+  const neo = fakeNeo4j();
+  const address = { "cf-connecting-ip": "203.0.113.62" };
+  await withFetch(neo.stub, async () => {
+    const first = await call("/graph/table?limit=1", { env, token: "route-a-token", headers: address });
+    assert.equal(first.status, 200, first.text.slice(0, 160));
+    const other = await call("/graph/table?limit=1", { env, token: "route-b-token", headers: address });
+    assert.equal(other.status, 200, "a second analyst is not blocked by the first");
+    const exhausted = await call("/graph/table?limit=1", { env, token: "route-a-token", headers: address });
+    assert.equal(exhausted.status, 429);
+    assert.equal(exhausted.body.error.code, "graph_rate_limited");
+  });
+});
+
+await check("a degraded probe sends one Telegram alert and then throttles", async () => {
+  const kv = makeKv();
+  const env = {
+    ...BASE_ENV,
+    RATE_LIMIT_KV: kv,
+    TELEGRAM_BOT_TOKEN: "123456:AA-secret-bot-token",
+    TELEGRAM_CHAT_ID: "-1001234567890",
+  };
+  const telegram = telegramStub({ neo4jFail: true });
+
+  let first;
+  await withFetch(telegram.stub, async () => {
+    first = await worker.scheduled({ cron: internals.CRON_HEALTH }, env, ctx());
+    assert.equal(first.health.ok, false);
+    assert.equal(first.health.alert.sent, true);
+    assert.equal(telegram.calls.length, 1, "exactly one message");
+  });
+
+  const sent = telegram.calls[0];
+  const endpoint = new URL(sent.url);
+  assert.equal(endpoint.protocol, "https:");
+  assert.equal(endpoint.hostname, "api.telegram.org");
+  assert.equal(endpoint.pathname, "/bot123456:AA-secret-bot-token/sendMessage");
+  assert.equal(sent.init.method, "POST");
+  assert.equal(sent.init.redirect, "manual", "guardedFetch never lets the runtime follow a redirect");
+  const payload = JSON.parse(sent.init.body);
+  assert.equal(payload.chat_id, "-1001234567890");
+  assert.match(payload.text, /PuppetNET Edge/);
+  assert.match(payload.text, /AuraDB nicht erreichbar/);
+  assert.doesNotMatch(payload.text, /AA-secret-bot-token/);
+  assert.doesNotMatch(payload.text, /abcd1234/, "the database host is not leaked to Telegram");
+
+  // The returned snapshot must be safe to serve/log: no bot token anywhere.
+  assert.doesNotMatch(JSON.stringify(first), /AA-secret-bot-token/);
+
+  const persisted = JSON.parse(kv.store.get("health:snapshot"));
+  assert.equal(persisted.alert.sent, true, "the dashboard can report that an alert went out");
+
+  const stored = JSON.parse(kv.store.get("alert:last_sent"));
+  assert.ok(stored.at);
+  assert.equal(stored.worker, "puppetnet-edge-relay");
+  assert.doesNotMatch(JSON.stringify(stored), /AA-secret-bot-token/);
+  assert.equal(kv.ops.ttls.find((entry) => entry.key === "alert:last_sent").ttl, 21_600);
+
+  await withFetch(telegram.stub, async () => {
+    const second = await worker.scheduled({ cron: internals.CRON_HEALTH }, env, ctx());
+    assert.equal(second.health.alert.skipped, "throttled");
+    assert.ok(second.health.alert.retry_in_seconds > 0);
+    assert.equal(telegram.calls.length, 1, "the second run within six hours sends nothing");
+  });
+});
+
+await check("a healthy probe sends no Telegram message", async () => {
+  const env = {
+    ...BASE_ENV,
+    RATE_LIMIT_KV: makeKv(),
+    TELEGRAM_BOT_TOKEN: "123456:AA-secret-bot-token",
+    TELEGRAM_CHAT_ID: "-1001234567890",
+  };
+  const telegram = telegramStub();
+  await withFetch(telegram.stub, async () => {
+    const result = await worker.scheduled({ cron: internals.CRON_HEALTH }, env, ctx());
+    assert.equal(result.health.ok, true);
+    assert.equal(result.health.alert, undefined);
+    assert.equal(telegram.calls.length, 0);
+  });
+});
+
+await check("degradation without Telegram secrets is reported, not thrown", async () => {
+  const env = { ...BASE_ENV, RATE_LIMIT_KV: makeKv() };
+  const telegram = telegramStub({ neo4jFail: true });
+  await withFetch(telegram.stub, async () => {
+    const result = await worker.scheduled({ cron: internals.CRON_HEALTH }, env, ctx());
+    assert.equal(result.health.ok, false);
+    assert.equal(result.health.alert.skipped, "not_configured");
+    assert.equal(telegram.calls.length, 0);
+  });
+});
+
+await check("a KV write failure is reported as kv_error and alerted", async () => {
+  const kv = makeKv();
+  const originalPut = kv.put.bind(kv);
+  kv.put = async (key, value, options = {}) => {
+    if (key === "health:snapshot") throw new Error("KV write quota exceeded");
+    return originalPut(key, value, options);
+  };
+  const env = {
+    ...BASE_ENV,
+    RATE_LIMIT_KV: kv,
+    TELEGRAM_BOT_TOKEN: "123456:AA-secret-bot-token",
+    TELEGRAM_CHAT_ID: "-1001234567890",
+  };
+  const telegram = telegramStub();
+  await withFetch(telegram.stub, async () => {
+    const result = await worker.scheduled({ cron: internals.CRON_HEALTH }, env, ctx());
+    assert.equal(result.health.ok, false);
+    assert.equal(result.health.kv.write_failed, true);
+    assert.equal(result.health.kv.error, "kv_error");
+    assert.match(result.health.degraded.join(" "), /KV-Schreibfehler/);
+    assert.equal(result.health.alert.sent, true);
+  });
+  const payload = JSON.parse(telegram.calls[0].init.body);
+  assert.match(payload.text, /KV-Schreibfehler/);
+  assert.ok(kv.store.has("alert:last_sent"), "the throttle is written even when the snapshot is not");
+});
+
+await check("a Telegram redirect is never followed", async () => {
+  const env = {
+    ...BASE_ENV,
+    RATE_LIMIT_KV: makeKv(),
+    TELEGRAM_BOT_TOKEN: "123456:AA-secret-bot-token",
+    TELEGRAM_CHAT_ID: "-1001234567890",
+  };
+  const telegram = telegramStub({ neo4jFail: true, redirectTo: "https://169.254.169.254/latest/meta-data/" });
+  await withFetch(telegram.stub, async () => {
+    const result = await worker.scheduled({ cron: internals.CRON_HEALTH }, env, ctx());
+    assert.equal(result.health.alert.sent, false);
+    assert.equal(result.health.alert.skipped, "telegram_error");
+    assert.equal(result.health.alert.status, 302);
+    assert.equal(telegram.calls.length, 1, "the 3xx is returned to the caller, not followed");
+  });
 });
 
 /* -------------------------------------------------------------------------- */

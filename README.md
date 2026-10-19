@@ -74,8 +74,10 @@ keep-alive (`0 */12 * * *`) and a free-tier snapshot (`23 */3 * * *`). The snaps
 server-rendered `/status` dashboard — no script, token-protected, `n/a` instead of invented
 numbers — showing Workers requests today, AuraDB nodes/relationships against the 200 000 /
 400 000 ceilings, the live graph budget and the last keep-alive. Distributed locks are KV
-leases, so no paid Durable Object or Queue is involved. See
-[worker-hardening.md](docs/worker-hardening.md).
+leases, so no paid Durable Object or Queue is involved. The 25/min window is keyed by
+`hash(IP + token)` for authenticated analysts (a shared office NAT no longer shares one
+budget) and by the hashed IP for anonymous traffic; a degraded snapshot sends a throttled,
+free Telegram alert. See [worker-hardening.md](docs/worker-hardening.md).
 Root compatibility symlinks retain the previous Python/console/tooling paths without
 source duplication; use a symlink-capable checkout.
 

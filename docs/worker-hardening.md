@@ -46,6 +46,27 @@ decision, not a tuning knob.
    optional `CLIENT_KEY_SALT`); `X-Forwarded-For` is deliberately ignored because
    a caller controls it.
 
+**Multi-analyst fingerprint.** An authenticated caller is keyed by
+`hash(IP + token)`, not by the address alone:
+
+* a **valid** graph or relay bearer token contributes a second digest of the
+  secret to the key, so three analysts behind one corporate NAT/VPN get three
+  independent 25/min windows;
+* anonymous traffic (public read) keeps the IP-only key, so it cannot borrow an
+  analyst's window (or vice versa);
+* an **invalid** token never becomes an identity — the address bucket still
+  applies. Otherwise rotating random strings would mint unlimited windows, and
+  the 25/min ceiling would be one `Authorization` header away from useless;
+* the raw token never becomes a map key or a KV value: the key is
+  `fnv1a(salt:ip:token:fnv1a(salt:token))`, and a collision can only merge two
+  budgets (the safe direction). Authentication-failure tracking always keys on
+  the address alone, so a bad token cannot reset the lockout counter either.
+
+This is fairness, not extra database capacity: the fleet-wide `graph:neo4j`
+bucket remains one 25/min ceiling against AuraDB Free. Multiple analysts can each
+use their own client window, but the shared bucket still protects the database;
+when it is empty the response is `429 graph_rate_limited` with `retry_after`.
+
 The relay's `/fetch` is deliberately **not** part of this budget: it never touches
 AuraDB. It keeps its own per-host token buckets and the 900/min `GLOBAL_RPM` safety
 valve, which exist for a different reason (not getting the harvester blocked).
@@ -205,6 +226,47 @@ If the database is unreachable, the snapshot is still written with
 `ok: false`, the error code and the degraded reasons. A monitoring page that
 disappears during an incident is worse than no page.
 
+### Telegram alerting (optional, free)
+
+`runHealthCheck` can notify a human when the snapshot is degraded or a hard
+error occurs. It needs two **Worker secrets**:
+
+```bash
+npx wrangler secret put TELEGRAM_BOT_TOKEN   # from @BotFather
+npx wrangler secret put TELEGRAM_CHAT_ID     # e.g. -1001234567890
+```
+
+Conditions: `ok: false` (AuraDB unreachable, `neo4j_error`, or unconfigured),
+`kv.write_failed` / `kv_error` (a bound KV refuses the snapshot write), or any degraded reason
+other than the two expected ones (`CF_API_TOKEN` not configured, and the
+"no keep-alive yet" note between the first deploy and the next heartbeat).
+
+The message is plain text, German, at most 3 900 characters, and contains only
+dashboard-level numbers: status, reason, node/relationship counts against the
+free-tier ceilings, today's Worker requests and the snapshot time. It never
+contains the bot token, a Neo4j host or any credential.
+
+Delivery and throttling:
+
+* sent through `guardedFetch` to
+  `https://api.telegram.org/bot<token>/sendMessage` with `maxRedirects: 0` — a
+  redirect would move a URL containing the bot token to another origin, so a 3xx
+  is treated as a failed delivery, not followed;
+* a 5-second `AbortController` deadline, so a Telegram outage cannot hold a cron
+  invocation open;
+* `alert:last_sent` in KV, TTL **6 hours**, is written *before* the network call:
+  a timeout cannot become a retry storm on the next run. Four messages a day is
+  the ceiling, and an alert is only attempted when the state is actually bad;
+* without KV the throttle falls back to isolate memory (same 6-hour window), so
+  the behaviour degrades in the direction of fewer messages, not more;
+* the result is attached to the snapshot (`alert.sent`, `skipped: throttled |
+  not_configured | telegram_error | send_failed`) and persisted with it, so
+  `/status` shows whether Telegram is configured and what happened. Error text
+  is scrubbed of the bot token before it reaches a response or a log line.
+
+Telegram has no paid tier, so this adds no cost; it is one outbound subrequest
+inside the existing 50-per-invocation Free limit, and only when an alert fires.
+
 ## 5. `/status`: the free-tier dashboard
 
 | Route | Method | Auth | Response |
@@ -212,6 +274,9 @@ disappears during an incident is worse than no page.
 | `/status` | GET | `STATUS_TOKEN`, graph or relay token | HTML, 60-second meta refresh |
 | `/status.json` | GET | same | The same snapshot as JSON |
 | `/status/refresh` | POST | token only, never public | Runs a live probe and returns JSON; persists a snapshot only if the stored one is older than 5 min |
+
+The page and `/status.json` also expose `alert` when a Telegram attempt was made
+(`sent`, `skipped`, `retry_in_seconds`); the HTML shows it in the hints block.
 
 `STATUS_PUBLIC=true` opens the **read-only** view; a live probe always needs a
 token, because it costs two full graph scans. With neither a status nor an API
@@ -267,6 +332,7 @@ escaped (`escapeHtml`), including error messages that originate in Neo4j.
 | Aura nodes | 200 000 | `AURA_NODE_STOP=180000` in the pipeline, plus one heartbeat node |
 | Aura relationships | 400 000 | `AURA_EDGE_CAP=400000` |
 | Aura idle pause | 72 h without a write | Reset every 12 h by the cron |
+| Telegram Bot API | free | ≤4 messages/day (6-hour throttle), one subrequest each |
 
 No paid binding is enabled: no Queues, no Durable Objects, no Workers Paid.
 
@@ -286,6 +352,9 @@ npx wrangler secret put GRAPH_API_TOKEN
 # optional, for the Workers-requests card:
 npx wrangler secret put CF_API_TOKEN          # Account Analytics: Read
 npx wrangler secret put CF_ACCOUNT_ID
+# optional, for Telegram alerting:
+npx wrangler secret put TELEGRAM_BOT_TOKEN
+npx wrangler secret put TELEGRAM_CHAT_ID
 npx wrangler deploy
 ```
 
@@ -312,6 +381,10 @@ locks silently fall back to isolate memory.
 | `429 auth_locked` | ten bad tokens from that address | Wait 15 minutes or rotate the token; check for a client with a stale secret |
 | KV writes fail | 1 000/day exhausted | Look at the graph bucket sync and lock cadence; lowering `GRAPH_KV_SYNC_INTERVAL_MS` raises cost, not lowers it |
 | `skipped: locked` repeatedly | an earlier run died before release | The 10/15-minute lease expires on its own; check the cron logs |
+| `alert.skipped: not_configured` | `TELEGRAM_BOT_TOKEN` or `TELEGRAM_CHAT_ID` missing | Set both Worker secrets; expected without them |
+| `alert.skipped: throttled` | an alert was sent in the last six hours | Nothing to do; `retry_in_seconds` says when the next one may go out |
+| `alert.skipped: telegram_error` | wrong chat id, bot removed from the chat, 3xx | Check `getUpdates`/the bot's chat membership; the token is redacted in the detail |
+| no alert although Aura is down | Telegram secrets absent, or KV throttle from an earlier incident | Check `/status.json` → `alert`; fix the secrets or wait out the six hours |
 | `511`/`1027` from Cloudflare | Workers daily request limit | The Worker is down until 00:00 UTC; this is the plan ceiling, not a bug |
 
 ## 10. Verification
@@ -324,9 +397,14 @@ node tests/worker_smoke.mjs
 
 `tests/worker_hardening.mjs` covers exactly the claims above: 25/min with the
 26th refused and a second caller unaffected, `GRAPH_RPM=999` clamped, the health
-cache, credential/port/zone refusal, redirect-to-metadata refusal, cross-origin
-credential stripping, HTTPS downgrade, redirect loops, `resolve_override`
-removal, KV lease acquisition/contention/expiry/release, the memory fallback,
-the keep-alive **write**, duplicate suppression, snapshot success/failure, cron
-expression shape, dashboard rendering/escalation/auth, the per-address status
-lockout, the no-rewrite rule for fresh snapshots, and the security headers.
+cache, multi-analyst fingerprints (two valid tokens behind one address keep
+separate windows, anonymous stays on the IP bucket, a bogus token mints no new
+identity), credential/port/zone refusal, redirect-to-metadata refusal,
+cross-origin credential stripping, HTTPS downgrade, redirect loops,
+`resolve_override` removal, KV lease acquisition/contention/expiry/release, the
+memory fallback, the keep-alive **write**, duplicate suppression, snapshot
+success/failure, cron expression shape, Telegram dispatch (one message, 6-hour
+throttle with the right TTL, no send when healthy or unconfigured, `kv_error`
+alerting, and a redirect never followed), dashboard rendering/escalation/auth,
+the per-address status lockout, the no-rewrite rule for fresh snapshots, and the
+security headers.

@@ -59,8 +59,9 @@ direct fallback must be available; `MAX_RUNTIME_SECONDS ≥ 60`; `NEO4J_BATCH_SI
 
 The Worker's **own** configuration is not read by the Python side: deploy-time
 secrets (`PROXY_AUTH_TOKEN`, `GRAPH_API_TOKEN`, `STATUS_TOKEN`, `NEO4J_*`,
-`CF_API_TOKEN`, `CF_ACCOUNT_ID`) and `[vars]` (`GLOBAL_RPM`, `GRAPH_RPM` /
-`GRAPH_CLIENT_RPM`, `STATUS_PUBLIC`, `KEEPALIVE_NODE_ID`, …) live in
+`CF_API_TOKEN`, `CF_ACCOUNT_ID`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`) and
+`[vars]` (`GLOBAL_RPM`, `GRAPH_RPM` / `GRAPH_CLIENT_RPM`, `STATUS_PUBLIC`,
+`KEEPALIVE_NODE_ID`, …) live in
 [`apps/worker/wrangler.toml`](../apps/worker/wrangler.toml) and
 [worker-hardening.md](worker-hardening.md). The two token names that appear on
 both sides (`PROXY_AUTH_TOKEN` here, `GRAPH_API_TOKEN` for the console) must

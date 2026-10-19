@@ -298,8 +298,11 @@ minute**, enforced twice:
 * a token bucket (`GRAPH_RATE_PER_SEC` 25/60, `GRAPH_BURST` 25) keyed `graph:neo4j`,
   shared across colos through `RATE_LIMIT_KV` on a 5-minute sync cadence
   (`GRAPH_KV_SYNC_INTERVAL_MS`), and
-* a fixed per-caller window (`GRAPH_CLIENT_RPM`, hashed `CF-Connecting-IP`), which is
-  what makes "25 per minute" literal instead of approximate.
+* a fixed per-caller window (`GRAPH_CLIENT_RPM`), keyed by `hash(IP + token)` for a
+  valid bearer token and by the hashed `CF-Connecting-IP` for anonymous traffic, which
+  is what makes "25 per minute" literal instead of approximate and keeps analysts
+  behind one NAT/VPN from sharing a window. An invalid token never creates an
+  identity.
 
 Both are clamped downward only: `GRAPH_RPM=999` still yields 25. `/graph/health` is
 public and therefore subject to the same budget, and caches its three-query probe for
@@ -625,6 +628,8 @@ python ingest.py --doctor        # probes /health and reports the bindings
 | `STATUS_TOKEN` / `STATUS_PUBLIC` | *(unset)* / `false` | Dashboard auth; public mode is read-only |
 | `KEEPALIVE_NODE_ID` | `puppetnet-edge-cron` | Id of the single heartbeat node |
 | `CF_API_TOKEN` / `CF_ACCOUNT_ID` | *(unset)* | Cloudflare Analytics for the requests card; absent ⇒ `n/a` |
+| `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | *(unset)* | Free degradation alerts; absent ⇒ no messages |
+| `TELEGRAM_ALERT_*` internals | 6 h | `alert:last_sent` throttle lives in `RATE_LIMIT_KV` |
 | `DEFAULT_TIMEOUT_MS` / `MAX_TIMEOUT_MS` | `25000` / `90000` | |
 | `DEFAULT_MAX_ATTEMPTS` / `MAX_MAX_ATTEMPTS` | `3` / `6` | |
 | `MAX_RESPONSE_BYTES` / `MAX_CONTROL_BODY_BYTES` | `8388608` / `262144` | |
