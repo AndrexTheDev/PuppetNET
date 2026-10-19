@@ -4033,7 +4033,7 @@ a{color:#7ceae0}
 ${card("Workers Requests heute", workers.requests_today, workers.limit, workers.source === "cloudflare_graphql" ? "Quelle: Cloudflare Analytics API" : `Quelle: ${workers.source || "unbekannt"}`)}
 ${card("AuraDB Knoten", aura.available ? aura.nodes : null, aura.node_limit, aura.available ? `Datenbank ${aura.database || "neo4j"}` : (aura.message || aura.error || "nicht konfiguriert"))}
 ${card("AuraDB Beziehungen", aura.available ? aura.relationships : null, aura.relationship_limit, aura.available ? "Grenze: 400 000" : "ohne Live-Probe nicht verfügbar")}
-${card("Graph-Anfragen diese Minute", rate.used_this_minute, rate.graph_rpm, `Limit ${rate.client_rpm}/Client/Minute · ${rate.remaining_this_minute} frei`)}
+${card("Graph-Anfragen diese Minute", rate.used_this_minute, rate.graph_rpm, `Isolate-Sicht · Limit ${rate.client_rpm}/Client/Minute · ${rate.remaining_this_minute} frei`)}
 </section>
 
 <section class="panel" aria-labelledby="checks-heading">

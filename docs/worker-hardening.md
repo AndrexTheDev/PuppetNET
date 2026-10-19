@@ -227,7 +227,9 @@ What it shows:
 * **AuraDB nodes and relationships** from the last snapshot, against 200 000 and
   400 000, with the warning at 90 % that matches the pipeline's
   `AURA_NODE_STOP=180000`.
-* **Graph budget**: the 25/min limit, requests used this minute, remaining.
+* **Graph budget**: the 25/min limit, requests used this minute in *this
+  isolate* (labelled as such — the cross-colo bucket lives in KV and has no exact
+  shared counter), and what is left.
 * **KV limits and lock backend** and the two cron expressions.
 * **Last keep-alive, last probe, snapshot age and every degraded reason.**
 

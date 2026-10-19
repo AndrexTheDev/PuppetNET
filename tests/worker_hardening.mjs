@@ -486,7 +486,7 @@ await check("/status renders a script-free German dashboard from the stored snap
   assert.match(res.text, /Free-Tier-Status/);
   assert.match(res.text, /AuraDB Knoten/);
   assert.match(res.text, /12\.345/, "German number formatting");
-  assert.match(res.text, /Limit 25\/Client\/Minute/);
+  assert.match(res.text, /Isolate-Sicht · Limit 25\/Client\/Minute/);
   assert.doesNotMatch(res.text, /<script/i, "the dashboard must not execute anything");
   assert.doesNotMatch(res.text, /https?:\/\/[^"']+\.(?:js|css)/i, "no external assets");
 });
