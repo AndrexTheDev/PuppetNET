@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 // Executed from repository root by Pages Git Integration, NOT GitHub Actions.
-for (const args of [['--check', 'web/app.js'], ['--check', 'web/modals.js'], ['tests/web_smoke.mjs']]) {
+for (const args of [['--check', 'web/app.js'], ['--check', 'web/modals.js'], ['tests/web_smoke.mjs'], ['--import', 'tsx', '--test', 'tests/dashboard.test.ts']]) {
   const result = spawnSync(process.execPath, args, { stdio: 'inherit' });
   if (result.status !== 0) process.exit(result.status ?? 1);
 }

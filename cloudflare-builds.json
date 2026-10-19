@@ -16,7 +16,8 @@
       "scripts/pages-build.mjs",
       "tests/web_smoke.mjs",
       "tests/helpers/*",
-      "apps/worker/worker.js"
+      "apps/worker/worker.js",
+      "tests/dashboard.test.ts"
     ]
   },
   "worker": {

@@ -18,7 +18,8 @@
     "build": "npm run build -w @puppetnet/web",
     "test:scaffold": "node --test tests/scaffold.test.mjs",
     "ci:pages": "node scripts/pages-build.mjs",
-    "ci:worker": "node scripts/worker-build.mjs"
+    "ci:worker": "node scripts/worker-build.mjs",
+    "test:dashboard": "node --import tsx --test tests/dashboard.test.ts"
   },
   "devDependencies": {
     "cose-base": "2.2.0",

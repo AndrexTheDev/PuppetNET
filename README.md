@@ -2,8 +2,8 @@
 
 Open-source OSINT ingestion, entity recognition and graph analysis. Baseline history
 through `arena/01a0df64-puppetnet` commit `127ab47` is integrated into the session branch
-`arena/322dea42-puppetnet`. Integration into `main` is proposed by PR #1; this session
-does not modify or push directly to `main`.
+`arena/322dea42-puppetnet`. Integration into `main` is delivered through PR #1; changes are authored on the
+session branch, never pushed directly to `main`. Check the PR for merge status.
 
 | Component | Source | Build / execution owner |
 | --- | --- | --- |
@@ -11,8 +11,9 @@ does not modify or push directly to `main`.
 | Relay and read-only graph API | `apps/worker` | Cloudflare Workers Builds |
 | Python tests, GLiNER NLP, Neo4j ingestion | `packages/pipeline` | GitHub Actions standard Linux runner |
 
-The Next frontend is a static shell around the retained analyst console at
-`/legacy/index.html`, not a completed React rewrite. `output: 'export'` generates
+The new `/dashboard/` frontend uses Sigma.js 4, Graphology, an off-thread ForceAtlas2
+layout and opt-in Leaflet/OpenStreetMap. The previous analyst console is retained at
+`/legacy/index.html`. See [dashboard guide](docs/webgl-dashboard.md). `output: 'export'` generates
 `apps/web/out` during `next build` (Next 15 does not use the old `next export` command).
 There are no Pages Functions, SSR routes or hosted model APIs.
 
@@ -24,6 +25,7 @@ npm run dev
 npm run ci:pages                  # console regression gate + static Next build
 npm run ci:worker                 # Worker regression gate, no deployment
 npm run test:scaffold             # monorepo/build configuration contracts
+npm run test:dashboard            # filters, LoD, evidence, 120k-element fixture
 npm run deploy -w @puppetnet/worker -- --dry-run --outdir /tmp/puppetnet-worker
 python -m venv .venv
 . .venv/bin/activate
