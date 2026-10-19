@@ -4227,9 +4227,9 @@ export default {
   /**
    * Cron dispatcher. `wrangler.toml` declares two schedules:
    *
-   *   `0 * /12 * * *` — keep-alive (AuraDB Free pauses after 72 h without a
-   *                     write; two runs a day leaves a six-fold margin)
-   *   `23 * /3 * * *` — free-tier snapshot (node/relationship counts)
+   *   `CRON_KEEPALIVE` — keep-alive (AuraDB Free pauses after 72 h without a
+   *                      write; two runs a day leaves a six-fold margin)
+   *   `CRON_HEALTH`    — free-tier snapshot (node/relationship counts)
    *
    * The expression is read from `event.cron`, so an operator adding a schedule
    * in the dashboard gets the idempotent pair rather than silence. Every run
