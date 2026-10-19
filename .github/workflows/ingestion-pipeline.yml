@@ -1,0 +1,120 @@
+name: Python ingestion pipeline
+on:
+  push:
+    branches: [main, arena/322dea42-puppetnet]
+    paths:
+      - 'packages/pipeline/**'
+      - 'tests/**.py'
+      - '.github/workflows/ingestion-pipeline.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'packages/pipeline/**'
+      - 'tests/**.py'
+      - '.github/workflows/ingestion-pipeline.yml'
+  schedule:
+    - cron: '17 5 * * *'
+  workflow_dispatch:
+    inputs:
+      run_ingestion:
+        description: 'Run GLiNER and persist to Neo4j (requires repository opt-in and secrets)'
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: puppetnet-python-ingestion
+  cancel-in-progress: false
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: packages/pipeline/pyproject.toml
+      - run: pip install -e './packages/pipeline[dev]'
+      - run: python -m pytest -q -m 'not integration'
+      - run: ruff check packages/pipeline tests/test_gliner.py tests/test_hybrid_ci.py
+  ingestion:
+    needs: tests
+    # Never ingest from PRs or arbitrary branches; missing secrets must fail,
+    # not silently simulate a successful production write.
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      vars.ENABLE_INGESTION == 'true' &&
+      (github.event_name == 'schedule' ||
+       (github.event_name == 'workflow_dispatch' && inputs.run_ingestion))
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      NLP_BACKEND: gliner
+      GLINER_MODEL: urchade/gliner_small-v2.1
+      GLINER_THRESHOLD: '0.5'
+      NLP_MAX_CHARS_PER_DOC: '20000'
+      NLP_MAX_SENTENCES_PER_DOC: '100'
+      HF_HOME: ${{ github.workspace }}/.cache/huggingface
+      NEO4J_URI: ${{ secrets.NEO4J_URI }}
+      NEO4J_USERNAME: ${{ secrets.NEO4J_USERNAME }}
+      NEO4J_PASSWORD: ${{ secrets.NEO4J_PASSWORD }}
+      PROXY_WORKER_URL: ${{ secrets.PROXY_WORKER_URL }}
+      PROXY_AUTH_TOKEN: ${{ secrets.PROXY_AUTH_TOKEN }}
+      DRY_RUN: 'false'
+      ENABLED_SOURCES: wikidata,news_world
+      MAX_DOCUMENTS_TOTAL: '100'
+      MAX_DOCUMENTS_PER_SOURCE: '25'
+      MAX_RUNTIME_SECONDS: '1200'
+      ANALYTICS_ENABLED: 'false'
+      TOKENIZERS_PARALLELISM: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require actual database credentials
+        shell: bash
+        run: |
+          test -n "$NEO4J_URI" || { echo 'Missing NEO4J_URI'; exit 1; }
+          test -n "$NEO4J_USERNAME" || { echo 'Missing NEO4J_USERNAME'; exit 1; }
+          test -n "$NEO4J_PASSWORD" || { echo 'Missing NEO4J_PASSWORD'; exit 1; }
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: packages/pipeline/pyproject.toml
+      - name: Install CPU-only GLiNER pipeline (no GPU or inference API)
+        run: |
+          pip install 'torch>=2.2,<3' --index-url https://download.pytorch.org/whl/cpu
+          pip install -e './packages/pipeline[gliner]'
+      - uses: actions/cache@v4
+        with:
+          path: .cache/huggingface
+          key: gliner-small-v2.1-cpu-v1
+      - name: Preflight actual model before fetching or writing data
+        run: |
+          python - <<'PYCODE'
+          from puppetnet.config import load_settings
+          from puppetnet.parsing.gliner_engine import GLiNEREngine
+          engine = GLiNEREngine(load_settings())
+          result = engine.parse_text('Alice works at Example Holdings in London.')
+          print(engine.describe())
+          print('Model preflight entities:', len(result.entities))
+          engine.close()
+          PYCODE
+      - name: GLiNER extraction and Neo4j ingestion
+        shell: bash
+        run: |
+          code=0
+          python packages/pipeline/ingest.py --tier all --limit 100 || code=$?
+          if [ "$code" -eq 3 ]; then
+            echo '::warning::Ingestion partially succeeded; inspect the report'
+          elif [ "$code" -ne 0 ]; then
+            exit "$code"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ingestion-report-${{ github.run_id }}
+          path: reports/
+          if-no-files-found: ignore
+          retention-days: 1

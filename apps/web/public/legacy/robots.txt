@@ -1,0 +1,22 @@
+# =============================================================================
+#  PuppetNET — crawler directives
+# =============================================================================
+#
+#  The console is a single-page application: everything a crawler can read lives
+#  behind `/`, and the deep links are hash fragments (`#/q=kastelion&depth=2`),
+#  which are never requested as separate URLs. There is nothing to hide and
+#  nothing to paginate, so the whole deployment is open.
+#
+#  A `Sitemap:` line has to be absolute, and this file is committed long before
+#  the deployment origin exists. `npm run emit:seo -- --origin https://console.example`
+#  rewrites this file with the Sitemap line and writes web/sitemap.xml; the Pages
+#  workflow does both at deploy time, so the live site always carries them and
+#  the repository never has to guess a hostname.
+#
+#  Running a private investigative deployment? Replace the Allow below with
+#  `Disallow: /` and set `noindex, nofollow` in web/index.html — see
+#  docs/web-console.md#hardening.
+# =============================================================================
+
+User-agent: *
+Allow: /

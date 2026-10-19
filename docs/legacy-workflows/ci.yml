@@ -1,0 +1,237 @@
+# =============================================================================
+#  PuppetNET — continuous integration
+# =============================================================================
+#  Guards every deliverable on each push and pull request:
+#    * worker.js   — syntax-checked with node --check, its graph API and host
+#                    profiles exercised against a stubbed Neo4j
+#    * ingest.py   — imported, CLI smoke-tested (--version, --list-sources,
+#                    --print-config, --doctor) and exercised by pytest
+#    * the package — unit tests that never need a spaCy model, a Neo4j
+#                    instance, or network access (see tests/conftest.py)
+#    * web/        — the analyst console: shipped JavaScript syntax-checked, the
+#                    committed Tailwind build proven up to date, and the whole
+#                    SPA booted inside jsdom against the vendored graph engine
+#
+#  Nothing here touches the network beyond npm/PyPI: both smoke suites stub
+#  every upstream, so CI cannot pass because a third-party API was reachable.
+# =============================================================================
+
+name: CI
+
+on:
+  push:
+    branches: [main, "arena/**"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONUNBUFFERED: "1"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  python:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip wheel
+          pip install -r requirements.txt
+          pip install pytest>=8.0 ruff>=0.4
+
+      - name: Ruff (lint)
+        run: ruff check puppetnet ingest.py tests
+
+      - name: Byte-compile everything
+        run: python -m compileall -q puppetnet ingest.py tests
+
+      - name: CLI smoke tests
+        env:
+          DRY_RUN: "true"
+          LOG_LEVEL: "ERROR"
+        run: |
+          python ingest.py --version
+          python ingest.py --list-sources | head -c 400
+          python ingest.py --print-config | head -c 400
+          # --doctor must never hard-fail on a missing model or missing secrets.
+          python ingest.py --doctor || echo "doctor reported a degraded mode (expected without secrets)"
+
+      - name: Pytest
+        env:
+          DRY_RUN: "true"
+          LOG_LEVEL: "ERROR"
+        run: pytest -q -m "not integration"
+
+  worker:
+    name: Cloudflare Worker
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v7
+        with:
+          node-version: "20"
+
+      - name: Syntax check worker.js
+        run: node --check worker.js
+
+      # Runs the exported fetch handler against a stubbed upstream: proves the
+      # host profiles relay WDQS SPARQL as a polite form POST, cap the caller's
+      # rate, inject OpenCorporates/RapidAPI credentials at the edge and never
+      # echo a secret back to the harvester. No network, no wrangler, no bindings.
+      - name: Behavioural smoke test (host profiles)
+        run: node tests/worker_smoke.mjs
+
+      - name: Validate wrangler.toml
+        run: |
+          node -e '
+            const fs = require("fs");
+            const text = fs.readFileSync("wrangler.toml", "utf8");
+
+            // Top-level keys only: anything under a [section] is scoped to that
+            // section, so a stray `name` in [vars] must not satisfy this check.
+            // Deliberately written without a backslash inside a string literal —
+            // YAML, shell single quotes and a JS template literal are three
+            // escaping layers, and the previous version of this step got them
+            // wrong, so it reported keys that were plainly present.
+            const topLevel = new Map();
+            let inSection = false;
+            for (const raw of text.split(/\r?\n/)) {
+              const line = raw.split("#")[0].trim();
+              if (!line) continue;
+              if (line.startsWith("[")) { inSection = true; continue; }
+              if (inSection || !line.includes("=")) continue;
+              const cut = line.indexOf("=");
+              topLevel.set(line.slice(0, cut).trim(),
+                           line.slice(cut + 1).trim().replace(/^"|"$/g, ""));
+            }
+
+            const required = ["name", "main", "compatibility_date"];
+            const missing = required.filter((key) => !topLevel.has(key));
+            if (missing.length) {
+              console.error("wrangler.toml is missing top-level keys:", missing.join(", "));
+              process.exit(1);
+            }
+            if (!fs.existsSync(topLevel.get("main"))) {
+              console.error("wrangler.toml main does not exist:", topLevel.get("main"));
+              process.exit(1);
+            }
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(topLevel.get("compatibility_date"))) {
+              console.error("compatibility_date is not an ISO date:", topLevel.get("compatibility_date"));
+              process.exit(1);
+            }
+            console.log("wrangler.toml declares:",
+                        required.map((key) => key + "=" + topLevel.get(key)).join(", "));
+          '
+
+      - name: Dry-run wrangler config (if the CLI is reachable)
+        continue-on-error: true
+        run: npx --yes wrangler@latest deploy --dry-run --outdir /tmp/wrangler-out
+
+  web:
+    name: Web console
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v7
+        with:
+          node-version: "20"
+          cache: npm
+
+      # Dev tooling only (Tailwind CLI, jsdom, terser). The console itself ships
+      # no runtime dependency: everything it loads lives in web/vendor/.
+      - name: Install build and test tooling
+        run: npm ci
+
+      - name: Syntax check the shipped JavaScript
+        run: |
+          node --check web/app.js
+          node --check web/modals.js
+          node --check worker.js
+
+      # The console is self-hostable, so the CSS it ships must be the CSS its
+      # sources produce. A stale commit means the deployed page silently loses
+      # whatever class was added last.
+      - name: Committed Tailwind build is up to date
+        run: |
+          npm run build:css
+          git diff --exit-code web/vendor/tailwind.css
+
+      - name: Vendored libraries and licences are committed
+        run: |
+          for file in cytoscape.min.js cytoscape-fcose.min.js layout-base.min.js \
+                      cose-base.min.js qrcode.min.js tailwind.css README.md; do
+            test -s "web/vendor/$file" || { echo "missing web/vendor/$file"; exit 1; }
+          done
+          # qrcode-generator ships no licence inside its tarball, so the upstream
+          # MIT text is committed verbatim — see web/vendor/README.md.
+          for lib in cytoscape cytoscape-fcose layout-base cose-base qrcode-generator; do
+            test -s "web/vendor/LICENSE.$lib" || { echo "missing licence for $lib"; exit 1; }
+          done
+          echo "vendored assets present with licences"
+
+      # Boots index.html + app.js + the vendored engine inside jsdom and drives
+      # the real UI: search, canvas, filters, N-hop expansion, handshake
+      # pathfinding, the data table, CSV export, keyboard shortcuts, deep links,
+      # worker mode against the actual worker.js, and the offline fallback.
+      # Tee'd, because the failure text is worth more than the exit code: the
+      # step below turns it into annotations, which stay readable through the
+      # GitHub API from places where the job-log host is not reachable.
+      - name: Console smoke test (headless browser)
+        run: |
+          set -o pipefail
+          node tests/web_smoke.mjs 2>&1 | tee smoke-web.log
+
+      - name: Graph API smoke test
+        run: |
+          set -o pipefail
+          node tests/worker_smoke.mjs 2>&1 | tee smoke-worker.log
+
+      # Feature tests say a module works; the audit says the modules still agree
+      # with each other — client caps versus GRAPH_LIMITS, Aura budgets versus the
+      # HUD, the cost perimeter, dangling ARIA references, SEO completeness.
+      # Accepted risks are registered in scripts/audit.mjs with a written reason.
+      - name: Repository audit
+        run: |
+          set -o pipefail
+          npm run audit 2>&1 | tee audit.log
+
+      # Both suites name the check that failed and print the assertion under it;
+      # the audit prints one finding per three lines. scripts/annotate-log.mjs turns
+      # that into annotations, which travel with the run to the run page and the
+      # API — the job log itself lives on a host not every environment can read.
+      # It exits non-zero when it finds nothing, so a broken helper cannot hide the
+      # failure it was supposed to explain.
+      - name: Surface failures as annotations
+        if: failure()
+        run: node scripts/annotate-log.mjs smoke-web.log smoke-worker.log audit.log

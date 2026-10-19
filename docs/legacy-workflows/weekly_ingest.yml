@@ -1,0 +1,330 @@
+# =============================================================================
+#  PuppetNET — weekly deep harvest (every source, every page)
+# =============================================================================
+#  Runs Sundays at 02:13 UTC and harvests *all* sources — `--tier weekly`, which
+#  registry.specs_for_tier() resolves to the full registry. The daily run repeats
+#  this work for the slow tier and the hourly run for the fast tier; this run is
+#  what re-reads the register dumps, leak datasets and Wikidata end-to-end with a
+#  much larger document budget.
+#
+#  Why it exists next to Daily Ingest:
+#      * Daily Ingest is bounded (1500 documents, 35 minutes) so that a
+#        day where a dataset explodes still finishes. A register that publishes a
+#        4000-row delta is therefore only partly read on a weekday.
+#      * The deep run lifts the per-source and total budgets and uses the larger
+#        spaCy model, which is the accurate one but too slow for the hourly slot.
+#      * It is also the run that repairs history: `--tier weekly` reaches sources
+#        that a tiered day skipped after a failed run.
+#
+#  Ordering with the rest of the schedule:
+#      Weekly Ingest  13 2 * * 0     this workflow (deep)
+#      Daily Ingest   13 4 * * *     two hours later, slow tier
+#      Graph Maintenance            06:30, triggered by Daily Ingest
+#  The deep run's new nodes are therefore deduplicated and scored by the same
+#  maintenance pass as everything else, and the schedule costs exactly one
+#  maintenance run per day.
+#
+#  Required repository secrets (Settings → Secrets and variables → Actions):
+#      NEO4J_URI, NEO4J_USERNAME, NEO4J_PASSWORD
+#      PROXY_WORKER_URL, PROXY_AUTH_TOKEN
+#  Optional:
+#      OPENCORPORATES_API_TOKEN, COMPANIES_HOUSE_API_KEY, WIKIDATA_USER_AGENT,
+#      ICIJ_QUERY_TERMS, ICIJ_DATASET_URLS, REGISTER_FILES, RSS_FEEDS
+# =============================================================================
+
+name: Weekly Ingest
+
+on:
+  schedule:
+    # 02:13 UTC on Sunday — two hours before the weekday daily run, and off the
+    # hour because a round-hour cron is the one GitHub load-shifts hardest. A
+    # long deep run cannot collide with the daily run anyway: the shared
+    # concurrency group serialises the two if the deep run overruns.
+    - cron: "13 2 * * 0"
+
+  workflow_dispatch:
+    inputs:
+      sources:
+        description: "Source ids or adapter names (comma-separated). Empty = every source."
+        required: false
+        default: ""
+        type: string
+      dry_run:
+        description: "Harvest + parse but write nothing to Neo4j"
+        required: false
+        default: false
+        type: boolean
+      limit:
+        description: "Max documents per source (empty = MAX_DOCUMENTS_PER_SOURCE)"
+        required: false
+        default: ""
+        type: string
+      log_level:
+        description: "Log level"
+        required: false
+        default: "INFO"
+        type: choice
+        options: [DEBUG, INFO, WARNING, ERROR]
+      fail_on_error:
+        description: "Fail the workflow if any source recorded an error"
+        required: false
+        default: false
+        type: boolean
+
+# Shared with the other two ingest workflows: the chain is serial by design, and
+# two writers racing on the same MERGE keys produce duplicate nodes.
+concurrency:
+  group: puppetnet-ingest-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUNBUFFERED: "1"
+  PYTHONDONTWRITEBYTECODE: "1"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PIP_NO_PYTHON_VERSION_WARNING: "1"
+  TOKENIZERS_PARALLELISM: "false"
+  OMP_NUM_THREADS: "2"
+
+jobs:
+  ingest:
+    name: Deep harvest → NLP → Neo4j
+    runs-on: ubuntu-latest
+    # Harvest budget is MAX_RUNTIME_SECONDS (55 min) + install/model overhead.
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+
+      - name: Install runtime dependencies
+        run: |
+          python -m pip install --upgrade pip wheel
+          pip install -r requirements.txt
+
+      # ---------------------------------------------------------------------
+      # The deep run is the one place where the slow, accurate model is worth
+      # its install time: it runs once a week, over the full corpus, and its
+      # output is what the daily and hourly runs then corroborate.
+      # ---------------------------------------------------------------------
+      - name: Download spaCy model
+        id: spacy_model
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          models="${SPACY_MODELS:-en_core_web_trf en_core_web_lg en_core_web_md en_core_web_sm}"
+          installed=""
+          for model in $models; do
+            echo "::group::trying $model"
+            if python -m spacy download "$model" 2>&1; then
+              if python -c "import spacy,sys; spacy.load('$model'); print('$model loads cleanly')" 2>&1; then
+                installed="$model"
+                echo "::endgroup::"
+                break
+              fi
+            fi
+            echo "::warning::$model could not be installed or loaded"
+            echo "::endgroup::"
+          done
+
+          if [ -n "$installed" ]; then
+            echo "model=$installed" >> "$GITHUB_OUTPUT"
+            echo "Using spaCy model: $installed"
+          else
+            echo "model=" >> "$GITHUB_OUTPUT"
+            echo "::warning title=NLP degraded::No spaCy model installed — using the lexical fallback pipeline."
+          fi
+        env:
+          SPACY_MODELS: "en_core_web_trf en_core_web_lg en_core_web_md en_core_web_sm"
+
+      - name: Preflight checks (ingest.py --doctor)
+        run: |
+          python ingest.py --doctor || doctor_status=$?
+          case "${doctor_status:-0}" in
+            0) echo "preflight: OK" ;;
+            1) echo "::error title=Configuration invalid::Fix the secrets listed above and re-run."
+               exit 1 ;;
+            *) echo "::warning title=Preflight degraded::Continuing; the pipeline will run in reduced mode (exit ${doctor_status})." ;;
+          esac
+        env:
+          NEO4J_URI: ${{ secrets.NEO4J_URI }}
+          NEO4J_USERNAME: ${{ secrets.NEO4J_USERNAME }}
+          NEO4J_PASSWORD: ${{ secrets.NEO4J_PASSWORD }}
+          PROXY_WORKER_URL: ${{ secrets.PROXY_WORKER_URL }}
+          PROXY_AUTH_TOKEN: ${{ secrets.PROXY_AUTH_TOKEN }}
+
+      - name: Restore harvest state
+        uses: actions/cache@v6
+        with:
+          path: .state
+          key: puppetnet-state-${{ github.run_id }}
+          restore-keys: |
+            puppetnet-state-
+
+      - name: Resolve ingest arguments
+        id: args
+        env:
+          IN_SOURCES: ${{ inputs.sources }}
+          IN_LIMIT: ${{ inputs.limit }}
+          IN_LOG_LEVEL: ${{ inputs.log_level }}
+          IN_DRY_RUN: ${{ inputs.dry_run }}
+          IN_FAIL_ON_ERROR: ${{ inputs.fail_on_error }}
+        run: |
+          args="--tier weekly"
+          if [ -n "$IN_SOURCES" ]; then
+            case "$IN_SOURCES" in
+              *[\ \;\|\&\$\`\']* )
+                echo "::error title=Invalid --sources::Use comma-separated source ids or adapter names only."
+                exit 1 ;;
+            esac
+            args="$args --sources $IN_SOURCES"
+          fi
+          case "$IN_LIMIT" in
+            "" ) ;;
+            *[!0-9]* ) echo "::error title=Invalid --limit::$IN_LIMIT is not a positive integer."; exit 1 ;;
+            * ) args="$args --limit $IN_LIMIT" ;;
+          esac
+          case "$IN_LOG_LEVEL" in
+            "" ) ;;
+            DEBUG|INFO|WARNING|ERROR ) args="$args --log-level $IN_LOG_LEVEL" ;;
+            * ) echo "::error title=Invalid --log-level::$IN_LOG_LEVEL"; exit 1 ;;
+          esac
+
+          [ "$IN_DRY_RUN" = "true" ]       && args="$args --dry-run"
+          [ "$IN_FAIL_ON_ERROR" = "true" ] && args="$args --fail-on-error"
+
+          echo "args=$args" >> "$GITHUB_OUTPUT"
+          echo "resolved: ingest.py $args"
+
+      - name: Run deep ingest
+        id: ingest
+        env:
+          INGEST_ARGS: ${{ steps.args.outputs.args }}
+          NEO4J_URI: ${{ secrets.NEO4J_URI }}
+          NEO4J_USERNAME: ${{ secrets.NEO4J_USERNAME }}
+          NEO4J_PASSWORD: ${{ secrets.NEO4J_PASSWORD }}
+          NEO4J_DATABASE: ${{ secrets.NEO4J_DATABASE }}
+          PROXY_WORKER_URL: ${{ secrets.PROXY_WORKER_URL }}
+          PROXY_AUTH_TOKEN: ${{ secrets.PROXY_AUTH_TOKEN }}
+          PROXY_WORKER_ENABLED: "true"
+          PROXY_QUEUE_ON_LIMIT: "true"
+          DIRECT_FALLBACK_ENABLED: "true"
+          # --- Harvest limits: the deep run's reason to exist -----------------
+          MAX_DOCUMENTS_PER_SOURCE: "400"
+          MAX_DOCUMENTS_TOTAL: "4000"
+          MAX_RUNTIME_SECONDS: "3300"
+          TOKEN_BUCKET_RATE_PER_SEC: "0.5"
+          TOKEN_BUCKET_BURST: "5"
+          # --- Source credentials -------------------------------------------
+          OPENCORPORATES_API_TOKEN: ${{ secrets.OPENCORPORATES_API_TOKEN }}
+          COMPANIES_HOUSE_API_KEY: ${{ secrets.COMPANIES_HOUSE_API_KEY }}
+          WIKIDATA_USER_AGENT: ${{ secrets.WIKIDATA_USER_AGENT }}
+          ICIJ_QUERY_TERMS: ${{ secrets.ICIJ_QUERY_TERMS }}
+          ICIJ_DATASET_URLS: ${{ secrets.ICIJ_DATASET_URLS }}
+          REGISTER_FILES: ${{ secrets.REGISTER_FILES }}
+          RSS_FEEDS: ${{ secrets.RSS_FEEDS }}
+          # --- Run metadata --------------------------------------------------
+          LOG_JSON: "true"
+          SOURCES_FILE: "config/sources.yaml"
+          ONLY_NEW_DOCUMENTS: "true"
+          # 90 days: the deep run is the one pass that is allowed to reach
+          # further back and re-check documents the daily window has forgotten.
+          # Re-reads are safe — the writer's `is_new` evidence guard means a
+          # known document cannot inflate an edge's confidence.
+          DEDUPE_WINDOW_DAYS: "90"
+        run: |
+          set +e
+          # shellcheck disable=SC2086  # INGEST_ARGS is intentionally word-split
+          python ingest.py $INGEST_ARGS --report-dir reports 2>&1 | tee ingest.log
+          status=${PIPESTATUS[0]}
+          set -e
+          echo "exit_code=$status" >> "$GITHUB_OUTPUT"
+          echo "ingest.py exited with $status"
+          exit 0
+
+      - name: Upload run report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: weekly-ingest-report-${{ github.run_id }}
+          path: |
+            reports/
+            ingest.log
+            .state/
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Annotate failures
+        if: always()
+        env:
+          INGEST_EXIT: ${{ steps.ingest.outputs.exit_code }}
+        run: |
+          exit_code="$INGEST_EXIT"
+          case "$exit_code" in
+            0) echo "Deep run completed successfully." ;;
+            1) echo "::error title=Configuration error::Secrets or config/sources.yaml are invalid (exit 1)." ;;
+            2) echo "::error title=Runtime failure::The deep run aborted; see ingest.log (exit 2)." ;;
+            3) echo "::warning title=Partial run::At least one source failed but the graph was written (exit 3)." ;;
+            "") echo "::warning title=Unknown status::The ingest step did not report an exit code." ;;
+            *) echo "::error title=Unexpected exit::ingest.py exited with $exit_code." ;;
+          esac
+
+      # A weekly run is one shot per week: unlike the hourly runs, a partial
+      # failure here is worth failing on, because the next deep run is seven
+      # days away. Exit 3 is therefore escalated on the schedule as well.
+
+      # ---------------------------------------------------------------------
+      # Operational warning. A 24-hour schedule that breaks silently is worse
+      # than one that stops: the next run overwrites the log line, and the first
+      # symptom is a graph that quietly stopped growing. Exit 1 (configuration)
+      # and 2 (runtime) mean nothing was written, so the operator hears about it;
+      # exit 3 is per-source and expected, and the daily digest already reports
+      # it. No token configured is a valid deployment (harvest without alerts).
+      # ---------------------------------------------------------------------
+      - name: Warn on a hard failure
+        if: always() && !cancelled() && steps.ingest.outputs.exit_code != '0' && steps.ingest.outputs.exit_code != '3' && steps.ingest.outputs.exit_code != ''
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_IDS: ${{ secrets.TELEGRAM_CHAT_IDS }}
+          INGEST_EXIT: ${{ steps.ingest.outputs.exit_code }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          WORKFLOW_NAME: "Weekly Ingest"
+        run: |
+          if [ -z "$TELEGRAM_BOT_TOKEN" ]; then
+            echo "TELEGRAM_BOT_TOKEN is not set — skipping the failure warning"
+            exit 0
+          fi
+          case "$INGEST_EXIT" in
+            1) reason="configuration error — secrets or config/sources.yaml are invalid";;
+            2) reason="runtime failure — the pipeline aborted before it wrote the graph";;
+            *) reason="unexpected exit";;
+          esac
+          set +e
+          python telegram_bot.py --failure "$reason (exit $INGEST_EXIT)" \
+            --workflow "$WORKFLOW_NAME" --exit-code "$INGEST_EXIT" --run-url "$RUN_URL"
+          # The warning is best effort: a Telegram outage must not turn a failed
+          # harvest into a failed workflow for a *different* reason.
+          echo "warning pass exited with $?"
+          exit 0
+
+      - name: Fail on incomplete deep run
+        if: always()
+        env:
+          INGEST_EXIT: ${{ steps.ingest.outputs.exit_code }}
+        run: |
+          exit_code="$INGEST_EXIT"
+          if [ "$exit_code" = "1" ] || [ "$exit_code" = "2" ] || [ "$exit_code" = "3" ]; then
+            exit 1
+          fi

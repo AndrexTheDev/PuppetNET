@@ -1,0 +1,14 @@
+{
+  "name": "@puppetnet/worker",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "node --check worker.js",
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev --ip 0.0.0.0"
+  },
+  "devDependencies": {
+    "wrangler": "4.151.1"
+  }
+}

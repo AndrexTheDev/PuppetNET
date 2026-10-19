@@ -1,0 +1,228 @@
+# =============================================================================
+#  PuppetNET — source registry overlay
+# =============================================================================
+#  The *defaults* for every source live in code (puppetnet/sources/registry.py)
+#  so the pipeline always has a working baseline. This file is an optional
+#  overlay: each entry is keyed by source `id` and only needs to list what you
+#  want to change. Unknown keys are forwarded to the adapter's `options` map.
+#
+#  Override precedence (highest last):
+#      registry defaults  <  config/sources.yaml  <  environment variables
+#
+#  Edge confidence weight is derived from `kind`, never set by hand:
+#      kind: structured     -> 1.0   (ICIJ, OpenCorporates, Wikidata, registers)
+#      kind: unstructured   -> 0.4   (news, blogs, RSS)
+#
+#  A run can be narrowed without editing this file:
+#      ENABLED_SOURCES=icij_leaks,opencorporates   (allowlist)
+#      DISABLED_SOURCES=news_world                 (denylist)
+#      python ingest.py --sources rss              (by adapter name)
+# =============================================================================
+
+version: 1
+
+sources:
+  # ---------------------------------------------------------------------------
+  # STRUCTURED (edge confidence weight = 1.0)
+  # ---------------------------------------------------------------------------
+
+  - id: icij_leaks
+    enabled: true
+    rate_per_sec: 0.25          # offshoreleaks is a small Rails app; be polite
+    burst: 2
+    cache_ttl_seconds: 86400    # leak datasets change rarely — cache hard
+    max_documents: 400
+    options:
+      row_limit: 20000
+      # Exact node ids from offshoreleaks.icij.org (e.g. "node/120483").
+      node_ids: []
+      # Bulk dataset dumps (Parquet/CSV inside zip) — parsed by text_extract.
+      dataset_urls: []
+      # Free-text officer/entity searches, e.g. ["Kerimov", "Amadea"].
+      search_terms:
+        - Kerimov
+        - Amadea
+        - Prigozhin
+        - Wagner
+      jurisdictions: []
+
+  - id: opencorporates
+    enabled: true
+    rate_per_sec: 0.5
+    burst: 3
+    cache_ttl_seconds: 43200
+    options:
+      per_page: 30
+      include_officers: true
+      include_groupings: true
+      jurisdictions: [gb, us_de, hk, sg, ch, lu, cy, mt, vg, ky, pa, sc]
+      # Leave empty to use OPEN_CORPORATES env queries; token required for
+      # anything beyond the free tier (OPENCORPORATES_API_TOKEN).
+      queries: []
+
+  - id: wikidata
+    enabled: true
+    rate_per_sec: 0.1           # SPARQL endpoint rate-limits hard (429/503)
+    burst: 1
+    timeout_ms: 60000
+    cache_ttl_seconds: 86400
+    options:
+      maxlag: 5                 # back off when the replica lag is high
+      limit_per_query: 150
+      # The relay pins its own ceiling for this host (0.25 req/s, burst 1) and
+      # sends the query as a form POST; a value here can only be *slower*.
+      queries:
+        - ownership
+        - subsidiaries
+        - board_members
+        - foundation_trustees   # P3320 board / P488 chair / P112 founder / P169 CEO
+        - aircraft_operators
+        - vessel_operators
+        - political_positions
+        # Others available: employer, sanctioned_entities, state_owned, custom
+      # Link people who sit on the *same* board or foundation: Person -
+      # [:ASSOCIATED_WITH]-> Person, with the shared organisation in `evidence`.
+      # Quadratic in board size, so both caps exist — a 400-member board is
+      # skipped rather than turned into 80k edges.
+      link_shared_organizations: true
+      max_shared_org_members: 24
+      max_pairs_per_org: 12
+
+  - id: companies_house
+    enabled: false              # needs COMPANIES_HOUSE_API_KEY (free tier: 600/5min)
+    rate_per_sec: 0.8
+    burst: 5
+    options:
+      include_psc: true         # Persons with Significant Control = ownership edges
+      include_officers: true
+      queries: []
+      company_numbers: []
+
+  # ---------------------------------------------------------------------------
+  # AVIATION (edge confidence weight = 0.8, structured where the feed is)
+  #
+  # `faa_registry` streams the official Releasable Aircraft ZIP directly (it is
+  # far too large to buffer through the Worker); `adsb_exchange` and
+  # `flight_logs` are relayed and rate-capped by the host profiles in worker.js.
+  # ---------------------------------------------------------------------------
+
+  - id: faa_registry
+    enabled: true
+    rate_per_sec: 0.1           # one ZIP a month; do not re-download it per run
+    burst: 1
+    cache_ttl_seconds: 86400
+    options:
+      dump_url: ""              # empty = the registry default (faa.gov monthly ZIP)
+      row_limit: 20000
+      refresh_days: 30          # reuse the cached dump while it is this fresh
+      tail_numbers: []          # N-numbers of interest, e.g. ["N897RC"]
+      registrant_names: []      # owner-name substrings, e.g. ["Kerimov"]
+      states: []
+      # Registrants sharing one address: Person -[:SHARES_ADDRESS]-> Person, so a
+      # mail drop that fronts five owners becomes visible as a cluster.
+      min_shared_address_size: 2
+      max_shared_address_size: 40
+      max_pairs_per_address: 24
+
+  - id: adsb_exchange
+    enabled: true
+    rate_per_sec: 0.5
+    burst: 2
+    cache_ttl_seconds: 43200
+    options:
+      # Tail numbers and callsigns to look up. Without one of these the adapter
+      # has nothing to ask for and yields nothing.
+      tail_numbers: []
+      callsigns: []
+
+  - id: flight_logs
+    enabled: true
+    rate_per_sec: 0.5
+    burst: 2
+    cache_ttl_seconds: 21600
+    options:
+      # CSV/TSV/JSON manifests (e.g. released "Amadea"/"Kerimov" flight logs).
+      # Parsed from the raw text before any NLP, because tabular structure is
+      # destroyed by the readability pass.
+      flight_log_urls: []
+      link_copassengers: true   # Person -[:TRAVELED_WITH]-> Person per flight
+      max_copassenger_pairs: 60
+      default_tail_numbers: []
+
+  - id: register_files
+    enabled: false              # opt-in: local CSV/JSON sanctions & registry dumps
+    options:
+      row_limit: 5000
+      # Paths are resolved relative to the repo root; also settable via
+      # REGISTER_FILES=/abs/path/ofac_sdn.csv,/abs/path/aircraft.json
+      files: []
+
+  # ---------------------------------------------------------------------------
+  # UNSTRUCTURED (edge confidence weight = 0.4, NLP extraction required)
+  # ---------------------------------------------------------------------------
+
+  - id: occrp_rss
+    enabled: true
+    rate_per_sec: 0.2
+    burst: 2
+    max_documents: 60
+    options:
+      feeds:
+        - https://www.occrp.org/en/rss
+
+  - id: icij_stories
+    enabled: true
+    rate_per_sec: 0.2
+    burst: 2
+    max_documents: 60
+    options:
+      feeds:
+        - https://www.icij.org/feed/
+
+  - id: global_witness
+    enabled: true
+    rate_per_sec: 0.2
+    burst: 2
+    max_documents: 40
+    options:
+      feeds:
+        - https://www.globalwitness.org/en/rss/
+
+  - id: transparency_intl
+    enabled: true
+    rate_per_sec: 0.2
+    burst: 2
+    max_documents: 40
+    options:
+      feeds:
+        - https://www.transparency.org/en/rss
+
+  - id: news_world
+    enabled: true
+    rate_per_sec: 0.3
+    burst: 3
+    max_documents: 120
+    options:
+      fetch_full_articles: true       # follow the link and strip boilerplate
+      entry_content_max_chars: 20000  # cap RSS <content:encoded> blobs
+      feeds:
+        - https://www.theguardian.com/world/rss
+        - https://feeds.bbci.co.uk/news/world/rss.xml
+        - https://www.aljazeera.com/xml/rss/all.xml
+        - https://rss.nytimes.com/services/xml/rss/nyt/World.xml
+        - https://www.reuters.com/rssFeed/worldNews
+
+  - id: aviation_news
+    enabled: true
+    rate_per_sec: 0.3
+    burst: 3
+    max_documents: 80
+    options:
+      fetch_full_articles: true
+      # Tail-number / IMO-heavy feeds: this is where CRAFT entities come from.
+      feeds:
+        - https://www.flightglobal.com/rss
+        - https://avherald.com/rss
+        - https://www.aviation24.be/feed/
+        - https://gcaptain.com/feed/
+        - https://www.tradewindsnews.com/rss
