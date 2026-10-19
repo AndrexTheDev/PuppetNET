@@ -164,6 +164,9 @@ class IngestPipeline:
         self.resolver = EntityResolver(limit=int(getattr(self.settings, "entity_resolver_limit", 200_000)))
         self.fetch: FetchClient | None = None
         self.nlp: NLPEngine | None = None
+        self.triplets: Any = None
+        self._triplet_documents = 0
+        self._triplet_cap_warned = False
         self.deadline = time.monotonic() + float(self.settings.max_runtime_seconds)
         self._interrupted = False
         self._source_reports: list[dict[str, Any]] = []
@@ -200,6 +203,7 @@ class IngestPipeline:
                 status = "no_sources"
             else:
                 self._init_nlp(specs)
+                self._init_triplets()
                 known_hashes = self._load_dedupe_index()
                 self._harvest(specs, known_hashes)
                 self._flush_pending(final=True)
@@ -383,6 +387,25 @@ class IngestPipeline:
                 for error in self.nlp.load_errors:
                     self.stats.record_error("nlp", error)
 
+    def _init_triplets(self) -> None:
+        """Load the optional Workers AI stage; never fail the run on it."""
+
+        if self.settings.triplet_backend != "cloudflare":
+            return
+        if self.settings.cf_ai_max_documents < 1:
+            self.logger.warning("TRIPLET_BACKEND=cloudflare but CF_AI_MAX_DOCUMENTS=0 — triplets disabled")
+            return
+        try:
+            from nlp.triplet_extractor import CloudflareTripletExtractor
+
+            self.triplets = CloudflareTripletExtractor.from_settings(self.settings)
+            self.logger.info("Workers AI triplets enabled: %s", self.triplets.describe()["model"])
+        except Exception as exc:  # noqa: BLE001 - optional enrichment must not stop the harvest
+            self.triplets = None
+            message = f"Workers AI init failed: {type(exc).__name__}: {exc}"
+            self.stats.record_error("workers_ai", message)
+            self.logger.warning("%s — continuing without triplets", message)
+
     def _load_dedupe_index(self) -> set[str]:
         hashes: set[str] = set()
         if self.writer is not None and self.settings.only_new_documents:
@@ -498,6 +521,8 @@ class IngestPipeline:
             self.logger.exception("NLP failed on %s", document.doc_id)
             return ParseResult(doc_id=document.doc_id, backend=self.nlp.backend, warnings=[f"nlp-error: {exc}"])
 
+        self._augment_with_triplets(document, result, spec)
+
         self.stats.sentences_processed += result.sentences
         self.stats.characters_processed += result.characters
         self.stats.dependency_triples += result.dependency_triples
@@ -512,6 +537,58 @@ class IngestPipeline:
             for warning in result.warnings[:3]:
                 self.logger.debug("document %s: %s", document.doc_id, warning)
         return result
+
+    def _augment_with_triplets(self, document: Document, result: ParseResult, spec: SourceSpec) -> None:
+        """Add Workers AI relations to an already parsed document.
+
+        Fail-soft by design: the free tier returns a hard error once its daily
+        neuron budget is spent, and one exhausted API must not discard a
+        document the local model already parsed.
+        """
+
+        if self.triplets is None:
+            return
+        cap = int(self.settings.cf_ai_max_documents)
+        if self._triplet_documents >= cap:
+            if not self._triplet_cap_warned:
+                self._triplet_cap_warned = True
+                self.logger.info("Workers AI document cap reached (%d) — local NLP continues", cap)
+            return
+        self._triplet_documents += 1
+        try:
+            from nlp.graph_bridge import graph_from_triplets
+
+            triplet_result = self.triplets.extract(
+                document.text,
+                language=self.settings.nlp_language,
+                entities=result.entities,
+            )
+            entities, relations = graph_from_triplets(
+                document,
+                triplet_result,
+                known_entities=result.entities,
+                source_id=spec.id,
+                model=self.settings.cf_ai_model,
+            )
+        except Exception as exc:  # noqa: BLE001 - optional stage, never fatal
+            message = f"Workers AI failed on {document.doc_id}: {type(exc).__name__}: {exc}"
+            self.logger.warning("%s", message)
+            if len(result.warnings) < 10:
+                result.warnings.append(message[:300])
+            return
+        result.entities.extend(entities)
+        result.relations.extend(relations)
+        result.pattern_triples += len(relations)
+        for warning in triplet_result.warnings[:3]:
+            if len(result.warnings) < 10:
+                result.warnings.append(f"workers-ai: {warning}")
+        self.logger.info(
+            "workers-ai %s: %d triplet(s), %d neuron(s), %d remaining",
+            document.doc_id,
+            len(relations),
+            round(triplet_result.neurons_used, 3),
+            round(triplet_result.budget_remaining, 1),
+        )
 
     # ------------------------------------------------------------------ #
     # Merge / flush
@@ -841,6 +918,8 @@ class IngestPipeline:
             self.neo4j.close()
         if self.nlp is not None:
             self.nlp.close()
+        if self.triplets is not None:
+            self.triplets.close()
 
 
 def run_pipeline(settings: Settings | None = None, options: PipelineOptions | None = None) -> IngestStats:

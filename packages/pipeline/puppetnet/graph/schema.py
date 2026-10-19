@@ -102,6 +102,11 @@ CONSTRAINTS: tuple[str, ...] = (
 
 INDEXES: tuple[str, ...] = (
     "CREATE INDEX puppetnet_entity_name IF NOT EXISTS FOR (e:Entity) ON (e.name)",
+    # APOC entity resolution blocks on these two *stored* keys. Neo4j cannot
+    # index an expression, so entity_resolution.py backfills them once (and
+    # refreshes NULLs) before it looks for duplicates.
+    "CREATE INDEX puppetnet_entity_name_key IF NOT EXISTS FOR (e:Entity) ON (e.name_key)",
+    "CREATE INDEX puppetnet_entity_phonetic_key IF NOT EXISTS FOR (e:Entity) ON (e.phonetic_key)",
     "CREATE INDEX puppetnet_entity_type IF NOT EXISTS FOR (e:Entity) ON (e.entity_type)",
     "CREATE INDEX puppetnet_entity_confidence IF NOT EXISTS FOR (e:Entity) ON (e.confidence)",
     "CREATE INDEX puppetnet_entity_aliases IF NOT EXISTS FOR (e:Entity) ON (e.aliases)",

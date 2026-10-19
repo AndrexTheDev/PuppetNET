@@ -416,6 +416,25 @@ def test_capacity_honours_configured_caps(settings):
     assert report.node_utilisation == pytest.approx(0.9)
 
 
+def test_capacity_counts_every_node_not_only_entities(settings):
+    """Aura's ceiling is all nodes; utilisation must not flatter the entity count."""
+    client = MaintenanceClient(reads={"capacity": [capacity_row(50, all_nodes=150)]})
+    report = engine(maintenance_settings(settings, aura_node_cap=200), client).capacity()
+    assert report.entities == 50
+    assert report.all_nodes == 150
+    assert report.node_utilisation == pytest.approx(0.75)
+    assert report.headroom_nodes == 50
+
+
+def test_disabled_stop_falls_back_to_the_physical_cap(settings):
+    client = MaintenanceClient(reads={"capacity": [capacity_row(90, all_nodes=95)]})
+    report = engine(
+        maintenance_settings(settings, aura_node_cap=100, aura_node_stop=0), client
+    ).capacity()
+    assert report.stop_threshold == 100
+    assert report.headroom_to_stop == 5
+
+
 def test_capacity_probe_failure_degrades_instead_of_raising(settings):
     class Exploding(MaintenanceClient):
         def read(self, query, params=None):
@@ -1440,3 +1459,18 @@ def test_engine_accepts_a_real_neo4j_client_in_dry_run(settings):
         assert maintenance.dry_run is True
         report = maintenance.capacity()
         assert report.entities == 0
+
+
+def test_dry_run_is_reported_by_every_skipped_stage(settings):
+    """A dry run must not leave a stage looking like it wrote something."""
+    client = MaintenanceClient(reads={}, dry_run=True)
+    report = engine(dataclasses.replace(settings, dry_run=True), client).run(
+        dedupe=False, prune=False, centrality=False,
+    )
+    assert report.dry_run is True
+    assert report.dedupe.status == "skipped"
+    assert report.dedupe.dry_run is True
+    assert report.prune.dry_run is True
+    assert report.centrality.dry_run is True
+    assert report.puppet_master.dry_run is True
+    assert report.cycles.dry_run is True

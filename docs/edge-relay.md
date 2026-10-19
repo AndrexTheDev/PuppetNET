@@ -13,7 +13,7 @@ so the database credentials never reach a browser.
   fetch, KV, the Neo4j round trip — which Cloudflare does not count as CPU)
 * All bindings optional — without KV/Queues the relay degrades to a stateless forwarder
   with per-isolate rate limiting.
-* Version `1.6.2`. The graph API is `graph/1`; every response says so.
+* Version `1.7.0`. The graph API is `graph/1`; every response says so.
 
 ---
 
@@ -30,6 +30,8 @@ so the database credentials never reach a browser.
 | `DELETE` | `/cache?url=…` | bearer | Purge a cached response |
 | `GET` | `/graph/health` | public | Graph API liveness, limits, entity/index counts |
 | `GET` | `/graph/*` | graph token | Read-only graph queries — see [Graph read API](#graph-read-api) |
+| `GET` | `/status`, `/status.json` | status token (or public read-only) | Free-tier dashboard — see [worker-hardening.md](worker-hardening.md#5-status-the-free-tier-dashboard) |
+| `POST` | `/status/refresh` | status token, never public | Live probe; persists only if the stored snapshot is >5 min old |
 | `OPTIONS` | `*` | public | CORS preflight (`ALLOWED_ORIGINS`) |
 
 **Auth** — `Authorization: Bearer <PROXY_AUTH_TOKEN>` (or `X-Proxy-Token`). Multiple
@@ -43,7 +45,7 @@ every authenticated route is rejected, because an unauthenticated relay is an op
 {
   "ok": true,
   "worker": "puppetnet-edge-relay",
-  "version": "1.6.2",
+  "version": "1.7.0",
   "time": "2026-09-27T04:00:00.000Z",
   "bindings": {"rate_limit_kv": true, "result_kv": true, "queue": true, "auth_configured": true},
   "limits": {"global_rpm": 900, "host_rate_per_sec": 0.5, "host_burst": 4,
@@ -60,7 +62,10 @@ every authenticated route is rejected, because an unauthenticated relay is an op
 
 `host_profiles` is the effective per-API policy (see below). `credential` is a
 **boolean** — `/health` is unauthenticated, so it reports whether a token exists,
-never the token.
+never the token. The same response also carries `status: "/status"` and the two
+`cron` expressions, so a deployment check can confirm the schedule without
+guessing it, and a `limits` block that includes `graph_rpm` / `graph_client_rpm`
+(the values actually enforced, after clamping).
 
 `ingest.py --doctor` probes this endpoint and reports the bindings, so a Worker deployed
 without its KV namespaces is caught before a scheduled run.
@@ -70,7 +75,7 @@ without its KV namespaces is caught before a scheduled run.
 ```json
 {
   "ok": true,
-  "version": "1.6.2",
+  "version": "1.7.0",
   "global": {"minute": 1790000000, "count": 42, "rpm_limit": 900},
   "local_buckets": [{"host": "example.test", "tokens": 2.413, "age_ms": 1820}],
   "bindings": {"rate_limit_kv": true, "result_kv": true, "queue": true}
@@ -287,9 +292,25 @@ curl -s "$WORKER/graph/neighbors?key=PERSON:vladimir-kastelion-9f2c1a7b&depth=2"
 ### Limits, caching and politeness
 
 Each handler issues **one** transaction POST to Neo4j, with an `AbortController` timeout
-(`GRAPH_TIMEOUT_MS`, default 20 s). Graph queries draw from their own token bucket
-(`GRAPH_RATE_PER_SEC` 4/s, `GRAPH_BURST` 8) keyed `graph:neo4j`, separate from the relay's
-per-host buckets, so a console left open on a dashboard cannot starve the harvester.
+(`GRAPH_TIMEOUT_MS`, default 20 s). The database budget is a hard **25 requests per
+minute**, enforced twice:
+
+* a token bucket (`GRAPH_RATE_PER_SEC` 25/60, `GRAPH_BURST` 25) keyed `graph:neo4j`,
+  shared across colos through `RATE_LIMIT_KV` on a 5-minute sync cadence
+  (`GRAPH_KV_SYNC_INTERVAL_MS`), and
+* a fixed per-caller window (`GRAPH_CLIENT_RPM`), keyed by `hash(IP + token)` for a
+  valid bearer token and by the hashed `CF-Connecting-IP` for anonymous traffic, which
+  is what makes "25 per minute" literal instead of approximate and keeps analysts
+  behind one NAT/VPN from sharing a window. An invalid token never creates an
+  identity.
+
+Both are clamped downward only: `GRAPH_RPM=999` still yields 25. `/graph/health` is
+public and therefore subject to the same budget, and caches its three-query probe for
+60 s (`GRAPH_HEALTH_CACHE_SECONDS`). Every response carries `X-RateLimit-Limit`,
+`X-RateLimit-Remaining` and `X-RateLimit-Reset`; a refusal is `429 graph_rate_limited`
+with `retry_after`. The full rationale is in
+[worker-hardening.md](worker-hardening.md#1-the-25-requestsminute-database-budget).
+
 Successful responses are cached (`GRAPH_CACHE_TTL_SECONDS`, default 60, `0` disables) when
 a KV binding exists; a cache hit skips both Neo4j and the rate bucket. Serialised payloads
 over `GRAPH_MAX_RESPONSE_BYTES` (default 6 MiB) are refused rather than shipped.
@@ -357,6 +378,22 @@ egress, on a **normalised** host:
 `ENFORCE_HTTPS=false` and `ALLOW_PRIVATE_NETWORKS=true` are the two deliberate ways to
 relax this, and nothing else relaxes it.
 
+**Redirects are followed by hand.** `guardedFetch` sends `redirect: "manual"`, resolves
+`Location` against the current URL and feeds every hop back through the same validator,
+so `https://public.example/` cannot bounce the Worker to `169.254.169.254`. The limit is
+five hops; a longer chain fails as `502 too_many_redirects` rather than returning the last
+response. When a redirect changes origin, credential headers (`authorization`, `cookie`,
+`x-api-key`, `x-rapidapi-*`, `x-proxy-token`, `x-graph-token`, `x-status-token`) are
+dropped; harmless headers still follow. URLs with embedded `user:pass@` are refused, as
+are the management/database ports in `BLOCKED_TARGET_PORTS` (22, 23, 25, 445, 1433, 2375,
+2376, 3306, 5432, 6379, 9200, 11211, 27017). There is no caller-controlled DNS override:
+`resolve_override` was removed from the control envelope. `robots.txt` is fetched through
+the same guarded path.
+
+The one thing the guard cannot see is DNS: a Worker has no resolver, so a public name
+that resolves to a private address is stopped by Cloudflare's egress policy, not by this
+JavaScript. See [worker-hardening.md § 2](worker-hardening.md#2-ssrf-validate-the-redirect-not-just-the-url).
+
 ## Politeness mechanics
 
 **Fingerprint rotation.** A pool of coherent desktop fingerprints (UA ↔ `sec-ch-ua` ↔
@@ -408,6 +445,13 @@ touches hundreds of hosts with one request each, 24 times a day.
 | The same host across a 15-minute run | up to ~45 writes (one per window) | ≤ 45 writes, same |
 | A day of hourly runs (24) | ≫ 1 000 writes — the quota is gone before noon | bounded by the few hosts that are actually hot |
 
+The cron and the dashboard are the other KV consumers, and their cadence is chosen the
+same way: one read + one write to take a lock, one read + one delete to release it, ten
+cron invocations a day, one snapshot write per run plus a small daily ledger row. The
+graph bucket publishes at most once per five minutes (`GRAPH_KV_SYNC_INTERVAL_MS`), not
+per request. See [worker-hardening.md § 7](worker-hardening.md#7-free-tier-arithmetic) for
+the arithmetic.
+
 Losing the quota would not cost money (KV writes simply fail, and the relay catches the
 error), but the fleet would lose its shared rate limits and its robots cache — i.e. it would
 become less polite, which is the whole point of the relay. `[cost] worker/kvWritePerRequest`
@@ -440,8 +484,14 @@ logged in `attempts_log` with the fingerprint used, so a blocked source is diagn
 **Response caps.** Bodies are read up to `MAX_RESPONSE_BYTES` (8 MiB); an oversized body
 is returned truncated with `"truncated": true` rather than dropped.
 
-**Cron trigger.** `30 4 * * *` prunes in-isolate buckets untouched for more than 6 h and
-zeroes the global RPM window, logging how many buckets remain active.
+**Cron triggers.** `[triggers]` declares two schedules: `0 */12 * * *` runs the AuraDB
+keep-alive (one bounded `MERGE` heartbeat — a *write*, because AuraDB Free counts only
+writes as activity), and `23 */3 * * *` writes the free-tier snapshot behind `/status`.
+Both jobs first prune in-isolate buckets/locks untouched for more than six hours and
+zero the global RPM window, then take a KV lease so a retried invocation cannot run the
+same probe twice. `0 */36 * * *` — the intuitive "every 36 hours" — is not a valid
+five-field cron (the hour field stops at 23) and silently means daily; see
+[worker-hardening.md § 4](worker-hardening.md#4-cron-triggers).
 
 ---
 
@@ -500,8 +550,10 @@ cache, robots and rate-limit steps (all three read what a profile sets).
 ### Testing the relay
 
 ```bash
-node --check worker.js          # syntax
-node tests/worker_smoke.mjs     # behaviour, no network
+node --check apps/worker/worker.js     # syntax
+node tests/worker_smoke.mjs           # relay + graph behaviour, no network
+node tests/worker_hardening.mjs       # MP6: budget, SSRF, locks, cron, /status
+npm run ci:worker                     # all three, as CI runs them
 ```
 
 The smoke test runs the exported `fetch` handler against a stubbed upstream and asserts
@@ -513,14 +565,18 @@ gets browser fingerprints, and that `/health` lists the profiles. CI runs both.
 
 ## Deploy
 
+The whole sequence below — namespace creation, id patching, secret generation,
+deployment and verification — is automated by `npm run provision:worker`; see
+[worker-provisioning.md](worker-provisioning.md) for the runbook, the flags and
+the troubleshooting table. The manual commands remain authoritative:
+
 ```bash
 npm i -g wrangler          # or: npx wrangler@latest
 wrangler login
-wrangler kv namespace create RATE_LIMIT_KV
-wrangler kv namespace create RESULT_KV
-wrangler queues create puppetnet-fetch-queue
+wrangler kv namespace create PUPPETNET_RATE_LIMIT   # binding RATE_LIMIT_KV
+wrangler kv namespace create PUPPETNET_RESULTS     # binding RESULT_KV
 # paste the ids / preview_ids into wrangler.toml, then:
-wrangler secret put PROXY_AUTH_TOKEN      # openssl rand -hex 32
+wrangler secret put PROXY_AUTH_TOKEN      # openssl rand -hex 32 (64 hex chars)
 # Optional — the host profiles inject these on the outgoing request:
 wrangler secret put OPENCORPORATES_API_TOKEN
 wrangler secret put ADSBEXCHANGE_API_KEY
@@ -530,14 +586,22 @@ wrangler secret put COMPANIES_HOUSE_API_KEY
 wrangler secret put NEO4J_URI             # neo4j+s://<instance>.databases.neo4j.io:7687
 wrangler secret put NEO4J_USERNAME
 wrangler secret put NEO4J_PASSWORD
-wrangler secret put GRAPH_API_TOKEN       # openssl rand -hex 16
-wrangler deploy                           # or: wrangler deploy --env production
+wrangler secret put GRAPH_API_TOKEN       # openssl rand -hex 32 (64 hex chars)
+wrangler secret put STATUS_TOKEN          # openssl rand -hex 32; optional, falls back to the graph/relay token
+# Optional, only for the Workers-requests card on /status (Account Analytics: Read):
+wrangler secret put CF_API_TOKEN
+wrangler secret put CF_ACCOUNT_ID
+wrangler deploy
+# Wrangler 4 has no `triggers list`. Verify the two schedules in the dashboard
+# (Worker → Settings → Trigger Events → Cron Triggers) or via the API:
+#   curl -s -H "Authorization: Bearer $CF_API_TOKEN" \
+#     "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/workers/scripts/puppetnet-edge-relay/schedules"
+# They must be 0 */12 * * * (keep-alive) and 23 */3 * * * (health snapshot).
 
-# The shipped configuration sets workers_dev = false, so the Worker has no
-# workers.dev address: it answers on the routes you publish (see `routes` in
-# wrangler.toml) and, locally, wherever `wrangler dev` says. If the account has
-# no domain to route yet, set workers_dev = true and use the <worker>.workers.dev
-# hostname wrangler prints instead.
+# workers_dev = true in the shipped wrangler.toml, so the Worker answers on
+# https://puppetnet-edge-relay.<subdomain>.workers.dev as well as on any route
+# you publish. Set workers_dev = false and add [[routes]] if it must be private
+# to your zone.
 export WORKER_HOST=puppetnet-relay.example.com
 curl -s https://$WORKER_HOST/health | jq
 curl -s https://$WORKER_HOST/graph/health | jq '.graph.counts'
@@ -565,6 +629,16 @@ python ingest.py --doctor        # probes /health and reports the bindings
 | `MIN_HOST_RATE_PER_SEC` / `MAX_HOST_BURST` | `0.02` / `20` | Floors/ceilings the Worker enforces on client overrides |
 | `GLOBAL_RPM` | `900` | Worker-wide requests/minute |
 | `KV_SYNC_INTERVAL_MS` | `20000` | Bucket ↔ KV reconciliation cadence |
+| `GRAPH_RPM` / `GRAPH_CLIENT_RPM` | `25` / `25` | Database ceiling, global and per caller; clamped to 25 |
+| `GRAPH_KV_SYNC_INTERVAL_MS` | `300000` | Graph bucket ↔ KV cadence (5 min keeps the write quota safe) |
+| `GRAPH_HEALTH_CACHE_SECONDS` | `60` | Cache for the public `/graph/health` probe |
+| `BLOCKED_TARGET_PORTS` | `22,23,25,…` | Management/database ports the relay refuses |
+| `AUTH_FAILURE_LIMIT` / `AUTH_FAILURE_WINDOW_MS` | `10` / `900000` | Bad-token lockout per address |
+| `STATUS_TOKEN` / `STATUS_PUBLIC` | *(unset)* / `false` | Dashboard auth; public mode is read-only |
+| `KEEPALIVE_NODE_ID` | `puppetnet-edge-cron` | Id of the single heartbeat node |
+| `CF_API_TOKEN` / `CF_ACCOUNT_ID` | *(unset)* | Cloudflare Analytics for the requests card; absent ⇒ `n/a` |
+| `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | *(unset)* | Free degradation alerts; absent ⇒ no messages |
+| `TELEGRAM_ALERT_*` internals | 6 h | `alert:last_sent` throttle lives in `RATE_LIMIT_KV` |
 | `DEFAULT_TIMEOUT_MS` / `MAX_TIMEOUT_MS` | `25000` / `90000` | |
 | `DEFAULT_MAX_ATTEMPTS` / `MAX_MAX_ATTEMPTS` | `3` / `6` | |
 | `MAX_RESPONSE_BYTES` / `MAX_CONTROL_BODY_BYTES` | `8388608` / `262144` | |
@@ -575,7 +649,7 @@ python ingest.py --doctor        # probes /health and reports the bindings
 | `ALLOWED_ORIGINS` | `*` | CORS for the PuppetNET front-end |
 | `WIKIDATA_USER_AGENT` | PuppetNET/1.5 … | Identity presented to WDQS (their policy requires contact details) |
 | `GRAPH_API_ENABLED` / `GRAPH_PUBLIC_READ` | `true` / `false` | Graph surface on/off; tokenless reads (off by default — it fails closed) |
-| `GRAPH_RATE_PER_SEC` / `GRAPH_BURST` | `4` / `8` | Graph token bucket, separate from the relay's per-host buckets |
+| `GRAPH_RATE_PER_SEC` / `GRAPH_BURST` | `0.4` / `25` | Graph token bucket (25/min), separate from the relay's per-host buckets |
 | `GRAPH_CACHE_TTL_SECONDS` | `60` | `0` disables caching of graph responses |
 | `GRAPH_TIMEOUT_MS` | `20000` | Per-transaction `AbortController` deadline |
 | `GRAPH_MAX_NODES` / `GRAPH_MAX_DEPTH` / `GRAPH_MAX_HOPS` | `1200` / `4` / `12` | Ceilings the Worker enforces on caller overrides |
@@ -591,5 +665,11 @@ statically (`cypher/standaloneOrderBy`) and the worker smoke test asserts it on
 every statement the handlers emit.
 | `NEO4J_DATABASE` | `neo4j` | Database in the transactional URL path |
 
-The `[env.production]` overlay tightens `GLOBAL_RPM` to 600, `HOST_RATE_PER_SEC` to 0.34
-and `HOST_BURST` to 3 for hostile origins.
+There is no separate `[env.production]` overlay: the shipped `[vars]` are already the
+conservative values (`GLOBAL_RPM` 900, `HOST_RATE_PER_SEC` 0.25, `HOST_BURST` 2), and a
+second environment would only duplicate the KV ids and cron triggers. Tighten the `[vars]`
+in place if an origin turns hostile.
+
+The complete operational reference — budget arithmetic, the redirect guard, the KV lease,
+the heartbeat statement, the dashboard fields and the failure-mode table — is
+[worker-hardening.md](worker-hardening.md).

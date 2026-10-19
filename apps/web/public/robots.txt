@@ -6,19 +6,21 @@
 #  The retained v1 analyst console keeps its own directives under
 #  `/legacy/robots.txt`; both are origin-free on purpose.
 #
-#  The v2 frontend is a static export with two crawlable documents: the landing
-#  page (`/`) and the WebGL dashboard (`/dashboard/`). Everything the dashboard
-#  shows is client-side state — imported JSON, the fictional demo fixture or a
-#  read-only Worker API response behind a bearer token — so there are no deep
-#  links to index and nothing to paginate. No graph data is ever rendered
-#  server-side, and no investigation result is crawlable.
+#  The v2 frontend is a static export with three crawlable document kinds:
+#  the landing page (`/`), the dashboard shell (`/dashboard/`) and one profile
+#  page per public entity (`/entity/<slug>/`, pre-rendered at build time). The
+#  dashboard itself is client-side state — imported JSON, the fictional demo
+#  fixture or a read-only Worker API response behind a bearer token — so only
+#  its shell is indexed; no investigation result is crawlable. Profiles carry
+#  their own `robots` meta tag, and private/noindex entities never get a page.
 #
 #  A `Sitemap:` line has to be absolute, and this repository is committed long
 #  before anybody knows which domain will serve it. `npm run emit:seo --
 #  --origin https://puppetnet-console.pages.dev` (or `SITE_ORIGIN` in the Pages
-#  build environment) rewrites that line here and writes
-#  `apps/web/public/sitemap.xml`, which `next build` copies into `out/`. The
-#  committed file therefore never guesses a hostname.
+#  build environment) rewrites that line here and writes a `sitemap.xml` that
+#  lists the landing page, the dashboard and every published profile;
+#  `next build` copies it into `out/`. The committed file therefore never
+#  guesses a hostname.
 #
 #  Running a private investigative deployment? Replace the Allow below with
 #  `Disallow: /` and serve `X-Robots-Tag: noindex, nofollow` from

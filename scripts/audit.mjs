@@ -1089,6 +1089,7 @@ const HOST_BUDGET = {
   "developers.cloudflare.com": { cost: "free", note: "docs links" },
   "cloudflare.com": { cost: "free", note: "docs links" },
   "api.telegram.org": { cost: "free", note: "Bot API, ~30 msg/s global" },
+  "api.cloudflare.com": { cost: "free tier, hard stop", note: "Workers AI: 10,000 neurons/day on both plans, requests fail after the cap instead of billing; the extractor keeps a UTC ledger and stops at the limit" },
   "registry.npmjs.org": { cost: "free", note: "dev-time vendoring only" },
   "pypi.org": { cost: "free", note: "dev-time installs only" },
   "files.pythonhosted.org": { cost: "free", note: "dev-time installs only" },

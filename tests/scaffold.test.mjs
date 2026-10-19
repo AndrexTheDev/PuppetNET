@@ -24,7 +24,14 @@ test('only Python Actions remain, with no artificial consumption guard', () => {
 test('Free-only deployment defaults and no client-side secrets', () => {
   const worker = read('apps/worker/wrangler.toml');
   assert.match(worker, /cpu_ms = 10/);
-  assert.doesNotMatch(worker, /\[\[queues|\[\[kv_namespaces/);
+  // KV is Free-tier and is where the distributed locks and health snapshots
+  // live; Queues remain disabled because they are not needed for MP6.
+  assert.match(worker, /\[\[kv_namespaces\]\]/);
+  assert.match(worker, /binding = "RATE_LIMIT_KV"/);
+  assert.match(worker, /binding = "RESULT_KV"/);
+  assert.match(worker, /\[triggers\]/);
+  assert.match(worker, /crons = \["0 \*\/12 \* \* \*", "23 \*\/3 \* \* \*"\]/);
+  assert.doesNotMatch(worker, /\[\[queues/);
   const env = read('.env.example');
   for (const key of ['NEO4J_URI','CF_KV_NAMESPACE','TELEGRAM_BOT_TOKEN']) assert.match(env, new RegExp(`^${key}=`, 'm'));
   assert.doesNotMatch(env, /^NEXT_PUBLIC_.*(?:TOKEN|PASSWORD|SECRET)=/m);

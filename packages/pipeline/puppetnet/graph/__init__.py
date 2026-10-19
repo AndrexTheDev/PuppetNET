@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from .algorithms import brandes_betweenness, shortest_cycle_through, strongly_connected_components
 from .neo4j_client import DryRunRecorder, Neo4jClient, Neo4jUnavailable, chunked
+from .puppet_master import CapacityGuardReport, CycleReport, CypherAnalytics, PuppetMasterReport, capacity_guard
 from .resolver import EntityResolver, ResolverStats, merge_entities_by_key
 from .schema import (
     CONSTRAINTS,
@@ -19,6 +21,14 @@ __all__ = [
     "Neo4jUnavailable",
     "DryRunRecorder",
     "chunked",
+    "brandes_betweenness",
+    "shortest_cycle_through",
+    "strongly_connected_components",
+    "CypherAnalytics",
+    "PuppetMasterReport",
+    "CycleReport",
+    "CapacityGuardReport",
+    "capacity_guard",
     "GraphWriter",
     "WriteSummary",
     "summarise_relations",

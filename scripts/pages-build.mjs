@@ -6,11 +6,24 @@ import { spawnSync } from 'node:child_process';
 // --build-gate an unusable value warns instead of failing the deployment. When
 // it does emit, `next build` copies apps/web/public/{robots.txt,sitemap.xml}
 // into the exported root.
-for (const args of [['scripts/emit-seo-files.mjs', '--build-gate'], ['--check', 'web/app.js'], ['--check', 'web/modals.js'], ['tests/web_smoke.mjs'], ['--import', 'tsx', '--test', 'tests/dashboard.test.ts']]) {
+for (const args of [
+  ['scripts/emit-og-images.mjs'],
+  ['scripts/emit-seo-files.mjs', '--build-gate'],
+  ['--check', 'web/app.js'],
+  ['--check', 'web/modals.js'],
+  ['tests/web_smoke.mjs'],
+  ['--import', 'tsx', '--test', 'tests/dashboard.test.ts'],
+  ['--import', 'tsx', '--test', 'tests/seo.test.ts'],
+  ['--import', 'tsx', '--test', 'tests/a11y.test.tsx'],
+]) {
   const result = spawnSync(process.execPath, args, { stdio: 'inherit' });
   if (result.status !== 0) process.exit(result.status ?? 1);
 }
 const result = spawnSync('npm', ['run', 'build', '-w', '@puppetnet/web'], {
   stdio: 'inherit', env: { ...process.env, NEXT_TELEMETRY_DISABLED: '1' }
 });
-process.exit(result.status ?? 1);
+if (result.status !== 0) process.exit(result.status ?? 1);
+// The deployment directory is the product: verify the exported files, worker
+// format and Cloudflare headers only after `next build` has written out/.
+const exported = spawnSync(process.execPath, ['tests/export_smoke.mjs'], { stdio: 'inherit' });
+process.exit(exported.status ?? 1);

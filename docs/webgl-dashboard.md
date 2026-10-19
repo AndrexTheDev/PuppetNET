@@ -111,21 +111,104 @@ The public tile service is donation-funded shared infrastructure, **not an unlim
 SLA-backed free commercial map backend**. High-traffic installations need an approved
 provider or self-hosted tiles with their own terms/costs. No paid plan is enabled here.
 
+## Keyboard navigation (WCAG 2.1 AA)
+
+Sigma renders into WebGL, so the graph itself has no focusable DOM nodes. The canvas
+container therefore behaves as one composite widget: a single tab stop with
+`role="application"`, `aria-roledescription="Interaktiver Netzwerkgraph"` and
+`aria-describedby` pointing at a visually hidden key reference. Everything the mouse can
+do is reachable from the keyboard, and there is no keyboard trap — `Tab` always leaves.
+
+| Key | Action |
+| --- | --- |
+| `Tab` / `Shift+Tab` | Skip link → filters → tabs → graph (one stop) → table → inspector |
+| `←` / `↑` | previous node in the current view |
+| `→` / `↓` | next node |
+| `Home` / `End` | first / last node (wraps, never dead-ends) |
+| `Enter` / `Space` | open the inspector for the focused node |
+| `Escape` | clear the selection |
+| `+` / `−` | zoom in / out |
+| `0` | reset the viewport |
+
+The mapping lives in `apps/web/lib/graph-keyboard.ts` as a pure function
+(`graphKeyAction`), so `tests/a11y.test.tsx` asserts the whole key table, the wrap-around
+stepping and the announcement text without a browser. The cursor is *drawn*: the focused
+node is enlarged and set to white with `graph.mergeNodeAttributes`, because sigma v4
+does not expose `nodeReducer` through `setSetting`. Every move writes a polite live
+region (`role="status"`, `aria-atomic`): „Knoten 3 von 8: Anna Berg, Person,
+Confidence 81 %". A visible badge repeats the focus target for sighted keyboard users.
+
+The surrounding UI is operable for the same reason: view tabs are `aria-pressed` buttons
+with `aria-controls`, the graph tools have text alternatives (`aria-label`), the inspector
+is a labelled `region` with a keyboard-reachable close button, errors use `role="alert"`,
+progress uses `role="status"`, `aria-busy` marks a loading workspace, focus is always
+visible (2–3 px outline, `:focus-visible`), and `prefers-reduced-motion` disables
+transitions and smooth scrolling.
+
+## Table view: the non-visual alternative to the canvas
+
+The **Tabelle** tab is not a fallback list of `<div>`s; it is a real `<table>` with a
+`<caption>`, `scope="col"` headers and an `aria-describedby` explanation that it is the
+text alternative to the WebGL graph. It renders every row of the current view (filtered
+by the same query, paginated 25 at a time) with type, confidence, degree and cluster.
+
+- the search field has a visible `<label>`; the result count is a polite live region;
+- the scroll container is focusable (`tabIndex=0`) so a keyboard-only user can scroll
+  without a pointer;
+- each row exposes **Details** (selects the node), **Im Graphen fokussieren** (moves the
+  canvas cursor) and, for published entities, **Profil** as a plain `<a href>` to the
+  prerendered `/entity/<slug>/` page;
+- the empty state and the page announcement are text, not a colour or an icon;
+- selecting a row through the table updates the same inspector as a canvas click, so no
+  information is canvas-only.
+
+`tests/a11y.test.tsx` renders the table with `react-dom/server` and asserts the caption,
+header scopes, labels, accessible action names, the profile-link publication rule and the
+empty state. This is the automated acceptance for the component; a manual screenreader
+pass (NVDA/VoiceOver) and colour-contrast measurement are still operator acceptance
+items, so the repository claims WCAG 2.1 AA *conformance work* rather than a certified
+audit. The German UI strings are asserted in the same test file.
+
 ## Validation and measured scope
 
 ```sh
 npm ci
 npm run test:dashboard
+npm run test:seo
+npm run test:a11y
 npm run test:scaffold
 npm run ci:pages
+npm run test:export       # after npm run build: validates apps/web/out itself
 npm run ci:worker
 ```
 
-The Pages native build gate now runs the 10 dashboard core tests in addition to the
-existing 32 console checks, then TypeScript checking and the static export. Tests cover
-validation, filtering, zero/invalid coordinates, evidence directions/URLs, Cypher
-parameter separation and conservation of the full 120k-element fixture under LoD.
-The Python-only GitHub workflow remains unchanged.
+The Pages native build gate runs the dashboard, SEO and accessibility tests in addition
+to the existing console checks, TypeScript checking and the static export, then
+`test:export`. That post-build gate verifies that every root-relative asset in the
+exported HTML exists, that the ForceAtlas2 bundle is still a classic (non-module)
+worker chunk referenced by the dashboard, that no `_next/server` output leaked into
+`out/`, and that `_headers` caches content-hashed assets immutably while revalidating
+the HTML shells. It also walks every `out/entity/<slug>/index.html`, checks canonical
+URLs, Open Graph/Twitter tags, JSON-LD shape and internal links, verifies the six
+1200 × 630 OG cards, and (when `SITE_ORIGIN` was set) that every sitemap URL resolves to
+an exported file. Tests cover validation, filtering, zero/invalid coordinates, evidence
+directions/URLs, Cypher parameter separation, the full 120k-element fixture under LoD,
+publication rules, JSON-LD escaping and the keyboard/table contract. The Python-only
+GitHub workflow remains unchanged.
+
+`npm run test:export` also documents the Cloudflare Pages contract:
+
+```
+apps/web/out/
+  index.html, dashboard/index.html, 404.html, robots.txt, sitemap.xml
+  entity/<slug>/index.html   -> one prerendered page per published entity
+  og/<kind>.png              -> six static 1200x630 social cards
+  _headers        -> immutable /_next/static/*, no-cache HTML, 7-day /og/*
+  _next/static/   -> hashed JS/CSS and the classic ForceAtlas2 worker
+```
+
+Serve it exactly as Pages would with `npm run preview`
+(`python3 -m http.server 8080 --directory apps/web/out --bind 0.0.0.0`).
 
 Optional browser acceptance (serve the static output on a separate terminal):
 

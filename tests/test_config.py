@@ -286,3 +286,54 @@ def test_shipped_overlay_keeps_the_wikidata_domain_queries():
     assert specs["adsb_exchange"].confidence_override == 0.8
     assert specs["flight_logs"].confidence_override == 0.8
     assert specs["flight_logs"].options["link_copassengers"] is True
+
+
+# --------------------------------------------------------------------------- #
+# Free-tier stop and Cypher analytics (v1.7)
+# --------------------------------------------------------------------------- #
+def test_free_tier_stop_defaults_to_ninety_percent():
+    settings = load_settings(dict(BASE))
+    assert settings.aura_node_cap == 200_000
+    assert settings.aura_node_stop == 180_000
+    assert settings.aura_node_stop == int(settings.aura_node_cap * 0.9)
+
+
+def test_free_tier_stop_can_be_disabled_or_lowered():
+    assert load_settings(dict(BASE, AURA_NODE_STOP="0")).aura_node_stop == 0
+    assert load_settings(dict(BASE, AURA_NODE_STOP="150000")).aura_node_stop == 150_000
+
+
+def test_a_stop_above_the_physical_ceiling_is_rejected():
+    with pytest.raises(ConfigError, match="AURA_NODE_STOP"):
+        load_settings(dict(BASE, AURA_NODE_CAP="100000", AURA_NODE_STOP="180000"))
+
+
+def test_puppet_master_weights_must_not_all_be_zero():
+    with pytest.raises(ConfigError, match="PUPPET_MASTER_.*_WEIGHT"):
+        load_settings(
+            dict(
+                BASE,
+                PUPPET_MASTER_PAGERANK_WEIGHT="0",
+                PUPPET_MASTER_BETWEENNESS_WEIGHT="0",
+                PUPPET_MASTER_IN_DEGREE_WEIGHT="0",
+            )
+        )
+
+
+def test_resolution_and_cycle_bounds_are_validated():
+    with pytest.raises(ConfigError, match="RESOLUTION_THRESHOLD"):
+        load_settings(dict(BASE, RESOLUTION_THRESHOLD="1.4"))
+    with pytest.raises(ConfigError, match="CYCLE_MAX_LENGTH"):
+        load_settings(dict(BASE, CYCLE_MAX_LENGTH="100"))
+    with pytest.raises(ConfigError, match="KEEP_ALIVE_TIMEOUT_SECONDS"):
+        load_settings(dict(BASE, KEEP_ALIVE_TIMEOUT_SECONDS="0"))
+
+
+def test_resolution_and_keep_alive_defaults_are_sane():
+    settings = load_settings(dict(BASE))
+    assert settings.resolution_enabled is True
+    assert settings.resolution_threshold == 0.90
+    assert settings.resolution_max_merges == 250
+    assert settings.cycle_detection_enabled is True
+    assert settings.puppet_master_cypher_enabled is True
+    assert settings.keep_alive_retries == 2

@@ -1,3 +1,17 @@
+> **Status 2.0 (October 2026):** most of this document describes the historical v1
+> workflow set (`ci.yml`, `hourly_ingest.yml`, `daily_ingest.yml`, …). Those files are
+> kept unchanged under [`legacy-workflows/`](legacy-workflows/) and are **not active**.
+> The repository runs exactly one workflow,
+> [`.github/workflows/ingestion-pipeline.yml`](../.github/workflows/ingestion-pipeline.yml):
+> it tests `packages/pipeline` on every push and pull request that touches it, runs
+> daily at `17 5 * * *`, and can be dispatched manually. Its ingestion job writes to
+> Neo4j only when the repository variable `ENABLE_INGESTION` is `true` and the
+> `NEO4J_*` secrets exist. Worker gates run through `npm run ci:worker`, deployment
+> through [worker-provisioning.md](worker-provisioning.md), and the first 48 hours of
+> production through
+> [operations/monitoring-checklist.md](operations/monitoring-checklist.md). The sections
+> below remain as the v1 design reference.
+
 # Operations
 
 How the pipeline runs unattended, what it leaves behind, and what to do when it
@@ -10,9 +24,18 @@ Related: [configuration](configuration.md) · [graph schema](graph-schema.md) ·
 
 ## 1. Automation
 
-Seven workflows live in [`.github/workflows/`](../.github/workflows): `ci.yml`,
-`hourly_ingest.yml`, `daily_ingest.yml`, `weekly_ingest.yml`, `graph_maintenance.yml`,
-`pages_deploy.yml` (documented with the console) and `screenshots.yml` (below).
+The 2.0 repository ships one workflow,
+[`ingestion-pipeline.yml`](../.github/workflows/ingestion-pipeline.yml): a `tests` job
+(pytest, ruff, an offline multilingual NLP contract) and an `ingestion` job that is
+gated on `github.ref == 'refs/heads/main'`, `vars.ENABLE_INGESTION == 'true'` and an
+explicit `workflow_dispatch` input. The historical seven-workflow v1 set is archived
+under [`legacy-workflows/`](legacy-workflows/) and is described below for reference.
+
+### The archived v1 workflow set
+
+At v1, seven workflows lived in `.github/workflows/`: `ci.yml`, `hourly_ingest.yml`,
+`daily_ingest.yml`, `weekly_ingest.yml`, `graph_maintenance.yml`, `pages_deploy.yml`
+and `screenshots.yml`.
 
 ### The tiered cadence
 
@@ -229,6 +252,7 @@ artefact steps run regardless; the *last* step re-raises the failure.
 | `1` | Configuration error | **red** | Unparsable `--weights`, bad credentials, client could not be built |
 | `2` | Runtime failure | **red** | Neo4j unreachable, or every requested stage failed |
 | `3` | Partial | amber (`::warning`) | One stage failed; the others completed and their results are in the report |
+| `4` | Free-tier stop engaged (`--guard`) | amber | The node population is at or above `AURA_NODE_STOP` (180 000). New nodes are refused until the graph shrinks. |
 
 A stage that fails records its own `status: "failed"` and `error` inside the report, so
 `3` is actionable without reading the log. A stage nobody asked for is `"skipped"`, never
@@ -493,7 +517,73 @@ python graph_analytics.py --dedupe --dry-run --json \
 
 # Re-score with different weights without touching the database.
 python graph_analytics.py --centrality --dry-run --weights 0.5,0.3,0.2 --top 10
+
+# Free-tier stop: exit 4 at 180 000 nodes, one read.
+python graph_analytics.py --guard --json
+
+# APOC duplicate pass: blocking keys → APOC scoring → merge → evidence audit.
+python entity_resolution.py --dry-run --json
+python entity_resolution.py --json
+
+# Circular ownership: exact SCCs over the ownership edge set, marks in Cypher.
+python graph_analytics.py --cycles --json
+
+# Cypher PUPPET_MASTER_OF (PageRank + betweenness + in-degree blend).
+python graph_analytics.py --puppet-master --json
 ```
+
+### The 180 000-node stop
+
+AuraDB Free refuses writes at 200 000 nodes. The pipeline stops **new entity
+nodes** at `AURA_NODE_STOP` (default 180 000, 90 %), keeping 20 000 nodes of
+headroom for the merges, repairs and analyst writes that an over-full graph
+needs. Three independent checks enforce it:
+
+1. `GraphWriter._admission_cap()` — existing nodes keep updating; newcomers are
+   admitted strongest-first until the stop, the rest are counted in
+   `entities_capped`.
+2. `graph_analytics.py --guard` — counts **all** nodes (documents and runs
+   consume the same budget) and exits `4` when engaged. The ingestion job runs
+   it before fetching and turns `4` into a warning, not a failure: the dedupe
+   pass is the remedy and must still run.
+3. `GraphMaintenance.capacity()` — reports `stop_threshold`, `stop_engaged`,
+   `headroom_to_stop` and `at_hard_limit` alongside the physical utilisation.
+
+```bash
+# What is the real headroom — including Document and IngestRun nodes?
+python graph_analytics.py --guard --json | jq '{nodes, entities, stop_threshold, headroom_to_stop, stop_engaged}'
+```
+
+### The 72-hour pause
+
+AuraDB Free pauses an instance after **72 hours of inactivity**, and Neo4j
+defines inactivity as *no write query* — read queries do not reset the timer.
+There are therefore two complementary heartbeats:
+
+| Where | Schedule | Statement | What it proves / does |
+| --- | --- | --- | --- |
+| Worker cron (`wrangler.toml`) | `0 */12 * * *` | bounded `MERGE (:_PuppetNetHeartbeat {id})` | a real write every 12 h — this is what prevents the pause |
+| GitHub workflow → `keep_alive.py` | daily | `RETURN 1 AS ok` | the runner's credentials reach the database; a paused instance wakes |
+
+The Worker cron is the primary mechanism: it does not depend on the repository's
+Actions schedule (which GitHub disables on inactive repositories) and it runs
+even when no ingestion is happening. The Python job stays because it is the only
+heartbeat that also validates the *pipeline's* connection settings end to end.
+
+```bash
+python keep_alive.py --json          # one ping; exit 2 when the database does not answer
+python keep_alive.py --loop --interval-minutes 360   # long-running host
+```
+
+A response slower than 5 s is reported as `woke_from_pause: true`. The ping is
+read-only — it creates nothing, so it can never consume the node budget. The
+cron's `MERGE` on a fixed id grows the graph by at most **one** node, and that
+node is the only thing the keep-alive ever writes. Both heartbeats are visible
+on the Worker's `/status` page (`Letzter Keep-Alive`); see
+[worker-hardening.md](worker-hardening.md#4-cron-triggers).
+
+Do not "fix" a paused instance by deleting the heartbeat node: pausing is not
+caused by the node, and a write on an already-paused database is what wakes it.
 
 **Alerts, locally**
 
@@ -527,11 +617,36 @@ If it is empty, check `analytics.status` in the run report first (`disabled`,
 `failed`, or `ok` with `persons_scored`/`puppet_master_rows` counts), then
 `PUPPET_MASTER_MIN_SCORE`.
 
+The **whole-graph** Cypher layer is separate (`graph_analytics.py --puppet-master`,
+included in `--all`) and carries its three components on the relationship:
+
+```cypher
+MATCH (p:Person)-[m:PUPPET_MASTER_OF]->(t)
+RETURN p.name, p.puppet_master_score, p.puppet_master_components,
+       m.score, m.pagerank, m.betweenness, m.in_degree, m.evidence
+ORDER BY m.score DESC LIMIT 25
+```
+
+`p.puppet_master_score` is the weighted blend (PageRank 0.50, betweenness 0.30,
+in-degree 0.20 by default); `m.score` is 65 % that influence plus 35 % control-edge
+strength. Circular ownership is marked on the nodes:
+
+```cypher
+MATCH (n:Entity)
+WHERE n.ownership_cycle_id IS NOT NULL
+RETURN n.ownership_cycle_id, n.ownership_cycle_length,
+       collect(n.name) AS members
+ORDER BY n.ownership_cycle_length DESC
+```
+
 **Rotate the relay token** — set the new token in `PROXY_AUTH_TOKENS` (comma-separated
 list on the Worker) *and* the GitHub secret, deploy, then drop the old value from the
 Worker var. `PROXY_AUTH_TOKEN` (singular) still works for a hard cutover.
 
 **Raise or lower the node budget** — `AURA_NODE_CAP` (default 200 000, `0` disables).
+The **early stop** is `AURA_NODE_STOP` (default 180 000). Lower it (e.g. to 150 000) on a
+free instance shared with other experiments; set it to `0` to fall back to the physical
+ceiling.
 Before raising it past the AuraDB free-tier limit, check the instance's actual node quota:
 exceeding it suspends writes at the database level, which is worse than the guard refusing
 newcomers. When the cap binds, the run still completes; the refused entities are counted
@@ -625,6 +740,7 @@ average — a run that finds nothing new costs the same as one that does.
 | Workers KV storage | 1 GB | bucket + robots entries, expiring on their own TTLs | ~100 % |
 | Cloudflare Queues | 10 000 operations/day | one per *deferred* request, i.e. only when the relay is over budget | large: queues are the escape hatch, not the path |
 | Cloudflare Pages | 500 builds/month, unlimited requests | 1 build per push to `web/` or `worker.js` in a month of development, then 0 | one order of magnitude |
+| Cloudflare Workers AI | 10 000 neurons/day, reset 00:00 UTC; requests hard-fail past the cap | opt-in only: 10 documents × ≤32 chunks × ≈10 neurons (fp8-fast) ≈ **3 200** on the one daily ingest run | a UTC ledger stops before the limit; `CF_AI_MAX_DOCUMENTS=0` disables the stage |
 | Neo4j AuraDB Free | 1 instance, 200 000 nodes / 400 000 relationships | capped in code (`AURA_NODE_CAP`, `AURA_EDGE_CAP`) and reported as utilisation | the pipeline refuses newcomers rather than failing writes |
 | Telegram Bot API | no quota for a bot of this size | ≤ 10 bridge alerts + 1 digest + at most a handful of failure warnings per day | rate-limited to 1 msg/s locally, `retry_after` honoured |
 | Domain / TLS | none used | the console is served from `*.pages.dev`, the relay from `*.workers.dev` | a custom domain is the only thing that could ever cost money, and nothing requires one |
@@ -638,6 +754,10 @@ Two numbers are worth watching rather than assuming:
 * **AuraDB nodes** are the only quota the data can exhaust (200 000). `AURA_NODE_CAP` is probed
   once per run, newcomers are admitted strongest-first, and a refusal is counted in the run
   report as `entities_capped` — a full graph degrades, it does not fail.
+* **Workers AI neurons** are the only quota that can stop mid-run (10 000/day). The ledger
+  is checked before every call with 2% headroom, the stage is capped per document and per
+  run, and an exhausted budget is a per-document warning — the local NLP output is still
+  written. The free tier never bills an overflow.
 
 There is no analytics, no CDN, no third-party API key required, and no host on the paid
 blocklist is reachable by default: `[cost] paidSourceDefault` fails the build if a paid source

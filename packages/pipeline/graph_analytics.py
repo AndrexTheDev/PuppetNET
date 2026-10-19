@@ -36,10 +36,21 @@ Usage
     python graph_analytics.py --dedupe --max-merges 50
     python graph_analytics.py --prune --dry-run     # list orphans, delete nothing
     python graph_analytics.py --centrality --top 10
-    python graph_analytics.py --all --json          # machine-readable summary
+    python graph_analytics.py --puppet-master        # Cypher PUPPET_MASTER_OF
+    python graph_analytics.py --cycles               # circular ownership
+    python graph_analytics.py --guard --json         # 180k free-tier stop
+    python graph_analytics.py --all --json           # machine-readable summary
 
 Exit codes match ``ingest.py``: ``0`` success · ``1`` configuration ·
 ``2`` runtime failure · ``3`` partial (some stage failed, others completed).
+``--guard`` adds ``4``: the 180 000-node stop is engaged (not a failure — the
+dedupe pass still needs to run, because merging is the remedy).
+
+The Cypher layer (``puppetnet/graph/puppet_master.py``) extends the same run:
+``--puppet-master`` recomputes the whole-graph ``PUPPET_MASTER_OF`` edges from a
+PageRank + betweenness + in-degree blend, and ``--cycles`` finds circular
+ownership with an exact SCC pass. ``--guard`` counts **all** nodes, because
+documents and runs consume the same 200 000-node budget as entities.
 
 Every stage is **idempotent** and safe to re-run: merges are computed as
 equivalence classes so a chain ``A→B→C`` collapses to one winner, calculated
@@ -60,7 +71,7 @@ import re
 import sys
 import time
 import unicodedata
-from collections import defaultdict, deque
+from collections import defaultdict
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -72,7 +83,15 @@ if str(REPO_ROOT) not in sys.path:  # pragma: no cover - import shim
     sys.path.insert(0, str(REPO_ROOT))
 
 from puppetnet.config import ConfigError, Settings, load_settings  # noqa: E402
+from puppetnet.graph.algorithms import brandes_betweenness  # noqa: E402,F401  (re-exported for the CLI/tests)
 from puppetnet.graph.neo4j_client import Neo4jClient, Neo4jUnavailable, chunked  # noqa: E402
+from puppetnet.graph.puppet_master import (  # noqa: E402
+    CycleReport,
+    CypherAnalytics,
+    PuppetMasterReport,
+    capacity_guard,
+    stop_threshold,
+)
 from puppetnet.logging_utils import banner, configure_logging, get_logger, human_int, timed  # noqa: E402
 from puppetnet.models import is_safe_relationship_type  # noqa: E402
 
@@ -82,6 +101,9 @@ EXIT_OK = 0
 EXIT_CONFIG = 1
 EXIT_RUNTIME = 2
 EXIT_PARTIAL = 3
+#: ``--guard`` only: the 180 000-node stop is engaged. Distinct from a runtime
+#: failure so a workflow can branch on it without parsing logs.
+EXIT_CAPACITY = 4
 
 # --------------------------------------------------------------------------- #
 # Capacity limits — AuraDB Free
@@ -92,6 +114,10 @@ AURA_NODE_LIMIT = 200_000
 AURA_EDGE_LIMIT = 400_000
 #: Fraction of the ceiling at which pruning starts escalating its thresholds.
 CAPACITY_TARGET_DEFAULT = 0.85
+#: 90 % of the node ceiling: new entity nodes stop here. The remaining 10 % is
+#: reserved for merges, repairs and manual analysis, because a database at
+#: exactly 200 000 nodes refuses every write — including the one that would fix it.
+AURA_NODE_STOP = 180_000
 
 # --------------------------------------------------------------------------- #
 # Deduplication constants
@@ -1027,80 +1053,6 @@ def match_score(left: str, right: str) -> tuple[float, str]:
 # --------------------------------------------------------------------------- #
 # Graph algorithms — pure Python, no GDS, no NetworkX required
 # --------------------------------------------------------------------------- #
-def brandes_betweenness(
-    nodes: Sequence[str],
-    adjacency: Mapping[str, Sequence[tuple[str, float]]],
-    *,
-    deadline: float | None = None,
-) -> dict[str, float]:
-    """Brandes' unweighted betweenness centrality, O(V·E).
-
-    GDS is not available on AuraDB Free, so the projection is scored here. The
-    graph is treated as undirected (an ownership tie connects two actors
-    whichever way it was written) and the result is normalised by the number of
-    distinct node pairs, which puts every score in [0, 1] and makes it directly
-    comparable with the other two anomaly components.
-
-    Deliberately unweighted: betweenness on a weighted graph needs Dijkstra per
-    source, and on a 20 000-node projection that is minutes of CPU on a GitHub
-    runner for a ranking that rarely changes. Edge *confidence* is applied
-    earlier, when the projection is thresholded.
-    """
-    betweenness = dict.fromkeys(nodes, 0.0)
-    total = len(nodes)
-    if total < 3:
-        return betweenness
-
-    visited = 0
-    for source in nodes:
-        if deadline is not None and visited and visited % 128 == 0 and time.perf_counter() > deadline:
-            logger.warning(
-                "betweenness budget exhausted after %d/%d sources — scaling the partial result",
-                visited, total,
-            )
-            break
-        visited += 1
-        stack: list[str] = []
-        predecessors: dict[str, list[str]] = {node: [] for node in nodes}
-        sigma = dict.fromkeys(nodes, 0.0)
-        sigma[source] = 1.0
-        distance = dict.fromkeys(nodes, -1)
-        distance[source] = 0
-
-        queue = deque([source])
-        while queue:
-            current = queue.popleft()
-            stack.append(current)
-            for neighbour, _weight in adjacency.get(current, ()):  # noqa: B007
-                if neighbour not in distance:
-                    continue
-                if distance[neighbour] < 0:
-                    distance[neighbour] = distance[current] + 1
-                    queue.append(neighbour)
-                if distance[neighbour] == distance[current] + 1:
-                    sigma[neighbour] += sigma[current]
-                    predecessors[neighbour].append(current)
-
-        delta = dict.fromkeys(nodes, 0.0)
-        while stack:
-            current = stack.pop()
-            for predecessor in predecessors[current]:
-                if sigma[current] <= 0:
-                    continue
-                delta[predecessor] += (sigma[predecessor] / sigma[current]) * (1 + delta[current])
-            if current != source:
-                betweenness[current] += delta[current]
-
-    # Undirected graphs count every pair twice. A partial run (deadline hit)
-    # divided by fewer sources, so it is rescaled by the fraction visited to stay
-    # comparable with a complete one.
-    norm = (total - 1) * (total - 2)
-    if norm <= 0:
-        return betweenness
-    scale = total / visited if visited else 1.0
-    return {node: min(1.0, value * scale / norm) for node, value in betweenness.items()}
-
-
 def gds_betweenness(client: Neo4jClient, *, node_label: str = "Entity") -> dict[str, float] | None:
     """Betweenness from Neo4j GDS when the instance actually has it.
 
@@ -1273,6 +1225,12 @@ class CapacityReport:
     over_target: bool = False
     headroom_nodes: int = AURA_NODE_LIMIT
     headroom_edges: int = AURA_EDGE_LIMIT
+    #: Early stop: 90 % of the physical ceiling. New entity nodes stop here,
+    #: leaving headroom for the merges and repairs that fix an over-full graph.
+    stop_threshold: int = AURA_NODE_STOP
+    headroom_to_stop: int = AURA_NODE_STOP
+    stop_engaged: bool = False
+    at_hard_limit: bool = False
     #: Non-empty when the probe failed: the zeroes then mean "unknown", not
     #: "empty database", and pruning must not escalate on that basis.
     error: str = ""
@@ -1422,6 +1380,10 @@ class MaintenanceReport:
     centrality: CentralityReport = field(default_factory=CentralityReport)
     top_anomalies: list[dict[str, Any]] = field(default_factory=list)
     bridge_alerts: list[BridgeAlert] = field(default_factory=list)
+    #: Cypher PUPPET_MASTER_OF layer (PageRank + betweenness + in-degree).
+    puppet_master: PuppetMasterReport | None = None
+    #: Circular ownership structures found in the ownership edge set.
+    cycles: CycleReport | None = None
     seconds: float = 0.0
     errors: list[str] = field(default_factory=list)
 
@@ -1486,6 +1448,7 @@ class GraphMaintenance:
             node_limit=int(getattr(self.settings, "aura_node_cap", AURA_NODE_LIMIT) or AURA_NODE_LIMIT),
             edge_limit=int(getattr(self.settings, "aura_edge_cap", AURA_EDGE_LIMIT) or AURA_EDGE_LIMIT),
             target=float(getattr(self.settings, "prune_capacity_target", CAPACITY_TARGET_DEFAULT) or CAPACITY_TARGET_DEFAULT),
+            stop_threshold=stop_threshold(self.settings),
         )
         try:
             rows = self.client.read(CAPACITY_COUNTS)
@@ -1503,16 +1466,27 @@ class GraphMaintenance:
         report.semantic_edges = int(row.get("semantic_edges") or 0)
         report.all_edges = int(row.get("all_edges") or 0)
         report.offshore_nodes = int(row.get("offshore_nodes") or 0)
-        report.node_utilisation = round(report.entities / report.node_limit, 4) if report.node_limit else 0.0
+        # Aura counts every node, not only :Entity. Utilisation must use the
+        # same population as the guard, or --capacity can report 60 % while
+        # --guard has already engaged the stop.
+        report.node_utilisation = round(report.all_nodes / report.node_limit, 4) if report.node_limit else 0.0
         report.edge_utilisation = round(report.all_edges / report.edge_limit, 4) if report.edge_limit else 0.0
-        report.headroom_nodes = max(0, report.node_limit - report.entities)
+        report.headroom_nodes = max(0, report.node_limit - report.all_nodes)
         report.headroom_edges = max(0, report.edge_limit - report.all_edges)
+        report.headroom_to_stop = max(0, report.stop_threshold - report.all_nodes)
+        # Aura counts every node, not only :Entity — a document spree can exhaust
+        # the ceiling while the entity population still looks healthy.
+        report.stop_engaged = report.all_nodes >= report.stop_threshold
+        report.at_hard_limit = report.all_nodes >= report.node_limit
         report.over_target = (
-            report.node_utilisation >= report.target or report.edge_utilisation >= report.target
+            report.node_utilisation >= report.target
+            or report.edge_utilisation >= report.target
+            or report.stop_engaged
         )
         logger.info(
-            "capacity: %s/%s entities (%.1f%%), %s/%s edges (%.1f%%), %s offshore",
-            human_int(report.entities), human_int(report.node_limit), report.node_utilisation * 100,
+            "capacity: %s entities in %s/%s nodes (%.1f%%), %s/%s edges (%.1f%%), %s offshore",
+            human_int(report.entities), human_int(report.all_nodes), human_int(report.node_limit),
+            report.node_utilisation * 100,
             human_int(report.all_edges), human_int(report.edge_limit), report.edge_utilisation * 100,
             human_int(report.offshore_nodes),
         )
@@ -2630,6 +2604,8 @@ class GraphMaintenance:
         dedupe: bool = True,
         prune: bool = True,
         centrality: bool = True,
+        puppet_master: bool = False,
+        cycles: bool = False,
         threshold: float | None = None,
         max_merges: int | None = None,
         top: int | None = None,
@@ -2656,8 +2632,10 @@ class GraphMaintenance:
                 report.errors.append(f"dedupe: {report.dedupe.error}")
         else:
             # A fresh report defaults to "completed"; saying that about a stage
-            # nobody asked for would hide a configuration mistake.
+            # nobody asked for would hide a configuration mistake. ``dry_run``
+            # is still copied so a dry-run report never claims a stage wrote.
             report.dedupe.status = "skipped"
+            report.dedupe.dry_run = self.dry_run
 
         if prune:
             report.prune = self.prune(capacity=report.capacity)
@@ -2667,6 +2645,7 @@ class GraphMaintenance:
             report.capacity = self.capacity()
         else:
             report.prune.status = "skipped"
+            report.prune.dry_run = self.dry_run
 
         if centrality:
             report.centrality = self.centrality(top=top)
@@ -2679,10 +2658,42 @@ class GraphMaintenance:
                 logger.info("cleared stale calculated properties on %d node(s)", cleared)
         else:
             report.centrality.status = "skipped"
+            report.centrality.dry_run = self.dry_run
+
+        # The Cypher analytics run after the graph has been cleaned and scored:
+        # PageRank on a graph with duplicate actors splits their influence, and
+        # cycle detection on a graph with orphan edges invents two-node loops.
+        if puppet_master or cycles:
+            analytics = CypherAnalytics(self.settings, self.client, run_id=self.run_id)
+            try:
+                if puppet_master:
+                    report.puppet_master = analytics.run(top=max(int(top or 5), 5))
+                    if report.puppet_master.status == "failed":
+                        report.errors.extend(f"puppet_master: {error}" for error in report.puppet_master.errors)
+                if cycles:
+                    report.cycles = analytics.detect_cycles()
+                    if report.cycles.status == "failed":
+                        report.errors.extend(f"cycles: {error}" for error in report.cycles.errors)
+            finally:
+                analytics.close()
+        if report.puppet_master is None:
+            report.puppet_master = PuppetMasterReport(
+                run_id=self.run_id, generated_at=iso(utcnow()), dry_run=self.dry_run, status="skipped",
+            )
+        if report.cycles is None:
+            report.cycles = CycleReport(
+                run_id=self.run_id, generated_at=iso(utcnow()), dry_run=self.dry_run, status="skipped",
+            )
 
         attempted = [
             stage
-            for enabled, stage in ((dedupe, report.dedupe), (prune, report.prune), (centrality, report.centrality))
+            for enabled, stage in (
+                (dedupe, report.dedupe),
+                (prune, report.prune),
+                (centrality, report.centrality),
+                (puppet_master, report.puppet_master),
+                (cycles, report.cycles),
+            )
             if enabled
         ]
         failed = [stage for stage in attempted if stage.status == "failed"]
@@ -2726,8 +2737,8 @@ def build_parser() -> argparse.ArgumentParser:
         description="Entity resolution, capacity pruning and centrality scoring for the PuppetNET graph.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
-            "Stages run in dependency order: dedupe → prune → centrality.\n"
-            "Exit codes: 0 success · 1 configuration · 2 runtime failure · 3 partial."
+            "Stages run in dependency order: dedupe → prune → centrality → puppet-master → cycles.\n"
+            "Exit codes: 0 success · 1 configuration · 2 runtime failure · 3 partial · 4 free-tier stop engaged."
         ),
     )
     parser.add_argument("--all", action="store_true", help="Run every stage (default when no stage flag is given).")
@@ -2736,6 +2747,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--centrality", action="store_true", help="Score betweenness, degree spikes and anomalies.")
     parser.add_argument("--bridges", action="store_true", help="Report bridge candidates only (implies --centrality).")
     parser.add_argument("--capacity", action="store_true", help="Report node/edge utilisation and exit.")
+    parser.add_argument("--puppet-master", action="store_true", help="Recompute PUPPET_MASTER_OF in Cypher (PageRank + betweenness + in-degree).")
+    parser.add_argument("--cycles", action="store_true", help="Detect circular ownership structures.")
+    parser.add_argument("--guard", action="store_true", help="Check the 180k free-tier stop and exit (code 4 when engaged).")
     parser.add_argument("--dry-run", action="store_true", help="Compute and report, write nothing to Neo4j.")
     parser.add_argument("--threshold", type=float, default=None, help=f"Fuzzy match threshold (default {FUZZY_THRESHOLD}).")
     parser.add_argument("--max-merges", type=int, default=None, help="Cap on merges per run (default from DEDUPE_MAX_MERGES).")
@@ -2831,6 +2845,13 @@ def summarise(report: MaintenanceReport) -> str:
         f"{report.centrality.nodes_scored} scored, {report.centrality.clusters} cluster(s), "
         f"{report.centrality.articulation_points} articulation point(s)",
         f"bridge alerts     : {len(report.bridge_alerts)}",
+        f"puppet master     : {report.puppet_master.status if report.puppet_master else 'skipped'} — "
+        f"{report.puppet_master.scored_nodes if report.puppet_master else 0} node(s), "
+        f"{report.puppet_master.edges_written if report.puppet_master else 0} PUPPET_MASTER_OF edge(s), "
+        f"betweenness={report.puppet_master.betweenness_engine or 'n/a' if report.puppet_master else 'n/a'}",
+        f"ownership cycles  : {report.cycles.cycles if report.cycles else 0} found in "
+        f"{report.cycles.components if report.cycles else 0} component(s), "
+        f"{report.cycles.marked_nodes if report.cycles else 0} node(s) marked",
     ]
     if report.top_anomalies or report.centrality.top:
         lines.append("")
@@ -2869,6 +2890,11 @@ def emit_github_output(report: MaintenanceReport) -> None:
                 "node_utilisation": report.capacity.node_utilisation,
                 "edge_utilisation": report.capacity.edge_utilisation,
                 "maintenance_seconds": f"{report.seconds:.2f}",
+                "maintenance_stop_engaged": str(report.capacity.stop_engaged).lower(),
+                "maintenance_node_stop": report.capacity.stop_threshold,
+                "puppet_master_edges": report.puppet_master.edges_written if report.puppet_master else 0,
+                "puppet_master_engine": report.puppet_master.betweenness_engine if report.puppet_master else "",
+                "ownership_cycles": report.cycles.cycles if report.cycles else 0,
             }
             for key, value in values.items():
                 handle.write(f"{key}={value}\n")
@@ -2925,9 +2951,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     if weights is not None:
         settings = _with_anomaly_weights(settings, weights)
 
-    run_dedupe = bool(args.dedupe or args.all or not (args.prune or args.centrality or args.bridges or args.capacity))
-    run_prune = bool(args.prune or args.all or not (args.dedupe or args.centrality or args.bridges or args.capacity))
-    run_centrality = bool(args.centrality or args.bridges or args.all or not (args.dedupe or args.prune or args.capacity))
+    run_dedupe = bool(args.dedupe or args.all or not (args.prune or args.centrality or args.bridges or args.capacity or args.puppet_master or args.cycles or args.guard))
+    run_prune = bool(args.prune or args.all or not (args.dedupe or args.centrality or args.bridges or args.capacity or args.puppet_master or args.cycles or args.guard))
+    run_centrality = bool(args.centrality or args.bridges or args.all or not (args.dedupe or args.prune or args.capacity or args.puppet_master or args.cycles or args.guard))
 
     try:
         engine = GraphMaintenance(settings, run_id=args.run_id)
@@ -2936,7 +2962,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         return EXIT_CONFIG
 
     try:
-        if args.capacity and not (args.dedupe or args.prune or args.centrality or args.bridges or args.all):
+        if args.guard:
+            guard = capacity_guard(engine.client, settings, run_id=engine.run_id)
+            print(json.dumps(guard.to_dict(), indent=2))
+            if guard.error:
+                return EXIT_RUNTIME
+            return EXIT_CAPACITY if guard.stop_engaged else EXIT_OK
+
+        if args.capacity and not (args.dedupe or args.prune or args.centrality or args.bridges or args.puppet_master or args.cycles or args.all):
             capacity = engine.capacity()
             print(json.dumps(asdict(capacity), indent=2))
             return EXIT_OK
@@ -2946,6 +2979,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 dedupe=run_dedupe,
                 prune=run_prune,
                 centrality=run_centrality,
+                puppet_master=bool(args.puppet_master or args.all),
+                cycles=bool(args.cycles or args.all),
                 threshold=args.threshold,
                 max_merges=args.max_merges,
                 top=args.top,

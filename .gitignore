@@ -37,6 +37,8 @@ htmlcov/
 .env
 .env.*
 !.env.example
+.secrets.generated.env
+apps/worker/.secrets.generated.env
 *.pem
 *.key
 secrets.*
@@ -81,7 +83,12 @@ docs/audit/
 # committed sitemap would have to guess a hostname; see docs/web-console.md.
 web/sitemap.xml
 apps/web/public/sitemap.xml
+apps/web/public/sitemap-*.xml
 apps/web/public/legacy/sitemap.xml
+
+# Pipeline publication of public entity profiles (generated; the committed
+# demo dataset lives beside it as entities.sample.json).
+apps/web/public/data/entities.json
 
 # Rendered by `npm run screenshots`; CI uploads them as a build artefact.
 .screenshots/

@@ -4,6 +4,39 @@
   Permissions-Policy: camera=(), microphone=(), geolocation=()
   Content-Security-Policy: frame-ancestors 'self'
 
+# -----------------------------------------------------------------------------
+#  Next.js static export (v2)
+# -----------------------------------------------------------------------------
+#  Every filename below /_next/static/ contains a content hash, so it can be
+#  cached for a year without a revalidation request. The exported HTML itself
+#  must always be revalidated: a stale shell that points at deleted chunks is
+#  the one failure mode a static deployment cannot recover from on its own.
+#  The dashboard fetches its Worker API at runtime, so no CSP is added here;
+#  connect-src would otherwise have to allow the operator's chosen origin.
+# -----------------------------------------------------------------------------
+
+/_next/static/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/
+  Cache-Control: no-cache
+
+/dashboard
+  Cache-Control: no-cache
+
+/dashboard/*
+  Cache-Control: no-cache
+
+/entity
+  Cache-Control: no-cache
+
+/entity/*
+  Cache-Control: no-cache
+
+# Static social cards (1200x630 PNG). They only change with a release.
+/og/*
+  Cache-Control: public, max-age=604800, must-revalidate
+
 # =============================================================================
 #  Cloudflare Pages response headers — web/_headers
 # =============================================================================

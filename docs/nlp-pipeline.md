@@ -3,7 +3,9 @@
 Code: [`puppetnet/parsing/nlp_engine.py`](../puppetnet/parsing/nlp_engine.py) ·
 [`relations.py`](../puppetnet/parsing/relations.py) ·
 [`craft.py`](../puppetnet/parsing/craft.py) ·
-[`text_extract.py`](../puppetnet/parsing/text_extract.py)
+[`text_extract.py`](../puppetnet/parsing/text_extract.py) ·
+[`nlp/extractor.py`](../nlp/extractor.py) ·
+[`nlp/triplet_extractor.py`](../nlp/triplet_extractor.py)
 
 The engine answers one question per document: *which actors are in this text, and what
 happened between them?* It is built to be useful with a transformer model and still
@@ -210,3 +212,196 @@ Guards: `NLP_MAX_CHARS_PER_DOC` (400k, truncated with a warning),
 
 Each result carries `word_count`, `warnings` and `is_usable` (≥ 12 words), which is how
 paywalls, cookie walls and 404 pages are kept out of the graph.
+
+---
+
+# Multilingual GLiNER + Workers AI (v1.6)
+
+The v1.5 engine above is spaCy-first and English-first. v1.6 adds a second,
+independent path under [`nlp/`](../nlp/):
+
+| Module | Responsibility |
+| --- | --- |
+| `nlp/labels.py` | The nine OSINT labels and their mapping to `EntityType` |
+| `nlp/chunking.py` | Sentence-boundary windows of ≤384 tokens with overlap |
+| `nlp/extractor.py` | `gliner_multi-v2.1` via PyTorch or ONNX Runtime |
+| `nlp/triplet_extractor.py` | `(subject)-[PREDICATE]->(object)` via Workers AI |
+| `nlp/graph_bridge.py` | The only conversion from model output to `Entity`/`Relation` |
+
+Importing `nlp` never imports `torch`, `gliner` or `transformers`; the heavy
+dependencies load when an extractor is constructed.
+
+## Labels
+
+`OSINT_LABELS` is exactly:
+
+```
+Person, Organization, Location, Date, Vehicle,
+Aircraft_Registration, IMO_Number, Bank_Account, Crypto_Address
+```
+
+All nine are sent to GLiNER and echoed in the Workers AI prompt. Only six become
+graph nodes without a schema migration:
+
+| OSINT label | `EntityType` | Graph node? |
+| --- | --- | --- |
+| Person | Person | yes |
+| Organization | Organization | yes |
+| Location | Location | yes |
+| Vehicle | Craft | yes |
+| Aircraft_Registration | Craft | yes |
+| IMO_Number | Craft | yes |
+| Date | Unknown | no — span metadata (`date_mention`) |
+| Bank_Account | Unknown | no — span metadata (`identifier`) |
+| Crypto_Address | Unknown | no — span metadata (`identifier`) |
+
+Keeping Date/account/crypto as spans is deliberate: promoting them would require
+new Neo4j labels, constraints and domain properties. The extractor records the
+exact OSINT label in `EntitySpan.properties["osint_label"]`, so a later schema
+can adopt them without re-running the model.
+
+## Chunking: 384 tokens, sentence-aligned
+
+`nlp.chunking.split_sentences` handles German, English, Spanish, French,
+Portuguese, Italian, Russian and CJK terminators. It suppresses boundaries after
+titles (`Dr.`), German abbreviations (`z. B.`), initials (`J. Smith`), French
+guillemet spacing (`Bonjour ! »`), decimals (`3.14`) and ordinal dates
+(`3. Oktober 2020`).
+
+`iter_chunks` then packs **whole sentences** into windows of at most
+`GLINER_CONTEXT_TOKENS` (384) tokens with `GLINER_OVERLAP_TOKENS` (64) of trailing
+sentences repeated. Consequences:
+
+* an entity and its relation stay in one window;
+* two windows can return the same span; `_dedupe` folds same-label spans with
+  ≥80% overlap and keeps the highest score;
+* every `TextChunk` carries absolute `start_char`/`end_char`, so a span is always
+  `text[e.start_char:e.end_char] == e.text`;
+* a sentence longer than the whole window is split at token/word boundaries and
+  flagged (`split_sentence=True`, warnings `oversized-sentence-split:N`) rather
+  than silently truncated;
+* token counts use the checkpoint tokenizer when available and a conservative
+  word-piece estimate otherwise.
+
+Caps: `NLP_MAX_CHARS_PER_DOC` (400k), `NLP_MAX_SENTENCES_PER_DOC` (1,500),
+`max_entities` (5,000). Truncation is reported, never silent.
+
+## PyTorch and ONNX Runtime
+
+```python
+from nlp.extractor import GLiNERExtractor
+
+with GLiNERExtractor("urchade/gliner_multi-v2.1", runtime="torch") as extractor:
+    result = extractor.extract("Dr. Anna Müller trifft Acme in Berlin.", language="de")
+    print(result.entity_counts)
+```
+
+* `runtime="torch"` is the default and the only path that works with the
+  published checkpoint as-is.
+* `runtime="onnx"` loads GLiNER's ONNX Runtime backend and requires a
+  pre-exported `model.onnx` (the upstream checkpoint does not ship one). There is
+  **no silent fallback**: a missing export raises `ExtractionError`.
+* `model=` (and `tokenizer=`) inject a loaded model and keep the unit suite
+  entirely offline.
+
+`urchade/gliner_multi-v2.1` is 209M parameters and Apache-2.0. The older
+`urchade/gliner_multi` is cc-by-nc-4.0 and must not be shipped.
+
+## Workers AI triplets and the 10,000-neuron budget
+
+Every Cloudflare account has **10,000 Neurons/day** free, reset at 00:00 UTC. On
+the Workers Free plan requests hard-fail after the allocation; there is no
+overflow invoice. `CloudflareTripletExtractor`:
+
+1. sends one sentence-aligned chunk per call to
+   `POST /client/v4/accounts/{account}/ai/run/{model}`;
+2. asks for strict JSON `{"triplets":[{...}]}` and validates the answer:
+   subject/object must be exact substrings of the chunk (or a supplied entity
+   hint), the predicate must be in the graph's `RelationType` vocabulary,
+   evidence must be a verbatim quote, self-edges and short arguments are dropped;
+3. records actual `usage.prompt_tokens`/`completion_tokens` (falling back to a
+   conservative `len/3` estimate) in a UTC-day ledger, and refuses a call that
+   cannot fit the remaining budget with 2% headroom;
+4. fails soft: HTTP 429/5xx retries honour `Retry-After`; an exhausted budget, an
+   API error or prose instead of JSON becomes a warning on that document, never
+   an exception that aborts the harvest.
+
+Published rates (per million tokens, 2026-10) for the defaults:
+
+| Model | Input | Output | 384-in/250-out chunk | ~chunks/day |
+| --- | --- | --- | --- | --- |
+| `@cf/meta/llama-3.1-8b-instruct` | 25,608 | 75,147 | ≈28.6 neurons | ≈350 |
+| `@cf/meta/llama-3.1-8b-instruct-fp8-fast` | 4,119 | 34,868 | ≈10.3 neurons | ≈970 |
+
+The workflow selects `fp8-fast` by default (`CF_AI_MODEL`) and caps the stage at
+`CF_AI_MAX_DOCUMENTS=10` documents per run, so a normal harvest spends a few
+hundred of the 10,000 daily neurons and never touches a paid plan.
+
+LLM predicates are coerced through `RelationType.coerce`; an unmodelled verb
+becomes `ASSOCIATED_WITH`. `triplet_predicate_counts` exposes that fallback count
+rather than pretending the predicate was understood.
+
+## Graph bridge
+
+```python
+entities, relations = graph_from_triplets(
+    document,
+    triplet_result,
+    known_entities=parse_result.entities,
+    source_id="news_world",
+)
+```
+
+Arguments that GLiNER resolved are typed from that span; otherwise the model's
+own label is used; otherwise the node is `EntityType.UNKNOWN` (stored as
+`:Entity:Unknown`). It is never guessed from capitalisation.
+
+Confidence reuses the existing formula:
+
+```
+compose_confidence(0.4, ExtractionMethod.PATTERN, llm_confidence)
+```
+
+so an LLM edge is at most `0.4` and can never outrank a dependency-parsed edge.
+The writer's noisy-OR and per-document evidence guard then apply unchanged.
+
+`IngestPipeline` calls the bridge only when `TRIPLET_BACKEND=cloudflare`; the
+stage is optional, capped and fail-soft, and `CF_AI_MAX_DOCUMENTS=0` disables it
+without removing credentials.
+
+## GitHub Actions
+
+The repository contract allows exactly one workflow
+(`.github/workflows/ingestion-pipeline.yml`); the NLP stages extend it instead of
+adding a second file. Public-repository standard runners are free under GitHub's
+public-repo policy; no matrix, GPU or paid inference API is used.
+
+`tests` job: offline unit suite, ruff, plus an offline multilingual chunk/label/
+budget contract. `ingestion` job (main + `ENABLE_INGESTION=true`):
+
+* `GLINER_MODEL=urchade/gliner_multi-v2.1`, 384/64 window, CPU torch wheel;
+* a real German/Russian/Arabic extraction preflight that asserts every returned
+  span is a substring of its input;
+* optional Workers AI preflight when `vars.TRIPLET_BACKEND=cloudflare`; the
+  neuron ledger is restored/saved with `actions/cache`.
+
+Configuration: `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_API_TOKEN` (Workers AI
+Read). The token is redacted from `Settings.describe()` and never written to the
+ledger, reports or logs.
+
+## Tests
+
+```sh
+pip install -e './packages/pipeline[dev]'          # no torch, no model download
+python -m pytest -q -m 'not integration'           # offline suite
+
+# live, opt-in
+RUN_GLINER_INTEGRATION=1 pytest -m integration tests/test_nlp_integration.py -k gliner
+CLOUDFLARE_ACCOUNT_ID=... CLOUDFLARE_API_TOKEN=... \
+  pytest -m integration tests/test_nlp_integration.py -k workers_ai
+```
+
+The offline tests cover German, Russian, Arabic, French, Spanish and English
+sentences, including exact offsets, overlap dedupe, script boundaries, budget
+arithmetic, retry/`Retry-After`, malformed JSON and the graph bridge. Live tests
+are deselected by default because they download a model or spend neurons.

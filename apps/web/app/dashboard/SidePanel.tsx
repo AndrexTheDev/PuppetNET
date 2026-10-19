@@ -7,12 +7,12 @@ function download(name: string, text: string, type: string) {
 }
 export default function SidePanel({ node, evidence, onDrill, onClose, detailError }: { node: GraphNode | null; evidence: Evidence[]; onDrill: (id: string) => void; onClose: () => void; detailError: string }) {
   const [copied, setCopied] = useState('');
-  if (!node) return <aside className="detail-panel"><span className="eyebrow">INSPECTOR / 03</span><div className="empty-inspector"><div className="inspect-icon">◎</div><h2>Jede Verbindung<br />beginnt mit einer Frage.</h2><p>Wähle einen Knoten im Graphen, auf der Karte oder in der Datenliste. Hier erscheinen Eigenschaften und überprüfbare Quellen.</p></div><div className="inspector-foot">RECHERCHEHINWEISE ≠ TATSACHENBEWEISE</div></aside>;
+  if (!node) return <aside className="detail-panel" role="region" aria-labelledby="inspector-heading"><span className="eyebrow">INSPECTOR / 03</span><div className="empty-inspector"><div className="inspect-icon" aria-hidden="true">◎</div><h2 id="inspector-heading">Jede Verbindung<br />beginnt mit einer Frage.</h2><p>Wähle einen Knoten im Graphen, auf der Karte oder in der Datenliste. Hier erscheinen Eigenschaften und überprüfbare Quellen.</p></div><div className="inspector-foot">RECHERCHEHINWEISE ≠ TATSACHENBEWEISE</div></aside>;
   const exported = cypherExport(node.id);
-  return <aside className="detail-panel" aria-label="Knotendetails">
+  return <aside className="detail-panel" role="region" aria-labelledby="inspector-heading">
     <div className="panel-row"><span className="eyebrow">INSPECTOR / 03</span><button className="icon-button" onClick={onClose} aria-label="Details schließen">×</button></div>
     <div className="node-badge" style={{ color: COLORS[node.type] }}>{node.group ? 'DARSTELLUNGSGRUPPE' : node.type.toUpperCase()}</div>
-    <h2 className="node-title">{node.label}</h2><code className="node-key">{node.id}</code>
+    <h2 className="node-title" id="inspector-heading">{node.label}</h2><code className="node-key">{node.id}</code>
     <dl className="node-facts"><div><dt>Confidence{node.group ? ' · Mittelwert' : ''}</dt><dd>{(node.confidence * 100).toFixed(1)} %</dd></div><div><dt>{node.group ? 'Enthaltene Knoten' : 'Cluster-ID'}</dt><dd>{node.group ? node.count?.toLocaleString('de-DE') : node.cluster}</dd></div>
       {node.group && <div><dt>Interne Kanten</dt><dd>{node.internalEdges}</dd></div>}
       {node.lat !== undefined && <div><dt>Koordinaten</dt><dd>{node.lat.toFixed(4)}, {node.lon?.toFixed(4)}</dd></div>}</dl>

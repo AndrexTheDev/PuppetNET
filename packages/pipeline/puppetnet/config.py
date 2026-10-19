@@ -56,6 +56,22 @@ def _env_float(name: str, default: float) -> float:
         raise ConfigError(f"{name}={raw!r} is not a valid number") from exc
 
 
+def _env_optional_float(name: str) -> float | None:
+    """Return ``None`` when the variable is unset/empty.
+
+    Used for overrides that must fall back to a computed default (published
+    Workers AI neuron rates) rather than to a hard-coded constant.
+    """
+
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return None
+    try:
+        return float(raw)
+    except ValueError as exc:
+        raise ConfigError(f"{name} must be a number, got {raw!r}") from exc
+
+
 def _env_bool(name: str, default: bool = False) -> bool:
     raw = _env_str(name).lower()
     if not raw:
@@ -170,6 +186,12 @@ class Settings:
     aura_node_cap: int = 200_000
     #: AuraDB Free also caps relationships at 400k. Same guard, same semantics.
     aura_edge_cap: int = 400_000
+    #: The **hard stop** for new entity nodes: 90 % of the 200 000-node free
+    #: tier. The last 10 % is deliberate headroom — merges, repairs and manual
+    #: analysis still need room to write, and a database at exactly 200 000
+    #: nodes refuses every write, including the ones that would fix it.
+    #: ``0`` falls back to ``aura_node_cap`` (no early stop).
+    aura_node_stop: int = 180_000
     #: Rows pulled into the cross-run alias index at the start of a run.
     entity_resolver_limit: int = 200_000
 
@@ -214,6 +236,39 @@ class Settings:
     nlp_backend: str = "spacy"
     gliner_model: str = "urchade/gliner_small-v2.1"
     gliner_threshold: float = 0.5
+    #: ``torch`` (default) or ``onnx``. The ONNX path needs a pre-exported
+    #: ``model.onnx``; it is never a silent fallback for a broken Torch install.
+    gliner_runtime: str = "torch"
+    #: GLiNER context window and overlap, in tokens. 384/64 follows the
+    #: documented multilingual checkpoint limit with enough overlap to keep
+    #: cross-sentence relations in one window.
+    gliner_context_tokens: int = 384
+    gliner_overlap_tokens: int = 64
+
+    # -- Workers AI triplet extraction (free tier) --------------------------
+    triplet_backend: str = "off"
+    cf_ai_account_id: str = ""
+    cf_ai_api_token: str = ""
+    cf_ai_model: str = "@cf/meta/llama-3.1-8b-instruct"
+    cf_ai_base_url: str = "https://api.cloudflare.com/client/v4/accounts"
+    #: Workers Free hard-fails after 10,000 neurons/day; the extractor stops
+    #: before the cap instead of burning the last request on a doomed call.
+    cf_ai_daily_neurons: float = 10_000.0
+    cf_ai_budget_file: str = ""
+    cf_ai_max_output_tokens: int = 700
+    #: Hard per-run document cap. One 384-token window is cheap; a 1,500-document
+    #: harvest is not, and the free tier must be spent deliberately.
+    cf_ai_max_documents: int = 10
+    cf_ai_max_chunks: int = 32
+    cf_ai_max_triplets_per_chunk: int = 20
+    cf_ai_timeout_seconds: float = 45.0
+    cf_ai_max_retries: int = 2
+    cf_ai_min_confidence: float = 0.0
+    #: Empty means "use the published rates for ``cf_ai_model``". Set both to
+    #: override (per *million* tokens) when Cloudflare changes pricing.
+    cf_ai_input_neurons_per_million: float | None = None
+    cf_ai_output_neurons_per_million: float | None = None
+
     nlp_enabled: bool = True
     nlp_max_chars_per_doc: int = 400_000
     nlp_max_sentences_per_doc: int = 1_500
@@ -287,6 +342,54 @@ class Settings:
     puppet_master_top_n: int = 8
     #: Global cap on calculated edges per run.
     puppet_master_max_edges: int = 2_000
+
+    # -- APOC entity resolution (entity_resolution.py) ----------------------
+    #: APOC ``apoc.refactor.mergeNodes`` pass that runs before the fuzzy
+    #: resolver. It only merges pairs whose names agree on *two* APOC string
+    #: metrics and that carry no conflicting evidence.
+    resolution_enabled: bool = True
+    #: Weighted Jaro-Winkler (60 %) + Levenshtein similarity (40 %) gate.
+    resolution_threshold: float = 0.90
+    #: Merges applied per run. Merges are irreversible from the runner's point
+    #: of view, so the cap is a blast-radius limit, not a performance knob.
+    resolution_max_merges: int = 250
+    #: Entity rows examined per run, strongest (highest degree) first.
+    resolution_entity_limit: int = 20_000
+    #: Characters of the folded name used as the orthographic blocking key.
+    resolution_block_prefix: int = 4
+    #: A shared document inside this window protects a pair from merging: two
+    #: different people named "Ivan Petrov" are usually mentioned together.
+    resolution_cooccurrence_days: int = 365
+
+    # -- Ownership-cycle detection -----------------------------------------
+    cycle_detection_enabled: bool = True
+    #: Ownership edges loaded per run (the detector is exact over this edge set).
+    cycle_edge_limit: int = 50_000
+    #: Start nodes considered, strongest ownership actors first.
+    cycle_max_starts: int = 2_000
+    #: Longest concrete cycle reported per strongly connected component.
+    cycle_max_length: int = 12
+
+    # -- Cypher PUPPET_MASTER_OF (puppetnet.graph.puppet_master) -----------
+    puppet_master_cypher_enabled: bool = True
+    #: Subgraph projected for PageRank/betweenness. AuraDB Free has no GDS
+    #: PageRank, so the power iteration runs in Cypher over this bounded set.
+    puppet_master_max_nodes: int = 5_000
+    puppet_master_pagerank_iterations: int = 12
+    puppet_master_damping: float = 0.85
+    #: Relative weights of the three mandated components. They are normalised
+    #: before the blend, so only the ratios matter.
+    puppet_master_pagerank_weight: float = 0.50
+    puppet_master_betweenness_weight: float = 0.30
+    puppet_master_in_degree_weight: float = 0.20
+
+    # -- AuraDB Free keep-alive (keep_alive.py) -----------------------------
+    #: Free-tier instances pause after 72 h without a *write query*. This
+    #: read-only ``RETURN 1`` ping proves connectivity (and wakes a paused
+    #: instance); the Worker cron writes the bounded heartbeat that resets the
+    #: idle clock.
+    keep_alive_timeout_seconds: float = 30.0
+    keep_alive_retries: int = 2
 
     # -- Graph maintenance (graph_analytics.py) -----------------------------
     #: Entity resolution: strict identifier matches plus fuzzy name matching.
@@ -423,7 +526,7 @@ class Settings:
         """Redacted snapshot for logs and the run report."""
         sensitive = {"neo4j_password", "worker_token", "opencorporates_api_token",
                      "companies_house_api_key", "adsbexchange_api_key", "extra_headers_json",
-                     "telegram_bot_token"}
+                     "telegram_bot_token", "cf_ai_api_token", "cf_ai_account_id"}
         out: dict[str, Any] = {}
         for key, value in self.__dict__.items():
             if key in sensitive:
@@ -452,6 +555,39 @@ class Settings:
             problems.append("GLINER_THRESHOLD must be in (0, 1]")
         if not self.gliner_model.strip():
             problems.append("GLINER_MODEL must not be empty")
+        if self.gliner_runtime not in {"torch", "onnx"}:
+            problems.append("GLINER_RUNTIME must be torch or onnx")
+        if not 8 <= self.gliner_context_tokens <= 4_096:
+            problems.append("GLINER_CONTEXT_TOKENS must be between 8 and 4096")
+        if not 0 <= self.gliner_overlap_tokens < max(8, self.gliner_context_tokens):
+            problems.append("GLINER_OVERLAP_TOKENS must be within [0, GLINER_CONTEXT_TOKENS)")
+        if self.triplet_backend not in {"off", "cloudflare"}:
+            problems.append("TRIPLET_BACKEND must be off or cloudflare")
+        if self.triplet_backend == "cloudflare":
+            if not self.cf_ai_account_id.strip() or not self.cf_ai_api_token.strip():
+                problems.append(
+                    "TRIPLET_BACKEND=cloudflare requires CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN "
+                    "(Workers AI:Read)"
+                )
+            if not self.cf_ai_model.strip():
+                problems.append("CF_AI_MODEL must not be empty")
+            if not self.cf_ai_base_url.startswith("https://"):
+                problems.append("CF_AI_BASE_URL must be an https:// endpoint")
+            if not 0 < self.cf_ai_daily_neurons <= 1_000_000:
+                problems.append("CF_AI_DAILY_NEURONS must be within (0, 1_000_000]")
+            if not 0 < self.cf_ai_max_output_tokens <= 4_096:
+                problems.append("CF_AI_MAX_OUTPUT_TOKENS must be within (0, 4096]")
+            if self.cf_ai_max_chunks < 1 or self.cf_ai_max_triplets_per_chunk < 1:
+                problems.append("CF_AI_MAX_CHUNKS and CF_AI_MAX_TRIPLETS_PER_CHUNK must be >= 1")
+            if self.cf_ai_max_documents < 0:
+                problems.append("CF_AI_MAX_DOCUMENTS must be >= 0 (0 disables triplet extraction)")
+            if not 0 <= self.cf_ai_min_confidence <= 1:
+                problems.append("CF_AI_MIN_CONFIDENCE must be within [0, 1]")
+            if self.cf_ai_max_retries < 0 or self.cf_ai_max_retries > 5:
+                problems.append("CF_AI_MAX_RETRIES must be within [0, 5]")
+            if self.cf_ai_timeout_seconds <= 0:
+                problems.append("CF_AI_TIMEOUT_SECONDS must be > 0")
+
         if not self.dry_run:
             if not self.neo4j_uri:
                 problems.append("NEO4J_URI is required")
@@ -468,8 +604,41 @@ class Settings:
             problems.append("NEO4J_BATCH_SIZE must be between 1 and 10000")
         if self.aura_node_cap < 0:
             problems.append("AURA_NODE_CAP must be >= 0 (0 disables the guard)")
+        if self.aura_node_stop < 0:
+            problems.append("AURA_NODE_STOP must be >= 0 (0 disables the early stop)")
+        if self.aura_node_cap and self.aura_node_stop > self.aura_node_cap:
+            problems.append("AURA_NODE_STOP must not exceed AURA_NODE_CAP (it is a headroom stop, not a second ceiling)")
         if self.entity_resolver_limit < 1_000:
             problems.append("ENTITY_RESOLVER_LIMIT must be >= 1000")
+        if not 0.5 <= self.resolution_threshold <= 1.0:
+            problems.append("RESOLUTION_THRESHOLD must be within [0.5, 1.0]")
+        if self.resolution_max_merges < 0:
+            problems.append("RESOLUTION_MAX_MERGES must be >= 0")
+        if self.resolution_entity_limit < 100:
+            problems.append("RESOLUTION_ENTITY_LIMIT must be >= 100")
+        if not 2 <= self.resolution_block_prefix <= 12:
+            problems.append("RESOLUTION_BLOCK_PREFIX must be within [2, 12]")
+        if self.resolution_cooccurrence_days < 1:
+            problems.append("RESOLUTION_COOCCURRENCE_DAYS must be >= 1")
+        if self.cycle_edge_limit < 1:
+            problems.append("CYCLE_EDGE_LIMIT must be >= 1")
+        if self.cycle_max_starts < 1:
+            problems.append("CYCLE_MAX_STARTS must be >= 1")
+        if not 2 <= self.cycle_max_length <= 64:
+            problems.append("CYCLE_MAX_LENGTH must be within [2, 64]")
+        if not 2 <= self.puppet_master_max_nodes <= 50_000:
+            problems.append("PUPPET_MASTER_MAX_NODES must be within [2, 50000]")
+        if not 1 <= self.puppet_master_pagerank_iterations <= 100:
+            problems.append("PUPPET_MASTER_PAGERANK_ITERATIONS must be within [1, 100]")
+        if not 0.0 < self.puppet_master_damping < 1.0:
+            problems.append("PUPPET_MASTER_DAMPING must be within (0, 1)")
+        master_weights = [self.puppet_master_pagerank_weight, self.puppet_master_betweenness_weight, self.puppet_master_in_degree_weight]
+        if any(weight < 0 for weight in master_weights) or sum(master_weights) <= 0:
+            problems.append("PUPPET_MASTER_*_WEIGHT must be >= 0 and at least one must be > 0")
+        if self.keep_alive_timeout_seconds <= 0:
+            problems.append("KEEP_ALIVE_TIMEOUT_SECONDS must be > 0")
+        if self.keep_alive_retries < 0:
+            problems.append("KEEP_ALIVE_RETRIES must be >= 0")
         if self.min_edge_confidence < 0 or self.min_edge_confidence > 1:
             problems.append("MIN_EDGE_CONFIDENCE must be within [0, 1]")
         if self.aura_edge_cap < 0:
@@ -557,6 +726,26 @@ def load_settings(env: dict[str, str] | None = None, *, validate: bool = True) -
             neo4j_ensure_schema=_env_bool("NEO4J_ENSURE_SCHEMA", True),
             aura_node_cap=_env_int("AURA_NODE_CAP", 200_000),
             aura_edge_cap=_env_int("AURA_EDGE_CAP", 400_000),
+            aura_node_stop=_env_int("AURA_NODE_STOP", 180_000),
+            resolution_enabled=_env_bool("RESOLUTION_ENABLED", True),
+            resolution_threshold=_env_float("RESOLUTION_THRESHOLD", 0.90),
+            resolution_max_merges=_env_int("RESOLUTION_MAX_MERGES", 250),
+            resolution_entity_limit=_env_int("RESOLUTION_ENTITY_LIMIT", 20_000),
+            resolution_block_prefix=_env_int("RESOLUTION_BLOCK_PREFIX", 4),
+            resolution_cooccurrence_days=_env_int("RESOLUTION_COOCCURRENCE_DAYS", 365),
+            cycle_detection_enabled=_env_bool("CYCLE_DETECTION_ENABLED", True),
+            cycle_edge_limit=_env_int("CYCLE_EDGE_LIMIT", 50_000),
+            cycle_max_starts=_env_int("CYCLE_MAX_STARTS", 2_000),
+            cycle_max_length=_env_int("CYCLE_MAX_LENGTH", 12),
+            puppet_master_cypher_enabled=_env_bool("PUPPET_MASTER_CYPHER_ENABLED", True),
+            puppet_master_max_nodes=_env_int("PUPPET_MASTER_MAX_NODES", 5_000),
+            puppet_master_pagerank_iterations=_env_int("PUPPET_MASTER_PAGERANK_ITERATIONS", 12),
+            puppet_master_damping=_env_float("PUPPET_MASTER_DAMPING", 0.85),
+            puppet_master_pagerank_weight=_env_float("PUPPET_MASTER_PAGERANK_WEIGHT", 0.50),
+            puppet_master_betweenness_weight=_env_float("PUPPET_MASTER_BETWEENNESS_WEIGHT", 0.30),
+            puppet_master_in_degree_weight=_env_float("PUPPET_MASTER_IN_DEGREE_WEIGHT", 0.20),
+            keep_alive_timeout_seconds=_env_float("KEEP_ALIVE_TIMEOUT_SECONDS", 30.0),
+            keep_alive_retries=_env_int("KEEP_ALIVE_RETRIES", 2),
             dedupe_enabled=_env_bool("DEDUPE_ENABLED", True),
             dedupe_fuzzy_threshold=_env_float("DEDUPE_FUZZY_THRESHOLD", 0.88),
             dedupe_max_merges=_env_int("DEDUPE_MAX_MERGES", 500),
@@ -614,6 +803,25 @@ def load_settings(env: dict[str, str] | None = None, *, validate: bool = True) -
             nlp_backend=_env_str("NLP_BACKEND", "spacy"),
             gliner_model=_env_str("GLINER_MODEL", "urchade/gliner_small-v2.1"),
             gliner_threshold=_env_float("GLINER_THRESHOLD", 0.5),
+            gliner_runtime=_env_str("GLINER_RUNTIME", "torch").strip().lower(),
+            gliner_context_tokens=_env_int("GLINER_CONTEXT_TOKENS", 384),
+            gliner_overlap_tokens=_env_int("GLINER_OVERLAP_TOKENS", 64),
+            triplet_backend=_env_str("TRIPLET_BACKEND", "off").strip().lower(),
+            cf_ai_account_id=_env_str("CLOUDFLARE_ACCOUNT_ID", ""),
+            cf_ai_api_token=_env_str("CLOUDFLARE_API_TOKEN", ""),
+            cf_ai_model=_env_str("CF_AI_MODEL", "@cf/meta/llama-3.1-8b-instruct"),
+            cf_ai_base_url=_env_str("CF_AI_BASE_URL", "https://api.cloudflare.com/client/v4/accounts").rstrip("/"),
+            cf_ai_daily_neurons=_env_float("CF_AI_DAILY_NEURONS", 10_000.0),
+            cf_ai_budget_file=_env_str("CF_AI_BUDGET_FILE", ""),
+            cf_ai_max_output_tokens=_env_int("CF_AI_MAX_OUTPUT_TOKENS", 700),
+            cf_ai_max_chunks=_env_int("CF_AI_MAX_CHUNKS", 32),
+            cf_ai_max_documents=_env_int("CF_AI_MAX_DOCUMENTS", 10),
+            cf_ai_max_triplets_per_chunk=_env_int("CF_AI_MAX_TRIPLETS_PER_CHUNK", 20),
+            cf_ai_timeout_seconds=_env_float("CF_AI_TIMEOUT_SECONDS", 45.0),
+            cf_ai_max_retries=_env_int("CF_AI_MAX_RETRIES", 2),
+            cf_ai_min_confidence=_env_float("CF_AI_MIN_CONFIDENCE", 0.0),
+            cf_ai_input_neurons_per_million=_env_optional_float("CF_AI_INPUT_NEURONS_PER_MILLION"),
+            cf_ai_output_neurons_per_million=_env_optional_float("CF_AI_OUTPUT_NEURONS_PER_MILLION"),
             nlp_enabled=_env_bool("NLP_ENABLED", True),
             nlp_max_chars_per_doc=_env_int("NLP_MAX_CHARS_PER_DOC", 400_000),
             nlp_max_sentences_per_doc=_env_int("NLP_MAX_SENTENCES_PER_DOC", 1_500),

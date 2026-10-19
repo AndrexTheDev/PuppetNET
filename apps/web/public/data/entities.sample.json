@@ -1,0 +1,258 @@
+{
+  "generatedAt": "2026-10-19",
+  "demo": true,
+  "entities": [
+    {
+      "id": "org:nordlicht-holdings",
+      "name": "Nordlicht Holdings GmbH",
+      "type": "Organization",
+      "description": "Fiktive Demodaten: Nordlicht Holdings GmbH ist als Organisation mit Sitz in Hamburg erfasst und hält eine Beteiligung an der Hansa Maritime AG. Alle Namen und Beziehungen sind frei erfunden.",
+      "aliases": [
+        "Nordlicht Holding",
+        "Nordlicht GmbH"
+      ],
+      "identifiers": {
+        "reg_number": "HRB 000000"
+      },
+      "jurisdiction": "Deutschland",
+      "address": "Hamburg",
+      "confidence": 0.86,
+      "updatedAt": "2026-10-18",
+      "evidence": [
+        {
+          "id": "doc:demo-register-1",
+          "title": "Demoregister – Handelsregisterauszug",
+          "source": "Fiktives Handelsregister",
+          "date": "2026-10-01"
+        },
+        {
+          "id": "doc:demo-article-1",
+          "title": "Demoartikel: Nordlicht bündelt Schifffahrtsbeteiligungen",
+          "url": "https://example.invalid/demo/nordlicht",
+          "source": "Fiktive Redaktion",
+          "date": "2026-09-12"
+        }
+      ],
+      "slug": "nordlicht-holdings-gmbh-11vg6t7"
+    },
+    {
+      "id": "org:hansa-maritime",
+      "name": "Hansa Maritime AG",
+      "type": "Organization",
+      "description": "Fiktive Demodaten: Die Hansa Maritime AG ist als Reederei mit Sitz in Hamburg erfasst. Die Anteilseignerstruktur ist Teil der Demo, nicht der Realität.",
+      "aliases": [
+        "Hansa Maritime"
+      ],
+      "identifiers": {
+        "reg_number": "HRB 000111"
+      },
+      "jurisdiction": "Deutschland",
+      "address": "Hamburg",
+      "confidence": 0.78,
+      "updatedAt": "2026-10-12",
+      "evidence": [
+        {
+          "id": "doc:demo-register-2",
+          "title": "Demoregister – Reedereiverzeichnis",
+          "source": "Fiktives Handelsregister",
+          "date": "2026-10-02"
+        }
+      ],
+      "slug": "hansa-maritime-ag-1c6ajsd"
+    },
+    {
+      "id": "per:anna-berg",
+      "name": "Anna Berg",
+      "type": "Person",
+      "description": "Fiktive Demodaten: Anna Berg ist als Person erfasst und in der Demo als Geschäftsführerin der Nordlicht Holdings GmbH geführt. Die Person existiert nicht.",
+      "aliases": [
+        "A. Berg"
+      ],
+      "jurisdiction": "Deutschland",
+      "confidence": 0.81,
+      "updatedAt": "2026-10-15",
+      "evidence": [
+        {
+          "id": "doc:demo-register-1",
+          "title": "Demoregister – Handelsregisterauszug",
+          "source": "Fiktives Handelsregister",
+          "date": "2026-10-01"
+        },
+        {
+          "id": "doc:demo-article-2",
+          "title": "Demoartikel: Neue Geschäftsführung bei Nordlicht",
+          "url": "https://example.invalid/demo/berg",
+          "source": "Fiktive Redaktion",
+          "date": "2026-09-20"
+        }
+      ],
+      "slug": "anna-berg-08vgf4h"
+    },
+    {
+      "id": "per:jonas-keller",
+      "name": "Jonas Keller",
+      "type": "Person",
+      "description": "Fiktive Demodaten: Jonas Keller ist als Person erfasst und in der Demo mit Anna Berg assoziiert. Die Person existiert nicht.",
+      "aliases": [],
+      "jurisdiction": "Deutschland",
+      "confidence": 0.74,
+      "updatedAt": "2026-10-10",
+      "evidence": [
+        {
+          "id": "doc:demo-article-2",
+          "title": "Demoartikel: Neue Geschäftsführung bei Nordlicht",
+          "url": "https://example.invalid/demo/berg",
+          "source": "Fiktive Redaktion",
+          "date": "2026-09-20"
+        }
+      ],
+      "slug": "jonas-keller-1nwbyyf"
+    },
+    {
+      "id": "loc:hamburg",
+      "name": "Hamburg",
+      "type": "Location",
+      "description": "Fiktive Demodaten: Hamburg ist als Ort erfasst und dient in der Demo als Sitz mehrerer Organisationen.",
+      "aliases": [
+        "Freie und Hansestadt Hamburg"
+      ],
+      "jurisdiction": "Deutschland",
+      "confidence": 0.95,
+      "updatedAt": "2026-10-01",
+      "evidence": [],
+      "slug": "hamburg-00yfzd7"
+    },
+    {
+      "id": "loc:limassol",
+      "name": "Limassol",
+      "type": "Location",
+      "description": "Fiktive Demodaten: Limassol ist als Ort erfasst und in der Demo der Registrierungsort eines Luftfahrzeugs.",
+      "aliases": [],
+      "jurisdiction": "Zypern",
+      "confidence": 0.9,
+      "updatedAt": "2026-10-01",
+      "evidence": [],
+      "slug": "limassol-1pe5o9p"
+    },
+    {
+      "id": "craft:daaxaa",
+      "name": "D-AXAA",
+      "type": "Craft",
+      "description": "Fiktive Demodaten: D-AXAA ist als Luftfahrzeug erfasst. Kennzeichen und ICAO-Adresse sind erfunden.",
+      "aliases": [],
+      "identifiers": {
+        "tail_number": "D-AXAA",
+        "icao24": "3C6444"
+      },
+      "jurisdiction": "Deutschland",
+      "confidence": 0.7,
+      "updatedAt": "2026-09-30",
+      "evidence": [
+        {
+          "id": "doc:demo-register-3",
+          "title": "Demoregister – Luftfahrzeugrolle",
+          "source": "Fiktives Luftfahrtregister",
+          "date": "2026-09-15"
+        }
+      ],
+      "slug": "d-axaa-0khfn5p"
+    },
+    {
+      "id": "org:midway-consulting",
+      "name": "Midway Consulting Ltd",
+      "type": "Organization",
+      "description": "Fiktive Demodaten: Midway Consulting Ltd ist als Gesellschaft mit Sitz in Limassol erfasst. Die Gesellschaft existiert nicht.",
+      "aliases": [
+        "Midway Consulting"
+      ],
+      "identifiers": {
+        "company_number": "HE 000000"
+      },
+      "jurisdiction": "Zypern",
+      "address": "Limassol",
+      "confidence": 0.65,
+      "updatedAt": "2026-09-28",
+      "evidence": [
+        {
+          "id": "doc:demo-register-4",
+          "title": "Demoregister – Gesellschaftsverzeichnis Zypern",
+          "source": "Fiktives Handelsregister",
+          "date": "2026-09-14"
+        }
+      ],
+      "slug": "midway-consulting-ltd-1to84j7"
+    },
+    {
+      "id": "doc:demo-internal",
+      "name": "Interner Recherchevermerk",
+      "type": "Document",
+      "public": false,
+      "description": "Nicht veröffentlicht.",
+      "confidence": 0.4
+    },
+    {
+      "id": "org:unlisted-vehicle-holding",
+      "name": "Unlisted Vehicle Holding",
+      "type": "Organization",
+      "noindex": true,
+      "description": "Nicht indexiert."
+    }
+  ],
+  "edges": [
+    {
+      "source": "per:anna-berg",
+      "target": "org:nordlicht-holdings",
+      "predicate": "DIRECTOR_OF"
+    },
+    {
+      "source": "per:jonas-keller",
+      "target": "org:hansa-maritime",
+      "predicate": "DIRECTOR_OF"
+    },
+    {
+      "source": "org:nordlicht-holdings",
+      "target": "org:hansa-maritime",
+      "predicate": "OWNS"
+    },
+    {
+      "source": "org:hansa-maritime",
+      "target": "craft:daaxaa",
+      "predicate": "OWNS"
+    },
+    {
+      "source": "org:nordlicht-holdings",
+      "target": "loc:hamburg",
+      "predicate": "REGISTERED_IN"
+    },
+    {
+      "source": "org:hansa-maritime",
+      "target": "loc:hamburg",
+      "predicate": "REGISTERED_IN"
+    },
+    {
+      "source": "org:midway-consulting",
+      "target": "loc:limassol",
+      "predicate": "REGISTERED_IN"
+    },
+    {
+      "source": "org:hansa-maritime",
+      "target": "org:midway-consulting",
+      "predicate": "CONTRACTED_WITH"
+    },
+    {
+      "source": "per:anna-berg",
+      "target": "per:jonas-keller",
+      "predicate": "ASSOCIATED_WITH"
+    },
+    {
+      "source": "craft:daaxaa",
+      "target": "loc:limassol",
+      "predicate": "REGISTERED_IN"
+    },
+    {
+      "source": "doc:demo-internal",
+      "target": "org:nordlicht-holdings",
+      "predicate": "MENTIONS"
+    }
+  ]
+}
