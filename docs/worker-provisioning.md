@@ -147,7 +147,8 @@ curl -s -H "Authorization: Bearer $CF_API_TOKEN" \
 ```
 
 The token needs **Workers Scripts:Read** for this call; the analytics token used
-by the dashboard does not have to include it.
+by the dashboard does not have to include it. If the Worker script name ever
+changes, export `CF_WORKER_SCRIPT_NAME` so the check follows it.
 
 ---
 
@@ -232,6 +233,8 @@ and does not print the password.
 | `alert.skipped: telegram_error` | wrong chat id, bot not in the chat, or a 3xx | send `/start` to the bot, verify the chat id, check the redacted detail |
 | cron did not fire | Cloudflare schedules are UTC; a fresh deploy may take a minute | check Trigger Events; a local `--test-crons` proves the handler |
 | `1027` / `511` | Workers Free daily request quota exhausted | wait until 00:00 UTC; the cron is blocked too, and the Python heartbeat is the fallback |
+| a second namespace with the same title | an earlier run created it but died before `wrangler.toml` was written, or `--force-kv` was used | list them with `npx wrangler kv namespace list` and delete the unused ones in the dashboard |
+| schedule query returns 403 | the analytics token has no **Workers Scripts:Read** | confirm the crons in the dashboard; the API check is optional |
 
 ---
 

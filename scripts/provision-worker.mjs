@@ -65,13 +65,15 @@ const KNOWN_FLAGS = new Set([
   '--skip-secrets', '--skip-deploy', '--skip-verify', '--test-crons',
   '--require-heartbeat', '--help', '-h',
 ]);
-const unknownFlag = argv.find((arg) => arg.startsWith('-') && !KNOWN_FLAGS.has(arg));
-if (unknownFlag && unknownFlag !== '--help' && unknownFlag !== '-h') {
-  console.error(`Unknown option: ${unknownFlag}\nRun with --help for the available flags.`);
-  process.exit(2);
-}
+const isMain = Boolean(process.argv[1]) && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 
-if (argv.includes('--help') || argv.includes('-h')) {
+function parseArgs() {
+  const unknownFlag = argv.find((arg) => arg.startsWith('-') && !KNOWN_FLAGS.has(arg));
+  if (unknownFlag && unknownFlag !== '--help' && unknownFlag !== '-h') {
+    console.error(`Unknown option: ${unknownFlag}\nRun with --help for the available flags.`);
+    process.exit(2);
+  }
+  if (!argv.includes('--help') && !argv.includes('-h')) return;
   console.log(`Usage: node scripts/provision-worker.mjs [options]
 
   --dry-run                 print the plan; no account calls or writes
@@ -91,6 +93,8 @@ CF_API_TOKEN, CF_ACCOUNT_ID. Optional: NEO4J_USERNAME, TELEGRAM_BOT_TOKEN,
 TELEGRAM_CHAT_ID. Generated and existing values are never printed.`);
   process.exit(0);
 }
+
+if (isMain) parseArgs();
 
 const CRON_KEEPALIVE = '0 */12 * * *';
 const CRON_HEALTH = '23 */3 * * *';
@@ -193,13 +197,27 @@ function setKvIds(config, binding, id, previewId) {
   return lines.join('\n');
 }
 
+/**
+ * Wrangler prints the new namespace as a one-line binding snippet
+ * (`{ binding = "...", id = "..." }`) or as TOML/JSON. Accept all three and
+ * prefer `preview_id` when a preview namespace was requested.
+ */
+function parseNamespaceId(text, preview = false) {
+  const keys = preview ? ['preview_id', 'id'] : ['id', 'preview_id'];
+  for (const key of keys) {
+    const match = new RegExp(`\\b${key}\\s*[=:]\\s*\"([0-9a-f]{32})\"`, 'i').exec(text);
+    if (match) return match[1];
+  }
+  const json = /\"id\"\s*:\s*\"([0-9a-f]{32})\"/i.exec(text);
+  return json ? json[1] : '';
+}
+
 function createNamespace(name, preview = false) {
   const args = ['kv', 'namespace', 'create', name];
   if (preview) args.push('--preview');
   const result = run(args);
   const text = result.output;
-  const id = /(?:^|\n)\s*id\s*=\s*"([0-9a-f]{32})"/i.exec(text)?.[1]
-    || /"id"\s*:\s*"([0-9a-f]{32})"/i.exec(text)?.[1];
+  const id = parseNamespaceId(text, preview);
   if (result.status !== 0 || !id) {
     throw new Error(`\`wrangler ${args.join(' ')}\` failed.\n${text.trim().slice(0, 1200)}`);
   }
@@ -770,4 +788,6 @@ async function main() {
   }
 }
 
-main().catch((error) => fatal(error.stack || error.message));
+export { PLACEHOLDER, kvIds, setKvIds, parseNamespaceId, neo4jBase, parseArgs };
+
+if (isMain) main().catch((error) => fatal(error.stack || error.message));

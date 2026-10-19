@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { kvIds, neo4jBase, parseNamespaceId, setKvIds } from '../scripts/provision-worker.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const SCRIPT = 'scripts/provision-worker.mjs';
@@ -81,4 +82,56 @@ test('unknown options fail fast with exit code 2', () => {
   const result = run('--not-a-flag');
   assert.equal(result.status, 2);
   assert.match(result.stderr, /Unknown option: --not-a-flag/);
+});
+
+test('namespace ids are parsed from every wrangler output shape', () => {
+  const id = '0123456789abcdef0123456789abcdef';
+  const preview = 'fedcba9876543210fedcba9876543210';
+  assert.equal(parseNamespaceId(`{ binding = "PUPPETNET_RATE_LIMIT", id = "${id}" }`), id);
+  assert.equal(parseNamespaceId(`Add:\n[[kv_namespaces]]\nbinding = "X"\nid = "${id}"\n`), id);
+  assert.equal(parseNamespaceId(JSON.stringify({ id })), id);
+  assert.equal(
+    parseNamespaceId(`{ binding = "X", id = "${id}", preview_id = "${preview}" }`, true),
+    preview,
+    'a preview create must yield preview_id, not id'
+  );
+  assert.equal(parseNamespaceId('no id here'), '');
+});
+
+test('setKvIds replaces the placeholders and preserves the rest of wrangler.toml', () => {
+  const zeros = '0'.repeat(32);
+  const id = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+  const previewId = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+  const config = [
+    'name = "puppetnet-edge-relay"',
+    '',
+    '[[kv_namespaces]]',
+    'binding = "RATE_LIMIT_KV"',
+    `id = "${zeros}"`,
+    'preview_id = "' + zeros + '"',
+    '',
+    '[[kv_namespaces]]',
+    'binding = "RESULT_KV"',
+    `id = "${zeros}"`,
+    '',
+    '[triggers]',
+    'crons = ["0 */12 * * *", "23 */3 * * *"]',
+    '',
+  ].join('\n');
+
+  const patched = setKvIds(setKvIds(config, 'RATE_LIMIT_KV', id, previewId), 'RESULT_KV', id, previewId);
+  assert.equal(kvIds(patched, 'RATE_LIMIT_KV').id, id);
+  assert.equal(kvIds(patched, 'RATE_LIMIT_KV').previewId, previewId);
+  assert.equal(kvIds(patched, 'RESULT_KV').id, id);
+  assert.equal(kvIds(patched, 'RESULT_KV').previewId, previewId, 'preview_id is inserted when missing');
+  assert.match(patched, /crons = \["0 \*\/12 \* \* \*", "23 \*\/3 \* \* \*"\]/, 'crons untouched');
+  assert.equal((patched.match(/"0{32}"/g) || []).length, 0);
+  assert.equal(patched.split('\n').length, config.split('\n').length + 1, 'exactly one inserted line');
+});
+
+test('neo4jBase turns a bolt URI into the HTTPS transactional endpoint', () => {
+  assert.equal(neo4jBase('neo4j+s://abc.databases.neo4j.io:7687'), 'https://abc.databases.neo4j.io');
+  assert.equal(neo4jBase('neo4j://localhost:7687'), 'https://localhost');
+  assert.equal(neo4jBase('https://abc.databases.neo4j.io:443/'), 'https://abc.databases.neo4j.io:443');
+  assert.equal(neo4jBase('not a uri'), '');
 });
