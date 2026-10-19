@@ -496,13 +496,13 @@ await check("index.html references only vendored, on-disk assets", async () => {
   assert.ok(/<title>[^<]+<\/title>/.test(html), "the tab needs a title");
 });
 
-await check("the deployed headers file forbids inline script and framing", async () => {
+await check("the deployed headers file forbids inline script and cross-origin framing", async () => {
   const headers = readWeb("_headers");
   assert.ok(headers.includes("Content-Security-Policy:"), "a CSP is the point of this file");
   assert.ok(headers.includes("script-src 'self'"), "script must come from the deployment only");
   assert.ok(!/script-src[^;]*'unsafe-inline'/.test(headers), "inline script would defeat the escaping work");
-  assert.ok(headers.includes("frame-ancestors 'none'") || headers.includes("X-Frame-Options: DENY"),
-    "an OSINT console must not be framable");
+  assert.ok(headers.includes("frame-ancestors 'self'") && headers.includes("X-Frame-Options: SAMEORIGIN"),
+    "only the same-origin Next scaffold may frame the console");
   assert.ok(headers.includes("X-Content-Type-Options: nosniff"));
   assert.ok(/\/vendor\/\*/.test(headers) && headers.includes("max-age=604800"),
     "vendored assets should be cached, but not for so long that an update is stuck");

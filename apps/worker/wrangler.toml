@@ -1,0 +1,19 @@
+name = "puppetnet-edge-relay"
+main = "worker.js"
+compatibility_date = "2026-10-01"
+workers_dev = true
+
+# Deploy ONLY to a Workers Free account. Its platform quota is 100,000
+# requests/day; exhausted quota must fail closed, not upgrade to paid usage.
+# No Queues/paid bindings enabled. Optional Free KV binding: see docs/2.0-scaffold.md.
+[limits]
+cpu_ms = 10
+
+[vars]
+GLOBAL_RPM = "30"
+HOST_RATE_PER_SEC = "0.25"
+HOST_BURST = "2"
+GRAPH_RATE_PER_SEC = "1"
+GRAPH_PUBLIC_READ = "false"
+GRAPH_MAX_NODES = "250"
+KV_SYNC_INTERVAL_MS = "60000"

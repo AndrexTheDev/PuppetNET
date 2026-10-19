@@ -286,12 +286,17 @@ def test_redact_token_hides_the_configured_token_and_lookalikes():
 def test_token_redactor_scrubs_library_log_records(caplog):
     """FetchClient logs the URL it gave up on — the token must not survive that."""
     redactor = tb.install_token_redactor(TOKEN)
+    # CLI regression tests configure a non-propagating application logger. Attach
+    # capture here explicitly so this test is independent of execution order.
+    app_logger = logging.getLogger("puppetnet")
+    app_logger.addHandler(caplog.handler)
     try:
         with caplog.at_level(logging.ERROR, logger="puppetnet"):
             logging.getLogger("puppetnet.net.client").error("giving up on %s after 3 attempts", f"bot{TOKEN}/sendMessage")
         assert TOKEN not in caplog.text
         assert "<REDACTED>" in caplog.text
     finally:
+        app_logger.removeHandler(caplog.handler)
         tb.uninstall_token_redactor(redactor)
 
 

@@ -83,3 +83,8 @@ web/sitemap.xml
 
 # Rendered by `npm run screenshots`; CI uploads them as a build artefact.
 .screenshots/
+
+# Next static scaffold
+.next/
+apps/web/out/
+.vercel/

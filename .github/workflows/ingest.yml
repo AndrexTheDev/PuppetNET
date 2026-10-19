@@ -1,0 +1,56 @@
+name: Free daily ingest
+on:
+  schedule:
+    - cron: '17 5 * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: puppetnet-free-tier
+  cancel-in-progress: false
+jobs:
+  ingest:
+    # Forks and new installs do not contact sources until explicitly enabled.
+    if: vars.ENABLE_FREE_INGEST == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      NEO4J_URI: ${{ secrets.NEO4J_URI }}
+      NEO4J_USERNAME: ${{ secrets.NEO4J_USERNAME }}
+      NEO4J_PASSWORD: ${{ secrets.NEO4J_PASSWORD }}
+      PROXY_WORKER_URL: ${{ secrets.PROXY_WORKER_URL }}
+      PROXY_AUTH_TOKEN: ${{ secrets.PROXY_AUTH_TOKEN }}
+      DRY_RUN: ${{ secrets.NEO4J_PASSWORD == '' && 'true' || 'false' }}
+      ENABLED_SOURCES: wikidata,news_world
+      MAX_DOCUMENTS_TOTAL: '100'
+      MAX_DOCUMENTS_PER_SOURCE: '25'
+      MAX_RUNTIME_SECONDS: '300'
+      ANALYTICS_ENABLED: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Conservative monthly free-minute admission
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/ci-budget.mjs
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: packages/pipeline/requirements.txt
+      - run: pip install -r packages/pipeline/requirements.txt
+      - name: Bounded daily harvest (exit 3 is partial success)
+        shell: bash
+        run: |
+          code=0
+          python packages/pipeline/ingest.py --tier all --limit 100 || code=$?
+          if [ "$code" -ne 0 ] && [ "$code" -ne 3 ]; then exit "$code"; fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ingest-report-${{ github.run_id }}
+          path: |
+            reports/
+            packages/pipeline/reports/
+          if-no-files-found: ignore
+          retention-days: 1

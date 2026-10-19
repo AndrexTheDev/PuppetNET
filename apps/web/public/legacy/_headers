@@ -20,7 +20,7 @@
 
 /*
   # Nothing here needs a plugin, an eval, or a remote origin.
-  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; frame-src 'none'; manifest-src 'self'; worker-src 'self' blob:
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'; frame-src 'none'; manifest-src 'self'; worker-src 'self' blob:
   # `style-src 'unsafe-inline'` is required because per-entity colours come from
   # data (background/border/box-shadow set as inline styles). Every inline style
   # the console writes is a colour value it computed itself — never user text —
@@ -34,7 +34,7 @@
 
   # An OSINT console must never be framed: clickjacking a "hide node" or
   # "forget credentials" button is a real attack.
-  X-Frame-Options: DENY
+  X-Frame-Options: SAMEORIGIN
   X-Content-Type-Options: nosniff
   Referrer-Policy: no-referrer
   Permissions-Policy: camera=(), microphone=(), geolocation=(), browsing-topics=(), interest-cohort=()
