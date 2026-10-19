@@ -51,6 +51,26 @@ Das 180k-Limit darf nur mit vorheriger Ankündigung an die Projektleitung erreic
 
 ## 3. Die drei Pflichtprüfungen
 
+### 3.0 Schnellprüfung (ein Aufruf)
+
+```bash
+curl -fsS -H "Authorization: Bearer $STATUS_TOKEN" "$BASE/status.json" -o /tmp/status.json
+python3 - <<'PY'
+import datetime, json
+snap = json.load(open("/tmp/status.json"))
+then = datetime.datetime.fromisoformat(snap["last_run"]["at"].replace("Z", "+00:00"))
+now = datetime.datetime.now(datetime.timezone.utc)
+print(f"Snapshot-Alter : {int((now - then).total_seconds() // 60)} min   (Limit 180)")
+print(f"AuraDB-Knoten  : {snap['aura'].get('nodes')}  ({snap['aura'].get('node_percent')} %)   (Limit 180000)")
+print(f"Workers/24 h   : {snap['workers'].get('requests_today')}   (Limit 100000)")
+print(f"degraded       : {snap['degraded']}")
+print(f"warnings       : {snap['warnings']}")
+PY
+```
+
+KV-Writes stehen nicht in `/status.json` (siehe 3.1) und werden separat im Dashboard
+abgelesen. Der Rest des Abschnitts erklärt jede Zahl und ihre Eskalation.
+
 ### 3.1 KV-Write-Kontingent (< 1 000/Tag)
 
 `/status.json` enthält bewusst **keinen** Write-Zähler — KV zählt serverseitig, und der
@@ -93,8 +113,12 @@ Beide Zahlen gehören in die Protokolltabelle. Steigen die Knoten um mehr als 5 
 
 ```bash
 curl -fsS -H "Authorization: Bearer $STATUS_TOKEN" "$BASE/status.json" -o /tmp/status.json
-AGE=$(( $(date -u +%s) - $(date -u -d "$(jq -r '.last_run.at' /tmp/status.json)" +%s) ))
-echo "Snapshot-Alter: $((AGE/60)) min"
+python3 - <<'PY'
+import datetime, json
+then = datetime.datetime.fromisoformat(json.load(open("/tmp/status.json"))["last_run"]["at"].replace("Z", "+00:00"))
+age = int((datetime.datetime.now(datetime.timezone.utc) - then).total_seconds() // 60)
+print(f"Snapshot-Alter: {age} min")
+PY
 ```
 
 Der Health-Cron schreibt alle drei Stunden (`23 */3 * * *`), der Keep-Alive alle zwölf
