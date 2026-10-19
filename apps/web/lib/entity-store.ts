@@ -3,9 +3,10 @@
  *
  * Cloudflare Pages serves a static export, so a profile page exists only if it
  * was rendered during `next build`. There is no request-time database: the
- * pipeline publishes `entities.json`, the build turns it into pages, and the
+ * pipeline publishes `graph_latest.json`, the build turns it into pages, and the
  * sitemap lists exactly those pages. A missing export falls back to the
  * committed demo dataset so a fresh clone still builds a coherent site.
+ * Historical entities.json imports remain a secondary compatibility fallback.
  */
 
 import { existsSync, readFileSync, statSync } from 'node:fs';
@@ -33,7 +34,7 @@ function dataDirectory(directory?: string): string {
 
 export function datasetCandidates(directory?: string): string[] {
   const base = dataDirectory(directory);
-  return [path.join(base, 'entities.json'), path.join(base, 'entities.sample.json')];
+  return [path.join(base, 'graph_latest.json'), path.join(base, 'entities.json'), path.join(base, 'entities.sample.json')];
 }
 
 let cache: { key: string; value: EntityDatasetSource } | null = null;

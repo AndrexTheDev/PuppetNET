@@ -732,6 +732,15 @@ function assertAuthenticated() {
 }
 
 async function main() {
+  if (/main\s*=\s*"src\/index\.ts"/.test(readFileSync(CONFIG_PATH, 'utf8'))) {
+    log('KV-free configuration detected. Legacy KV provisioning is disabled.');
+    if (DRY) {
+      log('No account calls, no writes or deployments. Use scripts/provision-search-worker.mjs.');
+      log('Required secrets: GITHUB_DISPATCH_TOKEN and SEARCH_AUTH_TOKEN. No KV namespaces or database secrets.');
+      return;
+    }
+    fatal('Use scripts/provision-search-worker.mjs for the active zero-KV Worker.');
+  }
   log('PuppetNET Worker provisioning');
   log(`config: ${CONFIG_PATH}${DRY ? '  [dry run]' : ''}`);
   if (DRY) log('No account calls, no writes, no deployment are performed in this mode.');

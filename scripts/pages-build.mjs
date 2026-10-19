@@ -1,18 +1,12 @@
 import { spawnSync } from 'node:child_process';
-// Executed from repository root by Pages Git Integration, NOT GitHub Actions.
-//
-// The SEO emitter runs first: it is origin-driven, so it no-ops (exit 0) unless
-// the operator sets SITE_ORIGIN in the Pages build environment, and with
-// --build-gate an unusable value warns instead of failing the deployment. When
-// it does emit, `next build` copies apps/web/public/{robots.txt,sitemap.xml}
-// into the exported root.
+// Prepare assets before tests; direct next build repeats this idempotently.
 for (const args of [
-  ['scripts/emit-og-images.mjs'],
-  ['scripts/emit-seo-files.mjs', '--build-gate'],
+  ['scripts/generate-seo.js'],
+  ['--test', 'tests/release.test.mjs'],
   ['--check', 'web/app.js'],
   ['--check', 'web/modals.js'],
   ['tests/web_smoke.mjs'],
-  ['--import', 'tsx', '--test', 'tests/dashboard.test.ts'],
+  ['--import', 'tsx', '--test', 'tests/dashboard.test.ts', 'tests/data_fetcher.test.ts'],
   ['--import', 'tsx', '--test', 'tests/seo.test.ts'],
   ['--import', 'tsx', '--test', 'tests/a11y.test.tsx'],
 ]) {

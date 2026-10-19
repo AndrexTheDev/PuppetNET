@@ -34,21 +34,16 @@ const run = (...args) =>
 
 const digest = (path) => createHash('sha256').update(readFileSync(path)).digest('hex');
 
-test('dry run plans both KV namespaces and exits 0 without credentials', () => {
+test('legacy provisioner detects zero-KV config and plans no account changes', () => {
   const hadGenerated = existsSync(GENERATED);
   const hadDevVars = existsSync(DEV_VARS);
   const before = digest(TOML);
   const result = run('--dry-run');
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /PUPPETNET_RATE_LIMIT/);
-  assert.match(result.stdout, /PUPPETNET_RESULTS/);
-  assert.match(result.stdout, /RATE_LIMIT_KV/);
-  assert.match(result.stdout, /RESULT_KV/);
-  assert.match(result.stdout, /no account calls/i);
-  for (const name of ['PROXY_AUTH_TOKEN', 'GRAPH_API_TOKEN', 'STATUS_TOKEN']) {
-    assert.match(result.stdout, new RegExp(name));
-  }
-  assert.match(result.stdout, /NEO4J_URI: missing/);
+  assert.match(result.stdout, /KV-free/);
+  assert.match(result.stdout, /No account calls/i);
+  assert.match(result.stdout, /GITHUB_DISPATCH_TOKEN/);
+  assert.match(result.stdout, /SEARCH_AUTH_TOKEN/);
   assert.equal(digest(TOML), before, 'dry run must not edit wrangler.toml');
   assert.equal(existsSync(GENERATED), hadGenerated, 'dry run must not write generated secrets');
   assert.equal(existsSync(DEV_VARS), hadDevVars, 'dry run must not write .dev.vars');
@@ -62,12 +57,10 @@ test('dry run never prints a generated token', () => {
   assert.equal(/Bearer\s+[0-9a-f]{8,}/i.test(combined), false, 'bearer token leaked');
 });
 
-test('wrangler.toml still carries the all-zero placeholders (deploy requires real ids)', () => {
+test('active Worker configuration has a TypeScript entrypoint and zero KV placeholders', () => {
   const toml = readFileSync(TOML, 'utf8');
-  assert.match(toml, /binding\s*=\s*"RATE_LIMIT_KV"/);
-  assert.match(toml, /binding\s*=\s*"RESULT_KV"/);
-  assert.equal((toml.match(/"0{32}"/g) || []).length, 4, 'expected four placeholder ids (id + preview_id)');
-  assert.match(toml, /crons\s*=\s*\["0 \*\/12 \* \* \*", "23 \*\/3 \* \* \*"\]/);
+  assert.match(toml, /main = "src\/index\.ts"/);
+  assert.doesNotMatch(toml, /\[\[kv_namespaces\]\]|"0{32}"|binding\s*=/);
 });
 
 test('--help lists the flags and exits 0', () => {

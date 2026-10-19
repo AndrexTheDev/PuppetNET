@@ -366,7 +366,11 @@ class IngestPipeline:
             self.logger.info("NLP_ENABLED=false — skipping the spaCy load")
             return
         with timed(self.logger, "NLP pipeline load"):
-            if self.settings.nlp_backend == "gliner":
+            if self.settings.nlp_backend == "token_saver":
+                from src.token_saver_nlp import TokenSaverEngine
+
+                self.nlp = TokenSaverEngine(self.settings)
+            elif self.settings.nlp_backend == "gliner":
                 from .parsing.gliner_engine import GLiNEREngine
 
                 self.nlp = GLiNEREngine(self.settings)
@@ -448,6 +452,9 @@ class IngestPipeline:
             try:
                 adapter = create_adapter(spec, context)
                 for document in adapter.run(limit=limit):
+                    query = os.getenv("INGEST_QUERY", "").strip() if self.settings.nlp_backend == "token_saver" else ""
+                    if query and query.casefold() not in (document.title + " " + document.text).casefold():
+                        continue  # do not persist/dedupe documents that this targeted refresh did not process
                     documents.append(document)
                     if document.entities:
                         entities.extend(document.entities)

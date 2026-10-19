@@ -97,3 +97,10 @@ apps/web/public/data/entities.json
 .next/
 apps/web/out/
 .vercel/
+
+# TypeScript incremental compiler cache
+*.tsbuildinfo
+
+# Build-only SEO manifest and shared token mirror for the legacy static app.
+apps/web/public/data/seo-metadata.json
+apps/web/public/styles/globals.css

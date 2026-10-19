@@ -1077,6 +1077,7 @@ function auditPython() {
  * cost, and what happens at the limit?" before the code ships.
  */
 const HOST_BUDGET = {
+  "generativelanguage.googleapis.com": { cost: "optional free quota or PAID account", note: "Gemini fallback disabled by default; counted <=150 tokens/call, 3 reservations/run, at most 2 workflow runs/day; operator must verify current model availability, quota and billing" },
   "schema.org": { cost: "free", note: "JSON-LD vocabulary identifier, never fetched" },
   "www.w3.org": { cost: "free", note: "XML namespace identifier, never fetched" },
   "opensource.org": { cost: "free", note: "licence URL in metadata" },
@@ -1111,6 +1112,7 @@ const HOST_BUDGET = {
   "example.invalid": { cost: "n/a", note: "documentation placeholder" },
   "example.dev": { cost: "n/a", note: "documentation placeholder" },
   "www.sitemaps.org": { cost: "free", note: "sitemap XML namespace identifier, never fetched" },
+  "puppetnet-web.pages.dev": { cost: "free", note: "own Cloudflare Pages deployment; static hosting within the documented Pages Free limits" },
   "puppetnet-console.pages.dev": { cost: "free", note: "the deployment's own Cloudflare Pages domain — the emitter's example origin, and the default the workflow derives" },
   "localhost": { cost: "free", note: "local development" },
   "127.0.0.1": { cost: "free", note: "local development" },

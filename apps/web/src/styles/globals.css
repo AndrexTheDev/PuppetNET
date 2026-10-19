@@ -1,0 +1,30 @@
+/* PuppetNET: shared Jamaica-dark primitives. No external font or runtime dependency. */
+:root {
+  --color-black: #080d09;
+  --color-forest-950: #0b100d;
+  --color-forest-900: #101911;
+  --color-forest-850: #141e17;
+  --color-forest-800: #1b291e;
+  --color-forest-700: #2c3c2e;
+  --color-forest-600: #436b46;
+  --color-green: #8cdb9e;
+  --color-green-muted: #76bb83;
+  --color-gold: #e5c367;
+  --color-gold-muted: #857137;
+  --color-white: #edf1e8;
+  --color-muted: #b0bbae;
+  --color-muted-dark: #809578;
+  --color-danger: #e89b92;
+
+  --site-bg: var(--color-forest-950);
+  --site-panel: var(--color-forest-850);
+  --site-line: var(--color-forest-700);
+  --site-green: var(--color-green);
+  --site-gold: var(--color-gold);
+  --site-muted: var(--color-muted);
+  --ad-mobile-height: 50px;
+  --ad-mobile-reserve: 83px;
+  --ad-desktop-height: 90px;
+  --ad-skyscraper-width: 160px;
+  --ad-skyscraper-height: 600px;
+}

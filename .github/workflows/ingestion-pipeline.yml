@@ -71,6 +71,7 @@ jobs:
     if: >-
       github.ref == 'refs/heads/main' &&
       vars.ENABLE_INGESTION == 'true' &&
+      vars.ENABLE_DAILY_STATIC != 'true' &&
       (github.event_name == 'schedule' ||
        (github.event_name == 'workflow_dispatch' && inputs.run_ingestion))
     runs-on: ubuntu-latest

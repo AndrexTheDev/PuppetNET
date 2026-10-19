@@ -9,10 +9,10 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_only_python_workflow_remains():
+def test_only_python_workflows_remain():
     workflows = list((ROOT / '.github/workflows').glob('*.yml'))
-    assert [path.name for path in workflows] == ['ingestion-pipeline.yml']
-    text = workflows[0].read_text()
+    assert sorted(path.name for path in workflows) == ['daily_ingestion.yml', 'ingestion-pipeline.yml']
+    text = (ROOT / '.github/workflows/ingestion-pipeline.yml').read_text()
     data = yaml.safe_load(text)
     assert data['permissions'] == {'contents': 'read'}
     assert data['concurrency']['cancel-in-progress'] is False
@@ -48,4 +48,4 @@ def test_pages_and_worker_have_independent_build_paths():
     assert 'deploy:pages' in data['pages']['manualDeployCommand']
     assert 'versions upload' in data['worker']['previewCommand']
     assert 'pages_build_output_dir' in (ROOT / 'apps/web/wrangler.toml').read_text()
-    assert 'main = "worker.js"' in (ROOT / 'apps/worker/wrangler.toml').read_text()
+    assert 'main = "src/index.ts"' in (ROOT / 'apps/worker/wrangler.toml').read_text()

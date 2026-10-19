@@ -16,7 +16,7 @@
  * regenerates them when the design changes.
  */
 
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createElement as h } from 'react';
@@ -24,10 +24,12 @@ import { createElement as h } from 'react';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const OUT = path.join(ROOT, 'apps', 'web', 'public', 'og');
 
+const LOGO = 'data:image/png;base64,' + readFileSync(path.join(ROOT, 'apps/web/public/media/logo.png')).toString('base64');
+
 const CARDS = [
-  { name: 'site', eyebrow: 'PUPPETNET · OSINT-KONSOLE', title: 'Netzwerke verstehen.\nQuellen prüfen.', accent: '#60dfd0' },
-  { name: 'person', eyebrow: 'ENTITÄTSPROFIL · PERSON', title: 'Personen.\nRollen mit Belegen.', accent: '#60dfd0' },
-  { name: 'organization', eyebrow: 'ENTITÄTSPROFIL · ORGANISATION', title: 'Organisationen.\nStrukturen im Kontext.', accent: '#a397ff' },
+  { name: 'site', eyebrow: 'PUPPETNET · OSINT-KONSOLE', title: 'Netzwerke verstehen.\nQuellen prüfen.', accent: '#a2d686' },
+  { name: 'person', eyebrow: 'ENTITÄTSPROFIL · PERSON', title: 'Personen.\nRollen mit Belegen.', accent: '#a2d686' },
+  { name: 'organization', eyebrow: 'ENTITÄTSPROFIL · ORGANISATION', title: 'Organisationen.\nStrukturen im Kontext.', accent: '#e5c367' },
   { name: 'location', eyebrow: 'ENTITÄTSPROFIL · ORT', title: 'Orte.\nGeographie nachvollziehbar.', accent: '#f3c773' },
   { name: 'craft', eyebrow: 'ENTITÄTSPROFIL · FAHRZEUG', title: 'Fahrzeuge.\nRegister und Referenzen.', accent: '#ff9e91' },
   { name: 'document', eyebrow: 'ENTITÄTSPROFIL · DOKUMENT', title: 'Dokumente.\nQuellen im Original.', accent: '#7daeff' },
@@ -42,13 +44,13 @@ function card({ eyebrow, title, accent }) {
       width: '100%',
       height: '100%',
       padding: '64px 72px',
-      background: 'linear-gradient(145deg, #0b111c 0%, #101d2e 55%, #0b111c 100%)',
+      background: 'linear-gradient(145deg, #0b100d 0%, #1a291c 55%, #0b100d 100%)',
       color: '#e9f0f9',
       fontFamily: 'sans-serif',
     },
   },
     h('div', { style: { display: 'flex', alignItems: 'center', gap: 18 } },
-      h('div', { style: { display: 'flex', width: 46, height: 46, borderRadius: 10, background: accent, color: '#08211d', fontSize: 26, fontWeight: 700, alignItems: 'center', justifyContent: 'center' } }, 'P'),
+      h('img', { src: LOGO, width: 76, height: 76, style: { objectFit: 'contain' } }),
       h('div', { style: { display: 'flex', fontSize: 22, letterSpacing: 5, color: accent } }, 'PUPPETNET'),
     ),
     h('div', { style: { display: 'flex', flexDirection: 'column', gap: 22 } },
@@ -57,7 +59,7 @@ function card({ eyebrow, title, accent }) {
     ),
     h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: `2px solid ${accent}`, paddingTop: 22, fontSize: 20, color: '#b9c9dc' } },
       h('div', { style: { display: 'flex' } }, 'Entitäten · Beziehungen · Quellen'),
-      h('div', { style: { display: 'flex', color: accent } }, 'Open Source · 0 € Hosting'),
+      h('div', { style: { display: 'flex', color: accent } }, 'Folge der Verbindung.'),
     ),
   );
 }

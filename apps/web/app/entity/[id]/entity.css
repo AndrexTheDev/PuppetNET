@@ -4,18 +4,18 @@
    large text against their own backgrounds. */
 
 .entity-profile {
-  --entity-bg: #0b111c;
+  --entity-bg: #0b100d;
   --entity-surface: #111c2b;
   --entity-line: #2a3b52;
   --entity-text: #e7eef8;
   --entity-muted: #b3c2d6;
-  --entity-accent: #7ceae0;
+  --entity-accent: #e5c367;
   --entity-accent-strong: #0b2a26;
   max-width: 1040px;
   margin: 0 auto;
   padding: 28px 24px 64px;
   color: var(--entity-text);
-  background: radial-gradient(ellipse at 35% 0%, #152337 0, transparent 55%), var(--entity-bg);
+  background: radial-gradient(ellipse at 35% 0%, #263722 0, transparent 55%), var(--entity-bg);
   min-height: 100vh;
   line-height: 1.65;
 }
@@ -89,7 +89,7 @@
 }
 
 .entity-card {
-  background: linear-gradient(160deg, #121e2d, #101a28);
+  background: linear-gradient(160deg, #121e2d, #141e17);
   border: 1px solid var(--entity-line);
   border-radius: 12px;
   padding: 24px;

@@ -13,7 +13,7 @@
 #  rewrites this file with the Sitemap line and writes the git-ignored
 #  `apps/web/public/legacy/sitemap.xml`; the Pages build gate
 #  `scripts/pages-build.mjs` runs the same emitter whenever the build environment
-#  sets `SITE_ORIGIN`, so the live site always carries both and the repository
+#  sets `SITE_ORIGIN`, so a configured live site carries both and the repository
 #  never has to guess a hostname.
 #
 #  Running a private investigative deployment? Replace the Allow below with
@@ -24,4 +24,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://puppetnet-console.pages.dev/legacy/sitemap.xml
+Sitemap: https://puppetnet-web.pages.dev/legacy/sitemap.xml

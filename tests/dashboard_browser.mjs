@@ -27,7 +27,7 @@ try {
   assert.equal(requests.filter(url => url.includes('tile.openstreetmap')).length, 0);
   console.log('PASS: WebGL2 canvas, real worker position updates, no unsolicited tile requests');
 
-  await page.getByRole('button', { name: '☷ Daten', exact: true }).click();
+  await page.getByRole('button', { name: '☷ Tabelle', exact: true }).click();
   await page.locator('tbody button').first().click();
   await page.getByRole('heading', { name: 'Quellnachweise' }).waitFor();
   assert.match(await page.locator('.evidence-list').innerText(), /Fiktiver Beispieldatensatz/);
@@ -49,7 +49,7 @@ try {
   assert.equal(await host.getAttribute('data-rendered-nodes'), '96');
   console.log(`PASS: 120000 elements, adaptive LoD 24 -> 96 groups; elapsed ${(performance.now() - start).toFixed(0)} ms`);
 
-  await page.getByRole('button', { name: '☷ Daten', exact: true }).click();
+  await page.getByRole('button', { name: '☷ Tabelle', exact: true }).click();
   await page.locator('tbody button').first().click();
   await page.getByRole('button', { name: 'Gruppe untersuchen' }).click();
   await idle();
@@ -83,7 +83,7 @@ try {
 
   const fixture = { nodes: [{ id: 'person:hostile', name: '<img src=x onerror=alert(1)>', type: 'Person', confidence: .9 }, { id: 'doc', type: 'Document', title: '<script>alert(1)</script>', url: 'javascript:alert(1)', confidence: 1 }], edges: [{ source: 'person:hostile', target: 'doc', type: 'EVIDENCED_BY', confidence: .9, weight: .9 }] };
   await page.locator('input[type=file]').setInputFiles({ name: 'evidence.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(fixture)) }); await idle();
-  await page.getByRole('button', { name: '☷ Daten', exact: true }).click();
+  await page.getByRole('button', { name: '☷ Tabelle', exact: true }).click();
   await page.locator('tbody button').first().click();
   await page.getByText('<script>alert(1)</script>', { exact: true }).waitFor();
   assert.equal(await page.locator('.evidence-list a').count(), 0);
@@ -111,7 +111,7 @@ try {
   });
   await fallback.goto(url);
   await fallback.locator('.stage-error').filter({ hasText: 'WebGL 2 ist nicht verfügbar' }).waitFor();
-  await fallback.getByRole('button', { name: '☷ Daten', exact: true }).click();
+  await fallback.getByRole('button', { name: '☷ Tabelle', exact: true }).click();
   await fallback.locator('tbody button').first().waitFor();
   assert.deepEqual(errors, []);
   await fallback.close();

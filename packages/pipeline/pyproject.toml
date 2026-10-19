@@ -75,7 +75,7 @@ Issues = "https://github.com/AndrexTheDev/PuppetNET/issues"
 py-modules = ["ingest", "entity_resolution", "keep_alive", "graph_analytics"]
 
 [tool.setuptools.packages.find]
-include = ["puppetnet*", "nlp*"]
+include = ["puppetnet*", "nlp*", "src*"]
 exclude = ["tests*", "docs*"]
 
 # ---------------------------------------------------------------------------

@@ -4,11 +4,12 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "check": "node --check worker.js",
+    "check": "tsc --noEmit -p tsconfig.json",
     "deploy": "wrangler deploy",
     "dev": "wrangler dev --ip 0.0.0.0"
   },
   "devDependencies": {
+    "typescript": "^5.9.3",
     "wrangler": "4.151.1"
   }
 }

@@ -549,8 +549,8 @@ class Settings:
 
     def validate(self) -> None:
         problems: list[str] = []
-        if self.nlp_backend not in {"spacy", "gliner"}:
-            problems.append("NLP_BACKEND must be spacy or gliner")
+        if self.nlp_backend not in {"spacy", "gliner", "token_saver"}:
+            problems.append("NLP_BACKEND must be spacy, gliner or token_saver")
         if not 0 < self.gliner_threshold <= 1:
             problems.append("GLINER_THRESHOLD must be in (0, 1]")
         if not self.gliner_model.strip():

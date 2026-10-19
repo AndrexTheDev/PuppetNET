@@ -16,7 +16,21 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const SCRIPT = resolve(ROOT, 'scripts/provision-worker.mjs');
-const TOML = resolve(ROOT, 'apps/worker/wrangler.toml');
+const LEGACY_TOML = `name = "historical-provisioner-test"
+main = "worker.js"
+[[kv_namespaces]]
+binding = "RATE_LIMIT_KV"
+id = "${'0'.repeat(32)}"
+preview_id = "${'0'.repeat(32)}"
+
+[[kv_namespaces]]
+binding = "RESULT_KV"
+id = "${'0'.repeat(32)}"
+preview_id = "${'0'.repeat(32)}"
+
+[triggers]
+crons = ["0 */12 * * *", "23 */3 * * *"]
+`;
 
 const STUB = `#!/usr/bin/env node
 const { appendFileSync, readFileSync } = require('node:fs');
@@ -65,7 +79,7 @@ test('provisioning patches the toml, uploads secrets and deploys against a stub'
   mkdirSync(join(dir, 'scripts'), { recursive: true });
   mkdirSync(join(dir, 'bin'), { recursive: true });
   copyFileSync(SCRIPT, join(dir, 'scripts/provision-worker.mjs'));
-  writeFileSync(join(dir, 'apps/worker/wrangler.toml'), readFileSync(TOML, 'utf8'));
+  writeFileSync(join(dir, 'apps/worker/wrangler.toml'), LEGACY_TOML);
 
   const bin = join(dir, 'bin/npx');
   writeFileSync(bin, STUB);
@@ -149,7 +163,7 @@ test('a second run keeps the existing namespaces and tokens', (t) => {
   const zeros = '0'.repeat(32);
   const prod = 'c'.repeat(32);
   const preview = 'd'.repeat(32);
-  const seeded = readFileSync(TOML, 'utf8')
+  const seeded = LEGACY_TOML
     .replace(`id = "${zeros}"\npreview_id = "${zeros}"\n\n[[kv_namespaces]]\nbinding = "RESULT_KV"`,
              `id = "${prod}"\npreview_id = "${preview}"\n\n[[kv_namespaces]]\nbinding = "RESULT_KV"`);
   assert.equal((seeded.match(/"0{32}"/g) || []).length, 2);

@@ -1,16 +1,45 @@
 # PuppetNET 2.0 — decoupled hybrid CI/CD
 
-Open-source OSINT ingestion, entity recognition and graph analysis. The baseline history
-through `arena/01a0df64-puppetnet` commit `127ab47` is on `main`: PR #1 merged the
-monorepo, the decoupled hybrid CI/CD and the WebGL dashboard as `54cdd3b` (2026-10-19).
-Follow-up work is authored on the current session branch `arena/dbc5fb0c-puppetnet` and
-integrated into `main` through a pull request, never pushed directly.
+> **Aktueller Architekturstand (Zero-KV-Umstellung):** Der aktive Worker startet
+> jetzt über `apps/worker/src/index.ts`. Er verarbeitet nur authentifizierte
+> Rechercheaufträge und optionale öffentliche JSON-Weiterleitungen mit Cache API.
+> Er hat keine KV-Bindings, Neo4j-Graph-API, Cron-Heartbeats oder Status-Snapshots.
+> Dashboard, Legacy und Profile verwenden primär `graph_latest.json`. Ältere
+> Graph-/KV-Beschreibungen unten gelten nur noch für die aufbewahrte historische
+> Implementierung. Migration: [Zero-KV-Runbook](docs/zero-kv-worker.md).
+
+Open-source OSINT ingestion, entity recognition and graph analysis.
+Aktuelle Release-Arbeit: `arena/5fb0fe0b-puppetnet`. Veröffentlichung erfolgt nach
+Prüfung per Pull Request auf den in Cloudflare Pages konfigurierten Produktionsbranch
+(üblicherweise `main`), nicht durch einen ungeprüften Direkt-Push.
+
+## Release & Zero-Budget-Betrieb
+
+- **Frontend:** Cloudflare Pages Git Integration, Repository-Root als Build-Root,
+  Build `npm run ci:pages`, Ausgabeverzeichnis `apps/web/out`, Node.js 22.
+- **SEO:** `SITE_ORIGIN=https://puppetnet-web.pages.dev` (oder eigene Domain).
+  Auch direktes `next build` erzeugt Sitemap, Robots, OG-Bilder und
+  `data/seo-metadata.json`; Entitäts-HTML enthält Canonicals, OG und Schema.org.
+  Ungültige Origins brechen den Build ab, statt falsche URLs auszuliefern.
+- **Design:** gemeinsame Tokens in `apps/web/src/styles/globals.css`; der Build
+  kopiert sie für Legacy nach `/styles/globals.css`. Keine externen Fonts/Ad-Skripte.
+- **Betrieb:** Pages liefert statische JSONs. Der optionale authentifizierte
+  Zero-KV-Worker stößt nur Recherche an. GitHub Actions verarbeitet lokal
+  (Regex → spaCy), Cloud-Modell standardmäßig aus; höchstens zwei reservierte
+  Pipeline-Läufe pro UTC-Tag, zehn Minuten Job-Limit. Neue Daten müssen geprüft,
+  exportiert und durch einen Pages-Neubuild veröffentlicht werden.
+- **Kostenkontrolle:** Free-Tier-orientiert, keine Nullkosten-Garantie. Provider-
+  Kontingente und Abrechnung beobachten; Cloud-Fallback und optionale Dienste
+  nur bewusst aktivieren. Operator-Token nie als `NEXT_PUBLIC_*` veröffentlichen.
+- **Release-Checkliste:** [docs/release-checklist.md](docs/release-checklist.md).
+  Architektur und Einrichtung: [Zero-KV](docs/zero-kv-worker.md),
+  [Ingestion](docs/daily-ingestion.md).
 
 | Component | Source | Build / execution owner |
 | --- | --- | --- |
 | Next.js 15 static frontend | `apps/web` | Cloudflare Pages Git Integration |
-| Relay and read-only graph API | `apps/worker` | Cloudflare Workers Builds |
-| Python tests, GLiNER NLP, Neo4j ingestion | `packages/pipeline` | GitHub Actions standard Linux runner |
+| Authenticated search relay (Zero-KV) | `apps/worker` | Cloudflare Workers Builds |
+| Python tests, local spaCy NLP, optional Neo4j ingestion | `packages/pipeline` | GitHub Actions standard Linux runner |
 
 The new `/dashboard/` frontend uses Sigma.js 4, Graphology, an off-thread ForceAtlas2
 layout and opt-in Leaflet/OpenStreetMap. The previous analyst console is retained at
@@ -104,3 +133,12 @@ cached between runs and the stage is capped per run.
 Older docs and workflows under `docs/legacy-*` describe the v1 architecture only.
 The historical static audit is not a v2 certification. Current runtime regressions,
 Python CI and the Cloudflare build gates are the active checks.
+
+## Bounded German daily publication (opt-in)
+
+The new local-first path uses `NLP_BACKEND=token_saver`, `de_core_news_sm` and an
+optional, explicitly budgeted Gemini fallback. `graph_latest.json` is shared by
+the dashboard, legacy console, profiles and sitemap. See
+[setup, review rules and deployment limitations](docs/daily-ingestion.md) before
+enabling `ENABLE_DAILY_STATIC`. The new workflow has a ten-minute timeout and
+publishes only to the session branch; it does not silently push production `main`.

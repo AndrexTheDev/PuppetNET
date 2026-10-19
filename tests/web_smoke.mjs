@@ -11,7 +11,7 @@
  *
  * Three things it is deliberately strict about:
  *
- *   * **Offline.** Demo mode must make zero network requests, and index.html must
+ *   * **Offline.** Demo mode may probe one same-origin static file, and index.html must
  *     reference nothing but files that exist in the repository. A console that
  *     quietly reaches for a CDN is a console that breaks in a SCIF and leaks an
  *     analyst's IP address.
@@ -210,6 +210,7 @@ async function bootConsole(options = {}) {
     virtualConsole,
   });
   const win = dom.window;
+  win.TextDecoder = TextDecoder;
   const doc = win.document;
   const calls = [];
   const blobs = [];
@@ -381,8 +382,8 @@ await check("the console boots offline, in demo mode, and renders a graph", asyn
   assert.ok(c.api.state.edges.size >= 20, `demo dataset is thin: ${c.api.state.edges.size} edges`);
   assert.ok(c.api.state.docs.size > 0, "the demo dataset must carry citations");
 
-  // Zero network requests: this is the claim the whole offline story rests on.
-  assert.equal(c.calls.length, 0, `demo mode made network calls: ${c.calls.map((call) => call.url).join(", ")}`);
+  // Only a same-origin publication probe is allowed; no external service is needed.
+  assert.deepEqual(c.calls.map(call => call.url), ["/data/graph_latest.json"]);
 
   // Cytoscape really did build a graph, not just a data structure.
   const cy = c.api.cy;
@@ -415,6 +416,25 @@ await check("the console boots offline, in demo mode, and renders a graph", asyn
     [],
     "booting and rendering the demo graph must not throw anywhere"
   );
+});
+
+await check("the legacy console consumes the same reviewed static snapshot without a token", async () => {
+  const fixture = {
+    demo: false, nodes: [
+      { id: "org:published-a", name: "Published A", type: "Organization", public: true },
+      { id: "person:published-b", name: "Published B", type: "Person", public: true },
+    ], edges: [{ id: "edge:published", source: "person:published-b", target: "org:published-a", type: "FOUNDED", public: true }],
+  };
+  const c = await bootConsole({ fetch: async (url, init) => {
+    assert.equal(url, "/data/graph_latest.json");
+    assert.equal(init.headers?.Authorization, undefined);
+    return new Response(JSON.stringify(fixture), { status: 200 });
+  }});
+  assert.equal(c.api.state.providerName, "static");
+  assert.equal(c.api.state.nodes.size, 2);
+  assert.equal(c.api.state.edges.size, 1);
+  assert.equal(c.api.state.nodes.has("org:published-a"), true);
+  assert.ok(!/Synthetic offshore network/.test(c.text("#cy-toast-host")));
 });
 
 await check("the rail renders leaderboard, filter chips and a legend from data", async () => {
@@ -467,7 +487,7 @@ await check("index.html references only vendored, on-disk assets", async () => {
     // The favicon is an inline data: URI — no request, nothing to be missing.
     if (reference.startsWith("data:")) return;
     const local = reference.replace(/^\.?\//, "");
-    assert.ok(existsSync(path.join(WEB, local)), `index.html references a missing file: ${reference}`);
+    assert.ok(existsSync(path.join(reference.startsWith("/") ? path.join(ROOT, "apps/web/public") : WEB, local)), `index.html references a missing file: ${reference}`);
   });
 
   for (const banned of ["cdn.tailwindcss.com", "unpkg.com", "jsdelivr.net", "cdnjs.cloudflare.com", "googleapis.com"]) {
@@ -1646,7 +1666,11 @@ await check("credentials never travel in a URL, and persistence is honest", asyn
   live.calls.forEach((call) => {
     assert.ok(!call.url.includes(GRAPH_TOKEN), `a request URL must not carry the token: ${call.url}`);
     assert.ok(!call.url.includes("token="), `nor a token parameter: ${call.url}`);
-    assert.equal(call.headers.Authorization, `Bearer ${GRAPH_TOKEN}`, "the header is the only place it appears");
+    if (call.url === "/data/graph_latest.json") {
+      assert.equal(call.headers.Authorization, undefined, "public static file must not receive a token");
+    } else {
+      assert.equal(call.headers.Authorization, `Bearer ${GRAPH_TOKEN}`, "the header is the only place it appears");
+    }
   });
 
   // "Remember my settings" must mean something in both directions.
@@ -2053,6 +2077,7 @@ await check("credentials never travel in a URL, and persistence is honest", asyn
     });
     openWindows.push(dom);
     const win = dom.window;
+  win.TextDecoder = TextDecoder;
     const doc = win.document;
     win.eval(readWeb("modals.js"));
     // Booted without app.js: the document is still parsing, so init() waits for

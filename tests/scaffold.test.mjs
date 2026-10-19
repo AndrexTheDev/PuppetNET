@@ -14,7 +14,7 @@ test('compatibility paths point to the single monorepo source', () => {
     assert.equal(fs.realpathSync(old), fs.realpathSync(current));
 });
 test('only Python Actions remain, with no artificial consumption guard', () => {
-  assert.deepEqual(fs.readdirSync('.github/workflows'), ['ingestion-pipeline.yml']);
+  assert.deepEqual(fs.readdirSync('.github/workflows').sort(), ['daily_ingestion.yml', 'ingestion-pipeline.yml']);
   const text = read('.github/workflows/ingestion-pipeline.yml');
   assert.match(text, /group: puppetnet-python-ingestion/);
   assert.match(text, /runs-on: ubuntu-latest/);
@@ -24,14 +24,8 @@ test('only Python Actions remain, with no artificial consumption guard', () => {
 test('Free-only deployment defaults and no client-side secrets', () => {
   const worker = read('apps/worker/wrangler.toml');
   assert.match(worker, /cpu_ms = 10/);
-  // KV is Free-tier and is where the distributed locks and health snapshots
-  // live; Queues remain disabled because they are not needed for MP6.
-  assert.match(worker, /\[\[kv_namespaces\]\]/);
-  assert.match(worker, /binding = "RATE_LIMIT_KV"/);
-  assert.match(worker, /binding = "RESULT_KV"/);
-  assert.match(worker, /\[triggers\]/);
-  assert.match(worker, /crons = \["0 \*\/12 \* \* \*", "23 \*\/3 \* \* \*"\]/);
-  assert.doesNotMatch(worker, /\[\[queues/);
+  assert.match(worker, /main = "src\/index\.ts"/);
+  assert.doesNotMatch(worker, /\[\[kv_namespaces\]\]|"0{32}"|\[\[queues/);
   const env = read('.env.example');
   for (const key of ['NEO4J_URI','CF_KV_NAMESPACE','TELEGRAM_BOT_TOKEN']) assert.match(env, new RegExp(`^${key}=`, 'm'));
   assert.doesNotMatch(env, /^NEXT_PUBLIC_.*(?:TOKEN|PASSWORD|SECRET)=/m);

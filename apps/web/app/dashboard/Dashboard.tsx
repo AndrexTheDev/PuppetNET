@@ -2,10 +2,10 @@
 import dynamic from 'next/dynamic';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import EntityTable, { type TableRow } from './EntityTable';
-import { COLORS, TYPES, LIMITS, normalizeEvidence, type Evidence, type Filters, type GraphNode, type View } from './graph-data';
+import { COLORS, TYPES, LIMITS, type Evidence, type Filters, type GraphNode, type View } from './graph-data';
 import type { NetworkHandle } from './NetworkGraph';
 import type { WorkerRequest, WorkerResponse } from './protocol';
-import { apiBase, readResponse } from './api';
+import { loadStaticGraph, requestResearch } from '../../src/lib/dataFetcher';
 import SidePanel from './SidePanel';
 const NetworkGraph = dynamic(() => import('./NetworkGraph'), { ssr: false, loading: () => <div className="stage-loading">WebGL-Modul laden …</div> });
 const MapModule = dynamic(() => import('./MapModule'), { ssr: false, loading: () => <div className="stage-loading">Kartenmodul laden …</div> });
@@ -22,9 +22,10 @@ export default function Dashboard() {
   const [error, setError] = useState(''), [detailError, setDetailError] = useState(''), [layoutRunning, setLayoutRunning] = useState(false);
   const [sourceLabel, setSourceLabel] = useState('Fiktive Demo'), [sourceForm, setSourceForm] = useState(false), [base, setBase] = useState(''), [token, setToken] = useState('');
   const [search, setSearch] = useState(''), [listPage, setListPage] = useState(0);
-  const api = useRef<{ base: string; token: string } | null>(null), loadingApi = useRef<AbortController | null>(null), loadingDetail = useRef<AbortController | null>(null);
+  const [researchQuery, setResearchQuery] = useState(''), [researchBusy, setResearchBusy] = useState(false);
+  const loadingApi = useRef<AbortController | null>(null), loadingDetail = useRef<AbortController | null>(null);
+  const staticRequest = useRef<AbortController | null>(null), reloadStatic = useRef<(() => void) | null>(null);
   const pendingSource = useRef('Fiktive Demo'), committedSource = useRef('Fiktive Demo');
-  const pendingApi = useRef<{ base: string; token: string } | null>(null);
   const [notice, setNotice] = useState('');
   const initialFocus = useRef(typeof window === 'undefined' ? null : new URLSearchParams(window.location.search).get('focus'));
   const changeMode = useCallback((next: 'network' | 'map' | 'list') => {
@@ -39,15 +40,33 @@ export default function Dashboard() {
   useEffect(() => {
     const instance = new Worker(new URL('./graph.worker.ts', import.meta.url)); worker.current = instance;
     instance.onmessage = ({ data }: MessageEvent<WorkerResponse>) => {
-      if (data.kind === 'view' && data.view.version === version.current) { setView(data.view); setBusy(false); setSourceLabel(pendingSource.current); committedSource.current = pendingSource.current; api.current = pendingApi.current; setListPage(0); }
+      if (data.kind === 'view' && data.view.version === version.current) { setView(data.view); setBusy(false); setSourceLabel(pendingSource.current); committedSource.current = pendingSource.current; setListPage(0); }
       if (data.kind === 'positions') network.current?.positions(data.version, data.positions);
       if (data.kind === 'layout') setLayoutRunning(data.running);
       if (data.kind === 'detail' && data.node?.id === selectedId.current) { setSelected(data.node); setEvidence(old => [...new Map([...old, ...data.evidence].map(d => [d.id, d])).values()]); }
-      if (data.kind === 'error' && data.version === version.current) { setError(data.message); setBusy(false); pendingSource.current = committedSource.current; pendingApi.current = api.current; }
+      if (data.kind === 'error' && data.version === version.current) { setError(data.message); setBusy(false); pendingSource.current = committedSource.current; }
     };
     instance.onerror = event => { setError(`Daten-Worker: ${event.message || 'konnte nicht gestartet werden'}`); setBusy(false); };
-    instance.postMessage({ kind: 'demo', count: 900, version: ++version.current, filters: initialFilters } satisfies WorkerRequest);
-    return () => { instance.terminate(); worker.current = null; loadingApi.current?.abort(); loadingDetail.current?.abort(); };
+    const loadPublished = () => {
+      staticRequest.current?.abort();
+      const controller = new AbortController(); staticRequest.current = controller;
+      const bootVersion = ++version.current;
+      setBusy(true); setError(''); clearSelected();
+      loadStaticGraph({ signal: controller.signal }).then(data => {
+        if (controller.signal.aborted || version.current !== bootVersion || worker.current !== instance) return;
+        if (data.source === 'static') {
+          pendingSource.current = data.message; setNotice('Hochleistungs-CDN-Modus: veröffentlichter Datensatz, keine Live-Datenbankverbindung.');
+          instance.postMessage({ kind: 'import', text: JSON.stringify(data.graph), version: bootVersion, filters: filtersRef.current } satisfies WorkerRequest);
+        } else {
+          pendingSource.current = 'Fiktive Demo'; setNotice(data.message);
+          instance.postMessage({ kind: 'demo', count: 900, version: bootVersion, filters: filtersRef.current } satisfies WorkerRequest);
+        }
+      }).catch(() => { /* caller cancellation/unmount: no replacement of newer user data */ });
+    };
+    reloadStatic.current = loadPublished;
+    loadPublished();
+    return () => { staticRequest.current?.abort(); reloadStatic.current = null; instance.terminate(); worker.current = null; loadingApi.current?.abort(); loadingDetail.current?.abort(); };
+
   }, []);
   const boot = useRef(true);
   useEffect(() => { if (boot.current) { boot.current = false; return; } const timeout = setTimeout(() => requestView(), 180); return () => clearTimeout(timeout); }, [filters, requestView]);
@@ -59,38 +78,27 @@ export default function Dashboard() {
     setAnnouncement(node ? `Details geöffnet: ${node.label}.` : 'Details geöffnet.');
     if (group) return;
     send({ kind: 'detail', id });
-    if (api.current) {
-      const controller = new AbortController(); loadingDetail.current = controller;
-      const timeout = setTimeout(() => controller.abort(), 20_000);
-      const config = api.current;
-      fetch(`${config.base}/graph/node?key=${encodeURIComponent(id)}`, { signal: controller.signal, headers: config.token ? { Authorization: `Bearer ${config.token}` } : {}, credentials: 'omit', redirect: 'error' })
-        .then(readResponse).then(text => { if (selectedId.current === id) { const raw = JSON.parse(text); setEvidence(old => [...new Map([...old, ...normalizeEvidence(raw.citations)].map(d => [d.id, d])).values()]); } })
-        .catch(cause => { if (selectedId.current === id && !controller.signal.aborted) setDetailError(`Zusätzliche API-Nachweise nicht verfügbar: ${cause.message}`); })
-        .finally(() => clearTimeout(timeout));
-    }
+
   }, [view, send]);
   function demo(count: number) {
-    loadingApi.current?.abort(); loadingApi.current = null; pendingApi.current = null; pendingSource.current = count > 900 ? `Fiktiver Lasttest · ${number(count * 4)} Elemente` : 'Fiktive Demo';
+    staticRequest.current?.abort(); pendingSource.current = count > 900 ? `Fiktiver Lasttest · ${number(count * 4)} Elemente` : 'Fiktive Demo';
     clearSelected(); setBusy(true); setError(''); setNotice(''); send({ kind: 'demo', count, version: ++version.current, filters: filtersRef.current });
   }
   function importFile(file: File) {
     if (file.size > LIMITS.bytes) { setError('Importlimit: 64 MiB JSON.'); return; }
-    loadingApi.current?.abort(); loadingApi.current = null; pendingApi.current = null; pendingSource.current = file.name; setBusy(true); setError(''); clearSelected();
+    staticRequest.current?.abort(); pendingSource.current = file.name; setBusy(true); setError(''); clearSelected();
     send({ kind: 'import', file, version: ++version.current, filters: filtersRef.current });
   }
-  async function loadApi() {
+  async function startResearch() {
+    if (researchBusy) return;
     setError(''); loadingApi.current?.abort(); const controller = new AbortController(); loadingApi.current = controller;
-    const timeout = setTimeout(() => controller.abort(), 30_000);
+    setResearchBusy(true);
     try {
-      const normalizedBase = apiBase(base); setBusy(true);
-      const response = await fetch(`${normalizedBase}/graph/overview?limit=5000`, { signal: controller.signal, headers: token ? { Authorization: `Bearer ${token}` } : {}, credentials: 'omit', redirect: 'error' });
-      const text = await readResponse(response);
-      if (controller.signal.aborted) return;
-      pendingApi.current = { base: normalizedBase, token }; pendingSource.current = 'Worker API · geladener Ausschnitt'; clearSelected();
-      send({ kind: 'import', text, version: ++version.current, filters: filtersRef.current });
-      setSourceForm(false); setNotice('Das bestehende Relay begrenzt die Größe der Antwort. Große Graphen können als JSON geladen werden.');
-    } catch (cause) { if (loadingApi.current === controller) { setBusy(false); setError(cause instanceof Error ? cause.message : 'API nicht erreichbar'); } }
-    finally { clearTimeout(timeout); }
+      await requestResearch({ workerUrl: base, token, query: researchQuery, signal: controller.signal });
+      setNotice('Recherche angenommen. GitHub prüft das Tageskontingent. Neue Daten erscheinen erst nach erfolgreicher Verarbeitung, Freigabe und Veröffentlichung. Du kannst die CDN-Daten später neu laden.');
+    } catch (cause) {
+      if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : 'Recherche nicht angenommen.');
+    } finally { if (loadingApi.current === controller) setResearchBusy(false); }
   }
   const list = (view?.nodes ?? []).filter(n => !search || n.label.toLowerCase().includes(search.toLowerCase()) || n.id.includes(search));
   const pageSize = 50;
@@ -115,10 +123,19 @@ export default function Dashboard() {
   }, [view, select]);
   return <main id="main-content" tabIndex={-1} className="dashboard-shell" aria-busy={busy}>
     <p className="visually-hidden" role="status" aria-live="polite" aria-atomic="true">{announcement}</p>
-    <header className="dashboard-header"><a className="brand" href="/"><span className="brand-mark">P<span>·</span></span><div>PUPPET<span>NET</span><small>INTELLIGENCE WORKSPACE</small></div></a><div className="header-path">Workspace <span>/</span> <strong>Netzwerkanalyse</strong></div><div className="header-status"><span className="status-dot" /> LOKALE VISUALISIERUNG <span className="version-tag">2.0</span></div></header>
-    <section className="workspace-intro"><div><span className="eyebrow">VERBINDUNGEN SICHTBAR MACHEN</span><h1>Hinter den Verbindungen.</h1><p>Entitäten erkunden. Muster hinterfragen. Quellen überprüfen.</p></div><button onClick={() => setSourceForm(s => !s)} className="outline-button">Datenquelle verbinden ↗</button></section>
+    <header className="dashboard-header"><a className="brand" href="/"><img className="brand-art" src="/media/logo.webp" width="52" height="52" alt="" /><div>PUPPET<span>NET</span><small>INTELLIGENCE WORKSPACE</small></div></a><div className="header-path">Workspace <span>/</span> <strong>Netzwerkanalyse</strong></div><div className="header-status"><span className="status-dot" /> LOKALE VISUALISIERUNG <span className="version-tag">2.0</span></div></header>
+    <section className="workspace-intro"><div><span className="eyebrow">VERBINDUNGEN SICHTBAR MACHEN</span><h1>Hinter den Verbindungen.</h1><p>Entitäten erkunden. Muster hinterfragen. Quellen überprüfen.</p></div><button onClick={() => setSourceForm(s => !s)} className="outline-button">On-Demand-Recherche ↗</button></section>
     <div className="source-strip"><span className="source-pill">{sourceLabel.includes('Fiktiv') ? 'DEMO' : 'DATEN'}</span><strong>{sourceLabel}</strong><span>Keine erfundenen Daten als Live-Ergebnisse.</span><button onClick={() => demo(900)}>Demo</button><button disabled={busy} onClick={() => demo(30_000)}>120.000 Elemente testen</button><label className="import-button">JSON importieren<input type="file" accept="application/json,.json" onChange={e => { const file = e.target.files?.[0]; if (file) importFile(file); e.target.value = ''; }} /></label></div>
-    {sourceForm && <form className="connection-form" onSubmit={e => { e.preventDefault(); loadApi(); }}><label>Worker-URL (leer = gleicher Ursprung)<input value={base} onChange={e => setBase(e.target.value)} placeholder="https://…workers.dev" /></label><label>Graph-API-Token<input type="password" autoComplete="off" value={token} onChange={e => setToken(e.target.value)} /></label><button className="primary-button" disabled={busy} type="submit">Ausschnitt laden</button><p>Token nur im Arbeitsspeicher, niemals in URL oder localStorage. Die API muss diesen Ursprung per CORS erlauben.</p></form>}
+    <p className="cdn-mode" role="note">Hochleistungs-CDN-Modus · Dashboard, Profile und Analystenkonsole verwenden den veröffentlichten statischen Datensatz. Zum Lesen ist kein Worker nötig. <button type="button" disabled={busy} onClick={() => reloadStatic.current?.()}>CDN-Daten neu laden</button></p>
+    {sourceForm && <form className="connection-form" onSubmit={e => { e.preventDefault(); startResearch(); }}>
+      <p>Optional: Eine On-Demand-Recherche durchsucht die konfigurierten Quellen im Hintergrund. Das ist keine sofortige Live-Suche und keine Graph-API.</p>
+      <label>Suchbegriff<input required maxLength={120} value={researchQuery} onChange={e => setResearchQuery(e.target.value)} /></label>
+      <label>Worker-URL für On-Demand-Recherche<input required type="url" value={base} onChange={e => setBase(e.target.value)} placeholder="https://dein-suchrelay.workers.dev" /></label>
+      <label>Suchzugangstoken<input required type="password" autoComplete="off" value={token} onChange={e => setToken(e.target.value)} /></label>
+      <button className="primary-button" disabled={researchBusy} type="submit">{researchBusy ? 'Wird angefragt …' : 'Recherche anfordern'}</button>
+      <p>Eine Worker-URL ist ausschließlich für Rechercheaufträge erforderlich. Token bleiben im Arbeitsspeicher; niemals einen GitHub-Token hier eingeben. Der Worker muss diesen Website-Ursprung per CORS erlauben.</p>
+    </form>}
+
     {(error || notice || view?.stats.truncated) && <div className={`dashboard-alert ${error ? 'error' : ''}`} role={error ? 'alert' : 'status'}>{error || notice || 'API-Antwort ist begrenzt; dargestellt wird nur der geladene Ausschnitt.'}</div>}
     <div className="workspace-grid">
       <aside className="filter-panel"><span className="eyebrow">ANSICHT EINGRENZEN / 01</span><div className="section-heading"><h2>Filter</h2><button className="text-button" onClick={() => { filtersRef.current = initialFilters; setFilters(initialFilters); requestView('reset'); }}>Zurücksetzen</button></div>

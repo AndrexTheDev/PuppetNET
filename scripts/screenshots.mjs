@@ -404,6 +404,7 @@ const MIME = {
   ".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8",
   ".js": "text/javascript; charset=utf-8", ".mjs": "text/javascript; charset=utf-8",
   ".json": "application/json; charset=utf-8", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+  ".webp": "image/webp", ".webm": "video/webm", ".mp4": "video/mp4",
   ".png": "image/png", ".svg": "image/svg+xml", ".txt": "text/plain; charset=utf-8",
   ".xml": "application/xml; charset=utf-8", ".ico": "image/x-icon", ".woff2": "font/woff2",
 };
@@ -413,9 +414,10 @@ function serve(directory) {
     const server = createServer((request, response) => {
       const url = new URL(request.url, "http://127.0.0.1");
       const relative = decodeURIComponent(url.pathname).replace(/^\/+/, "") || "index.html";
-      const file = path.join(directory, relative);
+      const base = (relative.startsWith("media/") || relative.startsWith("data/")) ? path.join(ROOT, "apps/web/public") : directory;
+      const file = path.resolve(base, relative);
       // Path traversal would let a screenshot run read outside web/.
-      if (!file.startsWith(directory) || !existsSync(file) || !statSync(file).isFile()) {
+      if (!file.startsWith(base + path.sep) || !existsSync(file) || !statSync(file).isFile()) {
         response.writeHead(404, { "Content-Type": "text/plain" });
         response.end("not found");
         return;
@@ -753,7 +755,7 @@ async function main() {
           }
         }
         const file = path.join(dir, `${state.id}.png`);
-        const buffer = await page.screenshot({ path: file, animations: "disabled" });
+        const buffer = await page.screenshot({ path: file, animations: "disabled", timeout: FLAGS.timeout });
         let pixels = null;
         try {
           pixels = await pixelStats(page, buffer);

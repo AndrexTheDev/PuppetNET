@@ -68,12 +68,19 @@ for (const chunk of workerChunks) {
 /* Entity profiles: static, crawlable and self-contained                     */
 /* ------------------------------------------------------------------------- */
 const entityDir = path.join(OUT, 'entity');
-assert.ok(existsSync(entityDir), 'out/entity fehlt: keine vorgerenderten Profilseiten.');
-const profiles = readdirSync(entityDir, { withFileTypes: true })
+const publicationFile = path.join(OUT, 'data/graph_latest.json');
+const publication = existsSync(publicationFile) ? JSON.parse(readFileSync(publicationFile, 'utf8')) : null;
+assert.ok(existsSync(entityDir) || publication?.nodes.length === 0, 'out/entity fehlt: keine vorgerenderten Profilseiten.');
+const profiles = (existsSync(entityDir) ? readdirSync(entityDir, { withFileTypes: true }) : [])
   .filter((entry) => entry.isDirectory())
   .map((entry) => entry.name)
   .filter((name) => existsSync(path.join(entityDir, name, 'index.html')));
-assert.ok(profiles.length >= 8, `Nur ${profiles.length} Profilseite(n) exportiert.`);
+if (publication) {
+  const expected = publication.nodes.map(node => node.slug).sort();
+  assert.deepEqual([...profiles].sort(), expected, 'Profile und veröffentlichter Graph müssen dieselben Entitäten enthalten.');
+} else {
+  assert.ok(profiles.length >= 8, `Nur ${profiles.length} Demo-Profilseite(n) exportiert.`);
+}
 assert.equal(existsSync(path.join(entityDir, 'doc-demo-internal')), false, 'Ein public:false-Dokument wurde exportiert.');
 
 const pngSize = (file) => {

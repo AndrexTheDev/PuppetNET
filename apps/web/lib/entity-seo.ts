@@ -33,7 +33,7 @@ export const ENTITY_TYPE_LABELS: Record<EntityKind, string> = {
 export const MAX_ENTITY_PAGES = 5_000;
 export const MAX_RELATED_ENTITIES = 12;
 export const MAX_EVIDENCE_REFERENCES = 20;
-export const DEFAULT_SITE_ORIGIN = 'https://puppetnet-console.pages.dev';
+export const DEFAULT_SITE_ORIGIN = 'https://puppetnet-web.pages.dev';
 
 export interface EntityEvidence {
   id: string;
@@ -158,7 +158,7 @@ export function canonicalEntityPath(entity: Pick<PublicEntity, 'slug'>): string 
 /** Absolute origin for JSON-LD, canonicals and the sitemap. The same variable
  *  drives `metadataBase` in the root layout and `emit-seo-files.mjs`. */
 export function siteOrigin(): string {
-  const raw = process.env.NEXT_PUBLIC_SITE_ORIGIN || process.env.SITE_ORIGIN || DEFAULT_SITE_ORIGIN;
+  const raw = process.env.SITE_ORIGIN || process.env.NEXT_PUBLIC_SITE_ORIGIN || DEFAULT_SITE_ORIGIN;
   try {
     const url = new URL(raw);
     if (!['https:', 'http:'].includes(url.protocol) || url.pathname !== '/' || url.search || url.hash) {
