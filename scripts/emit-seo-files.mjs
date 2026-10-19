@@ -30,6 +30,7 @@ import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { entityEntries, loadEntityExport, renderSitemaps, writeSitemaps } from "./generate-sitemap.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -44,10 +45,10 @@ const TARGETS = [
     // `trailingSlash: true` in next.config.mjs makes /dashboard/ the canonical
     // form; a sitemap that lists /dashboard would redirect to itself.
     urls: [{ loc: "/", priority: "1.0" }, { loc: "/dashboard/", priority: "0.9" }],
-    note: "Two URLs, because the v2 export serves two documents: the landing page and\n"
-      + "     the WebGL dashboard. Every graph it shows is client-side state — an\n"
-      + "     import, a fictional fixture or a token-gated API response — never a\n"
-      + "     crawlable document.",
+    entities: true,
+    note: "The landing page, the dashboard and one static profile per public entity.\n"
+      + "     Profiles are generated from the same dataset the pages are built from,\n"
+      + "     so the sitemap cannot list a URL that does not exist.",
   },
   {
     name: "legacy console",
@@ -119,6 +120,21 @@ function lastModified(relative) {
 
 /* ---- sitemap.xml -------------------------------------------------------- */
 
+// The entity export is optional: a build without a pipeline publication uses
+// the committed demo dataset, exactly like the Next build. A corrupt export in
+// the Pages gate must not break the deployment, but it must be loud.
+let entitySource = { entities: [], generatedAt: new Date().toISOString().slice(0, 10), file: "", demo: true };
+try {
+  entitySource = loadEntityExport(ROOT);
+} catch (error) {
+  if (buildGate) {
+    console.warn(`emit-seo: could not read the entity export (${error.message}) — writing no profile URLs.`);
+  } else {
+    fail(`could not read the entity export: ${error.message}`);
+  }
+}
+const profiles = entityEntries(entitySource.entities, entitySource.generatedAt);
+
 const written = [];
 for (const target of TARGETS) {
   const robotsPath = path.join(ROOT, target.robots);
@@ -128,15 +144,21 @@ for (const target of TARGETS) {
   }
 
   const lastmod = lastModified(target.history);
-  const urls = target.urls
-    .map((url) => `  <url>
+  if (target.entities) {
+    const entries = [...target.urls, ...profiles];
+    const { files, urlCount } = renderSitemaps({ origin, entries, lastmod });
+    writeSitemaps(path.dirname(sitemapPath), files);
+    written.push(`${target.sitemap} (${urlCount} URL(s), davon ${profiles.length} Profil(e), ${files.length} Datei(en), served at ${target.servedAt})`);
+  } else {
+    const urls = target.urls
+      .map((url) => `  <url>
     <loc>${origin}${url.loc}</loc>
     <lastmod>${lastmod}</lastmod>
     <changefreq>weekly</changefreq>
     <priority>${url.priority}</priority>
   </url>`)
-    .join("\n");
-  writeFileSync(sitemapPath, `<?xml version="1.0" encoding="UTF-8"?>
+      .join("\n");
+    writeFileSync(sitemapPath, `<?xml version="1.0" encoding="UTF-8"?>
 <!-- Generated at build time by scripts/emit-seo-files.mjs from the deployment
      origin; git-ignored, never committed. ${target.name}.
      ${target.note} -->
@@ -144,6 +166,8 @@ for (const target of TARGETS) {
 ${urls}
 </urlset>
 `, "utf8");
+    written.push(`${target.sitemap} (${target.urls.length} URL(s), served at ${target.servedAt})`);
+  }
 
   /* ---- robots.txt: replace only the Sitemap line ------------------------ */
   const committed = readFileSync(robotsPath, "utf8");
@@ -154,7 +178,6 @@ ${urls}
     .replace(/\n+$/, "");
   writeFileSync(robotsPath, `${withoutSitemap}\n\nSitemap: ${origin}${target.servedAt}\n`, "utf8");
 
-  written.push(`${target.sitemap} (${target.urls.length} URL(s), served at ${target.servedAt})`);
 }
 
 console.log(`emit-seo: origin ${origin} — wrote ${written.join("; ")} and rewrote each Sitemap line`);

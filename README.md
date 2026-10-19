@@ -3,7 +3,7 @@
 Open-source OSINT ingestion, entity recognition and graph analysis. The baseline history
 through `arena/01a0df64-puppetnet` commit `127ab47` is on `main`: PR #1 merged the
 monorepo, the decoupled hybrid CI/CD and the WebGL dashboard as `54cdd3b` (2026-10-19).
-Follow-up work is authored on the current session branch `arena/48cd7919-puppetnet` and
+Follow-up work is authored on the current session branch `arena/dbc5fb0c-puppetnet` and
 integrated into `main` through a pull request, never pushed directly.
 
 | Component | Source | Build / execution owner |
@@ -26,10 +26,13 @@ npm run dev
 npm run ci:pages                  # console regression gate + static Next build
 npm run ci:worker                 # Worker regression gate, no deployment
 npm run audit                     # static, offline repository consistency ledger
+npm run emit:entities -- --input graph-export.json   # publish profile data (or --input -)
 npm run emit:seo -- --origin https://<your-pages-origin>   # sitemaps + Sitemap: lines
 npm run test:scaffold             # monorepo/build configuration contracts
 npm run test:dashboard            # filters, LoD, evidence, 120k-element fixture
-npm run test:export               # after build: assets, worker format, Pages headers
+npm run test:seo                  # publication rules, JSON-LD, metadata, sitemap
+npm run test:a11y                 # keyboard model, live region, table semantics
+npm run test:export               # after build: assets, profiles, OG cards, Pages headers
 npm run deploy -w @puppetnet/worker -- --dry-run --outdir /tmp/puppetnet-worker
 python -m venv .venv
 . .venv/bin/activate
@@ -55,6 +58,12 @@ in-degree (`graph_analytics.py --puppet-master --cycles`). New entity nodes stop
 the free-tier ceiling (`AURA_NODE_STOP=180000`), and a daily `RETURN 1` heartbeat
 (`keep_alive.py`) keeps the instance from pausing after 72 idle hours. See
 [operations](docs/operations.md#the-180-000-node-stop).
+The frontend adds one statically prerendered profile page per published entity
+(`/entity/<slug>/`) with Schema.org JSON-LD, static Open Graph cards, a generated
+`sitemap.xml`, a fully keyboard-operable graph and a real table alternative to the WebGL
+canvas. Still a zero-cost `output: 'export'` deployment: no SSR, no Pages Functions. See
+[entity pages](docs/entity-pages.md) and the
+[dashboard guide](docs/webgl-dashboard.md#keyboard-navigation-wcag-21-aa).
 Root compatibility symlinks retain the previous Python/console/tooling paths without
 source duplication; use a symlink-capable checkout.
 

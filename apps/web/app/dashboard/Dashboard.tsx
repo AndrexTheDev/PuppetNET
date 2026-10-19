@@ -1,6 +1,7 @@
 'use client';
 import dynamic from 'next/dynamic';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import EntityTable, { type TableRow } from './EntityTable';
 import { COLORS, TYPES, LIMITS, normalizeEvidence, type Evidence, type Filters, type GraphNode, type View } from './graph-data';
 import type { NetworkHandle } from './NetworkGraph';
 import type { WorkerRequest, WorkerResponse } from './protocol';
@@ -16,6 +17,7 @@ export default function Dashboard() {
   const filtersRef = useRef(filters); filtersRef.current = filters;
   const busyRef = useRef(busy); busyRef.current = busy;
   const [mode, setMode] = useState<'network' | 'map' | 'list'>('network');
+  const [announcement, setAnnouncement] = useState('');
   const [selected, setSelected] = useState<GraphNode | null>(null), [evidence, setEvidence] = useState<Evidence[]>([]);
   const [error, setError] = useState(''), [detailError, setDetailError] = useState(''), [layoutRunning, setLayoutRunning] = useState(false);
   const [sourceLabel, setSourceLabel] = useState('Fiktive Demo'), [sourceForm, setSourceForm] = useState(false), [base, setBase] = useState(''), [token, setToken] = useState('');
@@ -24,6 +26,13 @@ export default function Dashboard() {
   const pendingSource = useRef('Fiktive Demo'), committedSource = useRef('Fiktive Demo');
   const pendingApi = useRef<{ base: string; token: string } | null>(null);
   const [notice, setNotice] = useState('');
+  const initialFocus = useRef(typeof window === 'undefined' ? null : new URLSearchParams(window.location.search).get('focus'));
+  const changeMode = useCallback((next: 'network' | 'map' | 'list') => {
+    setMode(next);
+    setAnnouncement(next === 'list'
+      ? 'Tabellenansicht geöffnet. Jeder Knoten ist als Zeile mit Aktionen verfügbar.'
+      : next === 'map' ? 'Kartenansicht geöffnet.' : 'Netzwerkansicht geöffnet. Pfeiltasten bewegen den Fokus.');
+  }, []);
   const clearSelected = useCallback(() => { selectedId.current = null; setSelected(null); setEvidence([]); loadingDetail.current?.abort(); setDetailError(''); }, []);
   const send = useCallback((request: WorkerRequest) => worker.current?.postMessage(request), []);
   const requestView = useCallback((kind: 'filter' | 'reset' = 'filter') => { setBusy(true); setError(''); clearSelected(); send({ kind, version: ++version.current, filters: filtersRef.current }); }, [send, clearSelected]);
@@ -47,6 +56,7 @@ export default function Dashboard() {
     loadingDetail.current?.abort(); setDetailError(''); setEvidence([]); selectedId.current = id;
     const node = view?.nodes.find(n => n.id === id);
     setSelected(node ?? null);
+    setAnnouncement(node ? `Details geöffnet: ${node.label}.` : 'Details geöffnet.');
     if (group) return;
     send({ kind: 'detail', id });
     if (api.current) {
@@ -83,8 +93,28 @@ export default function Dashboard() {
     finally { clearTimeout(timeout); }
   }
   const list = (view?.nodes ?? []).filter(n => !search || n.label.toLowerCase().includes(search.toLowerCase()) || n.id.includes(search));
-  const shown = list.slice(listPage * 50, (listPage + 1) * 50);
-  return <main className="dashboard-shell" aria-busy={busy}>
+  const pageSize = 50;
+  const shown = list.slice(listPage * pageSize, (listPage + 1) * pageSize);
+  const degrees = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const edge of view?.edges ?? []) {
+      map.set(edge.source, (map.get(edge.source) ?? 0) + 1);
+      map.set(edge.target, (map.get(edge.target) ?? 0) + 1);
+    }
+    return map;
+  }, [view]);
+  const tableRows: TableRow[] = shown.map(n => ({ ...n, degree: degrees.get(n.id) ?? 0 }));
+  useEffect(() => {
+    const wanted = initialFocus.current;
+    if (!wanted || !view) return;
+    initialFocus.current = null;
+    if (view.nodes.some(n => n.id === wanted)) {
+      select(wanted);
+      requestAnimationFrame(() => network.current?.focus(wanted));
+    }
+  }, [view, select]);
+  return <main id="main-content" tabIndex={-1} className="dashboard-shell" aria-busy={busy}>
+    <p className="visually-hidden" role="status" aria-live="polite" aria-atomic="true">{announcement}</p>
     <header className="dashboard-header"><a className="brand" href="/"><span className="brand-mark">P<span>·</span></span><div>PUPPET<span>NET</span><small>INTELLIGENCE WORKSPACE</small></div></a><div className="header-path">Workspace <span>/</span> <strong>Netzwerkanalyse</strong></div><div className="header-status"><span className="status-dot" /> LOKALE VISUALISIERUNG <span className="version-tag">2.0</span></div></header>
     <section className="workspace-intro"><div><span className="eyebrow">VERBINDUNGEN SICHTBAR MACHEN</span><h1>Hinter den Verbindungen.</h1><p>Entitäten erkunden. Muster hinterfragen. Quellen überprüfen.</p></div><button onClick={() => setSourceForm(s => !s)} className="outline-button">Datenquelle verbinden ↗</button></section>
     <div className="source-strip"><span className="source-pill">{sourceLabel.includes('Fiktiv') ? 'DEMO' : 'DATEN'}</span><strong>{sourceLabel}</strong><span>Keine erfundenen Daten als Live-Ergebnisse.</span><button onClick={() => demo(900)}>Demo</button><button disabled={busy} onClick={() => demo(30_000)}>120.000 Elemente testen</button><label className="import-button">JSON importieren<input type="file" accept="application/json,.json" onChange={e => { const file = e.target.files?.[0]; if (file) importFile(file); e.target.value = ''; }} /></label></div>
@@ -98,14 +128,15 @@ export default function Dashboard() {
         <div className="lod-setting"><label><input type="checkbox" disabled={busy} checked={filters.lod} onChange={e => { if (!e.target.checked && (view?.stats.filteredNodes ?? 0) > 20_000 && !window.confirm('Alle Knoten einzeln auf der GPU darstellen? Dies kann auf schwachen Geräten langsam sein.')) return; setFilters(f => ({ ...f, lod: e.target.checked })); }} /> Adaptives Detailniveau</label><p>Über 5.000 Knoten: zoomabhängige Darstellungsgruppen. Ausschalten zeigt einzelne Knoten.</p></div>
         <div className="filter-foot"><span>○</span><p>Gemeinsame Erwähnung ist kein Beweis für Kontrolle oder Fehlverhalten.</p></div>
       </aside>
-      <section className="visualization-panel" aria-label="Visualisierung"><div className="visualization-toolbar"><div className="view-tabs" role="group" aria-label="Darstellung"><button aria-pressed={mode === 'network'} onClick={() => setMode('network')}>◈ Netzwerk</button><button aria-pressed={mode === 'map'} onClick={() => setMode('map')}>◎ Karte</button><button aria-pressed={mode === 'list'} onClick={() => setMode('list')}>☷ Daten</button></div><span className="live-indicator" role="status">{busy ? 'Verarbeitung …' : layoutRunning ? 'Layout aktiv' : 'Bereit'}</span></div>
+      <section className="visualization-panel" aria-label="Visualisierung"><div className="visualization-toolbar"><div className="view-tabs" role="group" aria-label="Darstellung"><button aria-pressed={mode === 'network'} aria-controls="visualization-stage" onClick={() => changeMode('network')}>◈ Netzwerk</button><button aria-pressed={mode === 'map'} aria-controls="visualization-stage" onClick={() => changeMode('map')}>◎ Karte</button><button aria-pressed={mode === 'list'} aria-controls="visualization-stage" onClick={() => changeMode('list')}>☷ Tabelle</button></div><span className="live-indicator" role="status">{busy ? 'Verarbeitung …' : layoutRunning ? 'Layout aktiv' : 'Bereit'}</span></div>
         <div className="stats-bar"><div><strong>{number(view?.stats.filteredNodes)}</strong><span>Knoten im Filter</span></div><div><strong>{number(view?.stats.filteredEdges)}</strong><span>Beziehungen</span></div><div><strong>{number(view?.nodes.length)}</strong><span>GPU-Knoten / Gruppen</span></div><span className="lod-pill">{view?.stats.level ?? 'Laden'}</span></div>
-        <div className={mode === 'network' ? 'graph-pane' : 'graph-pane hidden-pane'}><NetworkGraph ref={network} view={view} onSelect={select} onRatio={onRatio} /><div className="graph-tools"><button aria-label="Vergrößern" onClick={() => network.current?.zoom(.65)}>+</button><button aria-label="Verkleinern" onClick={() => network.current?.zoom(1.5)}>−</button><button aria-label="Ansicht einpassen" onClick={() => network.current?.reset()}>⌖</button><button onClick={() => send({ kind: 'layout', running: !layoutRunning })}>{layoutRunning ? 'Pause' : 'Layout'}</button></div></div>
+        <details className="keyboard-help"><summary>Tastaturbedienung</summary><ul><li><kbd>Tab</kbd> springt in den Graphen, die Tabelle und den Inspector.</li><li><kbd>Pfeiltasten</kbd> bewegen den Fokus zwischen Knoten; <kbd>Pos1</kbd>/<kbd>Ende</kbd> springen an den Anfang oder das Ende.</li><li><kbd>Eingabe</kbd> oder <kbd>Leertaste</kbd> öffnet die Details, <kbd>Escape</kbd> schließt sie.</li><li><kbd>+</kbd>/<kbd>−</kbd> zoomen, <kbd>0</kbd> setzt die Ansicht zurück.</li><li>Die Registerkarte <strong>Tabelle</strong> ist die vollständige Textalternative zum WebGL-Canvas.</li></ul></details>
+        <div id="visualization-stage" className={mode === 'network' ? 'graph-pane' : 'graph-pane hidden-pane'}><NetworkGraph ref={network} view={view} onSelect={select} onRatio={onRatio} onClear={clearSelected} /><div className="graph-tools"><button aria-label="Vergrößern" onClick={() => network.current?.zoom(.65)}>+</button><button aria-label="Verkleinern" onClick={() => network.current?.zoom(1.5)}>−</button><button aria-label="Ansicht einpassen" onClick={() => network.current?.reset()}>⌖</button><button onClick={() => send({ kind: 'layout', running: !layoutRunning })}>{layoutRunning ? 'Pause' : 'Layout'}</button></div></div>
         {mode === 'map' && <><MapModule points={view?.mapPoints ?? []} onSelect={id => select(id)} /><div className="data-footnote">{number(view?.stats.locatedNodes)} Knoten mit gültigen Koordinaten. Räumlich aggregiert, maximal 1.000 Marker.</div></>}
-        {mode === 'list' && <div className="data-list"><label className="search-label">Geladene Ansicht durchsuchen<input type="search" placeholder="Name oder ID …" value={search} onChange={e => { setSearch(e.target.value); setListPage(0); }} /></label><div className="table-scroll"><table><thead><tr><th>Entität</th><th>Typ</th><th>Confidence</th></tr></thead><tbody>{shown.map(n => <tr key={n.id}><td><button onClick={() => select(n.id, !!n.group)}>{n.label}</button></td><td>{n.type}</td><td>{n.confidence.toFixed(2)}</td></tr>)}</tbody></table>{!shown.length && <p>Keine passenden Einträge.</p>}</div><div className="pagination"><button disabled={listPage === 0} onClick={() => setListPage(p => p - 1)}>←</button><span>Seite {listPage + 1} / {Math.max(1, Math.ceil(list.length / 50))}</span><button disabled={(listPage + 1) * 50 >= list.length} onClick={() => setListPage(p => p + 1)}>→</button></div></div>}
+        {mode === 'list' && <EntityTable rows={tableRows} total={list.length} page={listPage} pageSize={pageSize} query={search} onQuery={value => { setSearch(value); setListPage(0); }} onPage={setListPage} onSelect={select} onFocusGraph={id => { changeMode('network'); select(id); requestAnimationFrame(() => network.current?.focus(id)); }} />}
         <div className="visualization-footer"><span><span className="status-dot" /> {number(view?.stats.totalNodes)} Knoten geladen</span><span>{view?.stats.focused ? <button onClick={() => requestView('reset')}>← Gesamten Ausschnitt anzeigen</button> : 'Klick: untersuchen · Scroll: zoomen'}</span></div>
       </section>
-      <SidePanel node={selected} evidence={evidence} detailError={detailError} onClose={clearSelected} onDrill={group => { clearSelected(); setBusy(true); send({ kind: 'drill', group, version: ++version.current, filters: filtersRef.current }); }} />
+      <SidePanel node={selected} evidence={evidence} detailError={detailError} onClose={() => { clearSelected(); setAnnouncement('Details geschlossen.'); }} onDrill={group => { clearSelected(); setBusy(true); send({ kind: 'drill', group, version: ++version.current, filters: filtersRef.current }); }} />
     </div>
     <footer className="dashboard-footer"><span>PUPPETNET / OPEN-SOURCE INTELLIGENCE</span><span>Sigma.js 4 · Graphology · Leaflet · OpenStreetMap</span><a href="/legacy/index.html">Bisherige Konsole ↗</a></footer>
   </main>;

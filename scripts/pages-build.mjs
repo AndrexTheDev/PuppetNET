@@ -6,7 +6,16 @@ import { spawnSync } from 'node:child_process';
 // --build-gate an unusable value warns instead of failing the deployment. When
 // it does emit, `next build` copies apps/web/public/{robots.txt,sitemap.xml}
 // into the exported root.
-for (const args of [['scripts/emit-seo-files.mjs', '--build-gate'], ['--check', 'web/app.js'], ['--check', 'web/modals.js'], ['tests/web_smoke.mjs'], ['--import', 'tsx', '--test', 'tests/dashboard.test.ts']]) {
+for (const args of [
+  ['scripts/emit-og-images.mjs'],
+  ['scripts/emit-seo-files.mjs', '--build-gate'],
+  ['--check', 'web/app.js'],
+  ['--check', 'web/modals.js'],
+  ['tests/web_smoke.mjs'],
+  ['--import', 'tsx', '--test', 'tests/dashboard.test.ts'],
+  ['--import', 'tsx', '--test', 'tests/seo.test.ts'],
+  ['--import', 'tsx', '--test', 'tests/a11y.test.tsx'],
+]) {
   const result = spawnSync(process.execPath, args, { stdio: 'inherit' });
   if (result.status !== 0) process.exit(result.status ?? 1);
 }

@@ -21,7 +21,12 @@
     "ci:pages": "node scripts/pages-build.mjs",
     "ci:worker": "node scripts/worker-build.mjs",
     "test:dashboard": "node --import tsx --test tests/dashboard.test.ts",
-    "test:export": "node tests/export_smoke.mjs"
+    "test:export": "node tests/export_smoke.mjs",
+    "emit:og": "node scripts/emit-og-images.mjs",
+    "emit:entities": "node --import tsx scripts/emit-entity-data.ts",
+    "emit:sitemap": "node scripts/generate-sitemap.mjs",
+    "test:seo": "node --import tsx --test tests/seo.test.ts",
+    "test:a11y": "node --import tsx --test tests/a11y.test.tsx"
   },
   "devDependencies": {
     "cose-base": "2.2.0",

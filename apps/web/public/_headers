@@ -27,6 +27,16 @@
 /dashboard/*
   Cache-Control: no-cache
 
+/entity
+  Cache-Control: no-cache
+
+/entity/*
+  Cache-Control: no-cache
+
+# Static social cards (1200x630 PNG). They only change with a release.
+/og/*
+  Cache-Control: public, max-age=604800, must-revalidate
+
 # =============================================================================
 #  Cloudflare Pages response headers — web/_headers
 # =============================================================================
