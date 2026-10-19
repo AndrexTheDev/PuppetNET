@@ -73,6 +73,16 @@ Useful flags:
 **No secret is printed.** The script masks KV ids and only says whether a secret
 was generated, supplied by the environment, or preserved.
 
+### Offline rehearsal
+
+`ci:worker` runs `tests/provision_e2e.test.mjs`, which copies the script and
+`wrangler.toml` into a temp directory, puts a stub `npx` on `PATH` and performs a
+full run: four namespace creates, id patching, ten secret uploads on stdin,
+`deploy`. It asserts that the generated tokens are 64 hex characters and
+distinct, that the file is 0600, and that a second run creates only the missing
+namespace pair and uploads nothing. The real account calls remain the operator's
+step.
+
 ---
 
 ## 2. Manual equivalent
