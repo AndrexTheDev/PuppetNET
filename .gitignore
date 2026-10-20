@@ -81,16 +81,14 @@ docs/audit/
 
 # Written at deploy time from the deployment origin (npm run emit:seo). A
 # committed sitemap would have to guess a hostname; see docs/web-console.md.
-web/sitemap.xml
 apps/web/public/sitemap.xml
 apps/web/public/sitemap-*.xml
-apps/web/public/legacy/sitemap.xml
 
 # Pipeline publication of public entity profiles (generated; the committed
 # demo dataset lives beside it as entities.sample.json).
 apps/web/public/data/entities.json
 
-# Rendered by `npm run screenshots`; CI uploads them as a build artefact.
+# Rendered by optional Playwright checks; not a build artefact.
 .screenshots/
 
 # Next static scaffold

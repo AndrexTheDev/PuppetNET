@@ -24,7 +24,7 @@ try {
         for (const entry of list.getEntries()) if (!entry.hadRecentInput) window.__releaseShifts.push(entry.value);
       }).observe({ type: 'layout-shift', buffered: true });
     });
-    for (const route of ['/', '/dashboard/', '/legacy/']) {
+    for (const route of ['/', '/dashboard/']) {
       await page.goto(base + route);
       await page.waitForTimeout(1600);
       const metric = await page.evaluate(() => ({
@@ -37,6 +37,12 @@ try {
       results.push({ width, route, ...metric });
       await page.screenshot({ path: `.screenshots/release/${width}-${route === '/' ? 'home' : route.split('/')[1]}.png` });
     }
+    // The archived console path must land on the dashboard — even without the
+    // HTTP 301 a Pages deployment serves, the meta refresh has to forward.
+    await page.goto(base + '/legacy/');
+    await page.waitForURL('**/dashboard/', { timeout: 15000 });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    await page.screenshot({ path: `.screenshots/release/${width}-legacy-redirect.png` });
     if (width < 1100) {
       await page.goto(base + '/');
       const padding = await page.locator('body').evaluate(el => getComputedStyle(el).paddingBottom);

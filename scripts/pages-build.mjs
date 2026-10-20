@@ -3,8 +3,6 @@ import { spawnSync } from 'node:child_process';
 for (const args of [
   ['scripts/generate-seo.js'],
   ['--test', 'tests/release.test.mjs'],
-  ['--check', 'web/app.js'],
-  ['--check', 'web/modals.js'],
   ['tests/web_smoke.mjs'],
   ['--import', 'tsx', '--test', 'tests/dashboard.test.ts', 'tests/data_fetcher.test.ts'],
   ['--import', 'tsx', '--test', 'tests/seo.test.ts'],

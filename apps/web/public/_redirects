@@ -1,0 +1,7 @@
+# Cloudflare Pages static redirects (evaluated before static assets).
+# The v1 analyst console was archived; every former /legacy path — including
+# deep links like /legacy/index.html and /legacy/vendor/cytoscape.min.js —
+# lands on the modern dashboard instead of a 404.
+/legacy /dashboard/ 301
+/legacy/ /dashboard/ 301
+/legacy/* /dashboard/ 301

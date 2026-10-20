@@ -203,28 +203,15 @@ utilisation, `merges_applied`, `homonyms_protected`, `purged`, `escalated`,
 
 ---
 
-### `screenshots.yml` — on changes to `web/`, plus manual dispatch
+### `screenshots.yml` — archived with the v1 console
 
-The visual half of the beta test. `scripts/screenshots.mjs` serves `web/` from a local
-`node:http` server (path-traversal guarded) and drives it in a real Chromium: four
-viewports × sixteen states = **60 screenshots**, each one gated by an in-page assertion, so
-a state that does not verify fails the job instead of producing a misleading picture.
-
-* Playwright is installed with `npm install --no-save playwright@1.63.0` **inside this job
-  only** — it is not a `devDependency`, because its postinstall would download browser
-  binaries on every `npm ci` in every other job;
-* `.screenshots/` is uploaded as the `screenshot-matrix` artefact with
-  `if: always()` and a 14-day retention: images are build output, never commits.
-  The upload sets `include-hidden-files: true` — without it upload-artifact skips
-  the dot-directory and reports "No files were found" after a *successful* render;
-* the artefact also carries `run.log` (the step is `tee`d with `pipefail`) and
-  `matrix.json`, which the harness writes in a `finally` block, so a run that died
-  before its first screenshot still says which stage killed it. The job summary is
-  that same `matrix.json` rendered by `scripts/screenshots.mjs --summary`;
-* dispatch inputs (`only`, `viewport`) reach the script through `env` and a bash array,
-  never by interpolation into the command line;
-* `concurrency: screenshots-${{ github.ref }}` with `cancel-in-progress: true` — a superseded
-  render is worthless, and Chromium minutes are the expensive part of this job.
+The v1 screenshot matrix (`scripts/screenshots.mjs` serving the console from `web/`)
+was removed together with the legacy console; the workflow file survives only under
+`docs/legacy-workflows/screenshots.yml`. Optional visual checks for the modern export
+are `tests/site_browser.mjs` and `tests/release_browser.mjs`, which drive `apps/web/out`
+in a locally installed Playwright/Chromium and write only git-ignored screenshots under
+`.screenshots/`. They are not CI jobs: browser binaries are deliberately not part of
+`npm ci`.
 
 ## 2. Exit codes
 

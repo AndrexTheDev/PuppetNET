@@ -29,7 +29,8 @@ git push origin arena/5fb0fe0b-puppetnet
 - [ ] Branch-Preview prüfen. Preview kann absichtlich die Produktionsdomain als
   Canonical verwenden; `SITE_ORIGIN` ist die kanonische Domain, nicht automatisch
   die zufällige Preview-Domain.
-- [ ] `/`, `/dashboard/`, `/legacy/`, veröffentlichte `/entity/<slug>/`,
+- [ ] `/`, `/dashboard/`, `/legacy` (Permanent-Redirect auf `/dashboard/`),
+  veröffentlichte `/entity/<slug>/`,
   `/data/graph_latest.json` (bei echter Publikation), `/sitemap.xml`, `/robots.txt`,
   `/styles/globals.css` und `/og/site.png` testen.
 - [ ] Sitemap-URLs stimmen mit wirklich exportierten Profilen überein; HTML-Quelltext

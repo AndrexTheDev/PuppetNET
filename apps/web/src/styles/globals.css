@@ -16,12 +16,9 @@
   --color-muted-dark: #809578;
   --color-danger: #e89b92;
 
-  --site-bg: var(--color-forest-950);
-  --site-panel: var(--color-forest-850);
-  --site-line: var(--color-forest-700);
-  --site-green: var(--color-green);
-  --site-gold: var(--color-gold);
-  --site-muted: var(--color-muted);
+  /* Colour tokens only: one palette (palette.json) is the single source shared
+     by CSS, WebGL and Leaflet. No legacy alias layer, no per-page overrides. */
+
   --ad-mobile-height: 50px;
   --ad-mobile-reserve: 83px;
   --ad-desktop-height: 90px;

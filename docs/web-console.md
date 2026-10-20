@@ -1,4 +1,13 @@
-# Analyst console (`web/`)
+# Analyst console (`web/`) — **ARCHIVED**
+
+> **Status:** The v1 analyst console was removed from the deployment. It is preserved
+> verbatim in the git history (last shipped under `apps/web/public/legacy/`, served at
+> `/legacy/`). Today `/legacy` is a permanent redirect to `/dashboard/`
+> (`app/legacy/page.tsx` + `public/_redirects`), and the modern Next.js dashboard is the
+> only frontend. This document describes the archived console for historical reference;
+> its commands (`npm run serve`, `vendor:libs`) and files no longer exist.
+
+
 
 A single-page OSINT console for the PuppetNET graph: search an entity, watch its
 neighbourhood assemble on a 2D canvas, walk the ties that connect two of them, and

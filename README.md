@@ -83,8 +83,9 @@ möglicher Extraktionsfehler. Verifizierte Feeds nur bewusst einzeln zulassen.
 
 The new `/dashboard/` frontend uses Sigma.js 4, Graphology, an off-thread ForceAtlas2
 layout and opt-in Leaflet/OpenStreetMap. The dashboard opens in the table view;
-WebGL is loaded only when selected and physics is never started automatically. The previous analyst console is retained at
-`/legacy/index.html`. See [dashboard guide](docs/webgl-dashboard.md). `output: 'export'` generates
+WebGL is loaded only when selected and physics is never started automatically. The previous analyst
+console is archived (git history; last shipped in the pre-2.1 tree): `/legacy` is a permanent
+redirect to `/dashboard/`. See [dashboard guide](docs/webgl-dashboard.md). `output: 'export'` generates
 `apps/web/out` during `next build` (Next 15 does not use the old `next export` command).
 There are no Pages Functions, SSR routes or hosted model APIs.
 
@@ -179,7 +180,7 @@ Python CI and the Cloudflare build gates are the active checks.
 
 The new local-first path uses `NLP_BACKEND=token_saver`, `de_core_news_sm` and an
 optional, explicitly budgeted Gemini fallback. `graph_latest.json` is shared by
-the dashboard, legacy console, profiles and sitemap. See
+the dashboard, profiles and sitemap. See
 [setup, review rules and deployment limitations](docs/daily-ingestion.md) before
 enabling `ENABLE_DAILY_STATIC`. The new workflow has a five-minute timeout and
 publishes changed data directly to production `main` using `GH_PAT`.

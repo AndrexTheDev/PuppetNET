@@ -22,10 +22,12 @@ const dataset = JSON.parse(result.stdout);
 if (dataset.origin !== origin) throw new Error('SEO origin differs from entity metadata origin');
 const publicDir = path.join(root, 'apps/web/public');
 const profiles = entityEntries(dataset.entities, dataset.generatedAt);
+// Only active Next.js App Router documents are indexed. The archived v1
+// console path `/legacy` is a permanent redirect to `/dashboard/` and must
+// never appear in a sitemap.
 const entries = [
   { loc: '/', priority: '1.0', changefreq: 'weekly' },
   { loc: '/dashboard/', priority: '0.9', changefreq: 'monthly' },
-  { loc: '/legacy/', priority: '0.6', changefreq: 'monthly' },
   ...profiles,
 ];
 const { files, urlCount } = renderSitemaps({ origin, entries, lastmod: dataset.generatedAt });
@@ -40,9 +42,6 @@ function robots(file, sitemap) {
   writeFileSync(file, `${text}\n\nSitemap: ${origin}${sitemap}\n`);
 }
 robots(path.join(publicDir, 'robots.txt'), '/sitemap.xml');
-const legacyDir = path.join(publicDir, 'legacy');
-writeSitemaps(legacyDir, renderSitemaps({ origin, entries: [{ loc: '/legacy/' }], lastmod: dataset.generatedAt }).files);
-robots(path.join(legacyDir, 'robots.txt'), '/legacy/sitemap.xml');
 mkdirSync(path.join(publicDir, 'data'), { recursive: true });
 writeFileSync(path.join(publicDir, 'data/seo-metadata.json'), `${JSON.stringify(dataset, null, 2)}\n`);
 // One palette source for CSS, WebGL and Leaflet. Keep the CSS mirror deterministic.
