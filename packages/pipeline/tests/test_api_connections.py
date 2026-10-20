@@ -340,9 +340,13 @@ def check_gemini() -> dict[str, Any]:
         if not outcome["ok"] and outcome["kind"] == "http" and outcome.get("http_status") == 404:
             log("WARN", f"model '{model}' was not served by the API: {outcome['detail']}")
             served = _gemini_list_models(session, key)
+            # Lite models first: they answer a one-digit classification in seconds,
+            # while full thinking-class models (3.8-flash) have been observed to exceed
+            # 60 s on the legacy v1beta generateContent path even with thinkingBudget=0.
             fallbacks = [m.strip() for m in os.getenv(
-                "GEMINI_FALLBACK_MODELS", "gemini-3.8-flash,gemini-2.5-flash,gemini-2.0-flash").split(",")
-                if m.strip()]
+                "GEMINI_FALLBACK_MODELS",
+                "gemini-flash-lite-latest,gemini-3.5-flash-lite,gemini-3.8-flash,"
+                "gemini-2.5-flash-lite,gemini-2.0-flash").split(",") if m.strip()]
             for candidate in fallbacks:
                 # Try every configured fallback regardless of the catalog listing: the
                 # list may contain models this account cannot actually call (and may
@@ -355,8 +359,12 @@ def check_gemini() -> dict[str, Any]:
                 attempts.append({"model": candidate,
                                  **{k: outcome[k] for k in ("ok", "kind", "detail") if k in outcome},
                                  "http_status": outcome.get("http_status")})
-                if outcome["ok"] or outcome.get("http_status") != 404:
+                if outcome["ok"]:
                     break
+                transient = outcome.get("http_status") == 404 or (
+                    outcome["kind"] == "network" and "timed out" in outcome.get("detail", ""))
+                if not transient:
+                    break  # auth/quota/budget/shape problems are model-independent: stop probing
     except requests.RequestException as exc:
         log("FAIL", f"Gemini API unreachable ({type(exc).__name__}): {str(exc)[:300]}")
         return {"status": "fail", "detail": f"network error: {type(exc).__name__}", "model": model,
