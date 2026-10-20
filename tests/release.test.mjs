@@ -282,3 +282,15 @@ test('wave 14: saved sessions and the provenance export never leave the browser'
   assert.ok(dashboard.includes("t('dash.evidenceCsvAria')"), 'the evidence export is labelled');
   assert.ok(!/fetch\([^)]*savedViews/i.test(dashboard), 'saved sessions are never uploaded');
 });
+
+test('wave 15: case-report notes round-trip locally, conflicts are never overwritten', () => {
+  const data = read('apps/web/app/dashboard/graph-data.ts');
+  assert.match(data, /export function parseCaseNotes\(markdown: string\): Record<string, string>/, 'the parser is pure and typed');
+  assert.match(data, /export function mergeNotes\(current: Record<string, string>, imported: Record<string, string>\)/, 'merging is pure');
+  assert.match(data, /if \(existing === note\) \{ unchanged\+\+; continue; \}\s+skipped\+\+;/, 'a differing local note is kept, not replaced');
+  assert.doesNotMatch(data.match(/export function parseCaseNotes[\s\S]*?\n}/)?.[0] ?? '', /fetch|XMLHttpRequest/, 'imported reports never leave the device');
+  const dashboard = read('apps/web/app/dashboard/Dashboard.tsx');
+  assert.ok(dashboard.includes('parseCaseNotes(await file.text())'), 'the file is read in the browser');
+  assert.ok(dashboard.includes("t('dash.notesImported'"), 'the import summary is announced');
+  assert.ok(dashboard.includes("t('dash.notesImportEmpty')"), 'a foreign file is answered honestly');
+});

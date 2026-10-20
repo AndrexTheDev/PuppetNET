@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
-import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, monthWindow, bundleEdges, structuralVulnerability, pathTimeline, normalizeNote, readNotes, caseReport, nextPlaybackMonth, evidenceWindow, compareDuplicates, multiFailureImpact, normalizeSavedName, readSavedViews, upsertSavedView, removeSavedView, evidenceToCSV, SAVED_VIEW_LIMIT, NOTE_LIMIT, EGO_DEPTH_LIMIT, VULNERABILITY_NODE_LIMIT, normalizeInsights, ANALYSIS_LIMITS, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
+import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, monthWindow, bundleEdges, structuralVulnerability, pathTimeline, normalizeNote, readNotes, caseReport, nextPlaybackMonth, evidenceWindow, compareDuplicates, multiFailureImpact, normalizeSavedName, readSavedViews, upsertSavedView, removeSavedView, evidenceToCSV, parseCaseNotes, mergeNotes, SAVED_VIEW_LIMIT, NOTE_LIMIT, EGO_DEPTH_LIMIT, VULNERABILITY_NODE_LIMIT, normalizeInsights, ANALYSIS_LIMITS, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
 import { apiBase, readResponse } from '../apps/web/app/dashboard/api';
 const filters: Filters = { confidence: 0, weight: 0, types: [...TYPES], lod: true, ratio: 1 };
 test('normalizes Worker and Graphology nodes without inventing coordinates', () => {
@@ -607,4 +607,32 @@ test('wave 14 evidence export lists documents per entity and relationship', () =
   assert.equal(evidenceToCSV(data, data.nodes, data.edges), csv, 'deterministic');
   assert.equal(evidenceToCSV(normalizeDataset({ nodes: [{ key: 'a', name: 'A' }], edges: [], evidence: [] }), [], []), 'id,title,source,date,url,used_by\n', 'an empty slice exports the header only');
   assert.equal(evidenceToCSV(data, data.nodes, data.edges, 1).trimEnd().split('\n').length, 2, 'the export is bounded');
+});
+
+test('wave 15 case report notes survive the roundtrip and never overwrite silently', () => {
+  const stats = { totalNodes: 2, totalEdges: 1, filteredNodes: 2, filteredEdges: 1, locatedNodes: 0, grouped: false, level: 'Einzelknoten', focused: false, truncated: false };
+  const nodes = normalizeDataset({ nodes: [{ key: 'a', name: 'Alpha' }, { key: 'b', name: 'Beta' }], edges: [], evidence: [] }).nodes;
+  const notes = { a: 'Zeile eins\nZeile zwei', b: 'nur eine Zeile' };
+  for (const lang of ['de', 'en'] as const) {
+    const report = caseReport({ stats, nodes, edges: [], notes }, '2026-10-20', lang);
+    assert.deepEqual(parseCaseNotes(report), notes, `the ${lang} report round-trips its notes`);
+  }
+  assert.deepEqual(parseCaseNotes('# irgendwas\n\n## Analytik\n'), {}, 'a report without the notes section yields nothing');
+  assert.deepEqual(parseCaseNotes(''), {});
+  assert.deepEqual(parseCaseNotes('## Ermittlungsnotizen (2)\n\n_Keine Notizen erfasst._\n'), {}, 'an empty section stays empty');
+  const forged = '## Ermittlungsnotizen (1)\n\n- **Nicht im Ausschnitt** (`fremd`)\n  Text von anderswo\n\n## Analytik\n';
+  assert.deepEqual(parseCaseNotes(forged), { fremd: 'Text von anderswo' }, 'a foreign id is read honestly, filtered later during use');
+  const big = `## Ermittlungsnotizen (1)\n\n- **Big** (\`big\`)\n  ${'x'.repeat(4000)}\n`;
+  assert.equal(parseCaseNotes(big).big.length, NOTE_LIMIT, 'imported notes are re-capped');
+
+  const merged = mergeNotes({ a: 'eigener Text' }, { a: 'importierter Text', b: 'neu', c: 'eigener Text' });
+  assert.equal(merged.notes.a, 'eigener Text', 'the local note wins over a differing import');
+  assert.equal(merged.notes.b, 'neu', 'empty slots are filled');
+  assert.equal(merged.notes.c, 'eigener Text', 'untouched ids are filled as well');
+  assert.deepEqual([merged.added, merged.unchanged, merged.skipped], [2, 0, 1], 'two new slots, one skipped conflict');
+  assert.equal(mergeNotes({ a: 'gleich' }, { a: 'gleich' }).unchanged, 1, 'identical text is not reported as a change');
+  assert.deepEqual(mergeNotes({}, {}).notes, {});
+  assert.deepEqual(mergeNotes({ x: 'keep' }, { '': 'leer', y: '   ' }), { notes: { x: 'keep' }, added: 0, unchanged: 0, skipped: 0 }, 'junk entries are dropped');
+  const deterministic = mergeNotes({ a: 'eins' }, { b: 'zwei', c: 'drei' });
+  assert.deepEqual(mergeNotes({ a: 'eins' }, { b: 'zwei', c: 'drei' }), deterministic);
 });

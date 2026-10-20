@@ -859,6 +859,62 @@ export function readNotes(raw: unknown): Record<string, string> {
   }
   return out;
 }
+/**
+ * Wave 15: reads the research notes back out of an exported case report (DE or
+ * EN, Wave-11 format). The report is the user's own exchange medium — nothing
+ * is uploaded, the file stays on the device. Parsing is deliberately strict:
+ * only the notes section counts, entries need the `- **Label** (`id`)` line,
+ * the note is the following indented block, and everything is sanitized with
+ * the same rules as live notes. A foreign or truncated file yields what it
+ * honestly contains instead of throwing.
+ */
+export function parseCaseNotes(markdown: string): Record<string, string> {
+  if (typeof markdown !== 'string' || !markdown) return {};
+  const lines = markdown.replace(/\r\n?/g, '\n').split('\n');
+  const start = lines.findIndex(line => /^##\s+(Ermittlungsnotizen|Research notes)\s*(?:\(\d+\))?\s*$/.test(line));
+  if (start < 0) return {};
+  const notes: Record<string, string> = {};
+  let count = 0;
+  for (let i = start + 1; i < lines.length && count < 500; i++) {
+    const line = lines[i];
+    if (/^##\s/.test(line)) break;
+    const entry = /^-\s+\*\*(.+?)\*\*\s+\(`([^`]+)`\)\s*$/.exec(line);
+    if (!entry) continue;
+    const id = text(entry[2], 200);
+    if (!id) continue;
+    const body: string[] = [];
+    for (let j = i + 1; j < lines.length; j++) {
+      if (/^\s{2,}\S/.test(lines[j])) { body.push(lines[j].replace(/^\s+/, '')); continue; }
+      if (lines[j].trim() === '') { if (body.length) body.push(''); continue; }
+      break;
+    }
+    while (body.length && body[body.length - 1] === '') body.pop();
+    const note = normalizeNote(body.join('\n'));
+    if (!note) continue;
+    notes[id] = note;
+    count++;
+  }
+  return notes;
+}
+
+/** Wave 15: merges imported notes into the local store without silently
+ * overwriting the investigator's own work. Imported notes fill empty slots and
+ * are reported as "added"; a differing existing note is kept and reported as
+ * "skipped"; identical text counts as "unchanged". Deterministic and pure. */
+export function mergeNotes(current: Record<string, string>, imported: Record<string, string>): { notes: Record<string, string>; added: number; unchanged: number; skipped: number } {
+  const notes = { ...current };
+  let added = 0, unchanged = 0, skipped = 0;
+  for (const [rawId, rawNote] of Object.entries(imported)) {
+    const id = text(rawId, 200), note = normalizeNote(rawNote);
+    if (!id || !note) continue;
+    const existing = normalizeNote(notes[id]);
+    if (!existing) { notes[id] = note; added++; continue; }
+    if (existing === note) { unchanged++; continue; }
+    skipped++;
+  }
+  return { notes, added, unchanged, skipped };
+}
+
 export interface CaseReportInput {
   stats: View['stats'];
   nodes: GraphNode[];

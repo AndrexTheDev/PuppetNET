@@ -2,7 +2,7 @@
 import dynamic from 'next/dynamic';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import EntityTable, { type TableRow } from './EntityTable';
-import { COLORS, TYPES, LIMITS, NOTE_STORAGE_KEY, caseReport, decodeViewState, edgesToCSV, encodeViewState, monthWindow, nextPlaybackMonth, nodesToCSV, compareDuplicates, removeSavedView, upsertSavedView, readSavedViews, SAVED_VIEW_STORAGE_KEY, normalizeNote, rankSearch, readNotes, resolveNodeRef, viewToJSON, type Evidence, type Filters, type GraphEdge, type GraphNode, type PathTimeline, type View, type ViewUrlState } from './graph-data';
+import { COLORS, TYPES, LIMITS, NOTE_STORAGE_KEY, caseReport, decodeViewState, edgesToCSV, encodeViewState, monthWindow, nextPlaybackMonth, nodesToCSV, compareDuplicates, mergeNotes, parseCaseNotes, removeSavedView, upsertSavedView, readSavedViews, SAVED_VIEW_STORAGE_KEY, normalizeNote, rankSearch, readNotes, resolveNodeRef, viewToJSON, type Evidence, type Filters, type GraphEdge, type GraphNode, type PathTimeline, type View, type ViewUrlState } from './graph-data';
 import type { NetworkHandle, PathHighlight } from './NetworkGraph';
 import type { WorkerRequest, WorkerResponse } from './protocol';
 import { loadStaticGraph, requestResearch, type Standby } from '../../src/lib/dataFetcher';
@@ -49,6 +49,8 @@ export default function Dashboard() {
   const [viewName, setViewName] = useState('');
   const [viewsStatus, setViewsStatus] = useState('');
   const viewsReady = useRef(false);
+  const [notesImportStatus, setNotesImportStatus] = useState('');
+  const notesImport = useRef<HTMLInputElement | null>(null);
   // Wave 12: cumulative playback — the month list is frozen while it runs
   // (a time filter shrinks the visible timeline, so it cannot be re-derived).
   const [playing, setPlaying] = useState(false);
@@ -346,6 +348,21 @@ export default function Dashboard() {
     setViewsStatus(t('dash.viewsApplied', { name: entry.name }));
     setAnnouncement(t('dash.annViewsApplied', { name: entry.name }));
   };
+  const importCaseNotes = async (file: File | null | undefined) => {
+    if (!file) return;
+    if (file.size > 5 * 1024 * 1024) { setNotesImportStatus(t('dash.notesImportTooBig')); return; }
+    try {
+      const parsed = parseCaseNotes(await file.text());
+      const count = Object.keys(parsed).length;
+      if (count === 0) { setNotesImportStatus(t('dash.notesImportEmpty')); return; }
+      // The merge runs on the state this render sees (a user action, never a
+      // background update) so the summary is exact instead of optimistic.
+      const merged = mergeNotes(notes, parsed);
+      setNotes(merged.notes);
+      setNotesImportStatus(t('dash.notesImported', { added: number(merged.added), unchanged: number(merged.unchanged), skipped: number(merged.skipped) }));
+    } catch { setNotesImportStatus(t('dash.notesImportError')); }
+    finally { if (notesImport.current) notesImport.current.value = ''; }
+  };
   const timelineMax = useMemo(() => (view?.timeline ?? []).reduce((max, bucket) => Math.max(max, bucket.count), 0), [view]);
   useEffect(() => {
     const wanted = initialFocus.current;
@@ -535,6 +552,12 @@ export default function Dashboard() {
             </li>)}</ul>}
           <p className="muted small-text">{t('dash.viewsText')}</p>
           <p className="muted" role="status">{viewsStatus}</p>
+        </div>
+        <div className="notes-import">
+          <label className="import-button outlined-import">{t('dash.notesImport')}
+            <input ref={notesImport} type="file" accept=".md,text/markdown,text/plain" aria-label={t('dash.notesImportAria')} onChange={e => { void importCaseNotes(e.target.files?.[0]); }} />
+          </label>
+          {notesImportStatus && <p className="muted" role="status">{notesImportStatus}</p>}
         </div>
         {Object.keys(notes).length > 0 && <p className="muted" role="status">{t('dash.notesCount', { count: number(Object.keys(notes).length) })}</p>}
         <div className="filter-foot"><span>○</span><p>{t('dash.footNote')}</p></div>

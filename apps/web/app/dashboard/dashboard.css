@@ -169,3 +169,8 @@
 .saved-views li{display:grid;grid-template-columns:1fr auto auto;gap:var(--space-1,0.25rem);align-items:center}
 .saved-views button{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left}
 .saved-date{font-size:.8em;opacity:.7;font-variant-numeric:tabular-nums}
+
+/* Wave 15: case-report note import (token-only) */
+.notes-import{margin-top:var(--space-2,0.5rem)}
+.outlined-import{display:inline-block;border:1px solid var(--line);border-radius:var(--radius-1,0.25rem);padding:0.35rem 0.6rem;cursor:pointer}
+.outlined-import:focus-within{outline:2px solid var(--color-green);outline-offset:2px}

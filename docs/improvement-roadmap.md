@@ -353,6 +353,28 @@ Sitzungs-Block im Filter-Panel, Beleg-Export im Footer (DE/EN, Statusansagen), t
 CSS, 2 neue Datenlagen-Tests (dashboard 37) + 1 neuer Release-Pin (release 20) —
 `ci:pages` grün, 0 zusätzliche Actions-Minuten.
 
+### Welle 15 — Fallbericht-Roundtrip (Notizen zurücklesen) — ✅ umgesetzt (2026-10-20)
+
+- **Notizen importieren**: Ein exportierter Fallbericht (DE oder EN) lässt sich wieder
+  einlesen — die Datei bleibt auf dem Gerät, es wird nichts hochgeladen. Der Parser liest
+  **nur** den Abschnitt „Ermittlungsnotizen"/„Research notes", verlangt das strenge
+  Eintragsformat (`- **Label** (`id`)` plus eingerückter Notizblock), übernimmt
+  Mehrzeiligkeit und bereinigt jede Notiz mit denselben Regeln wie live erfasste Notizen
+  (2.000 Zeichen, Steuerzeichen, Leerraum). Eine fremde oder abgeschnittene Datei liefert
+  ehrlich das, was drinsteht, statt zu werfen.
+- **Zusammenführen ohne stilles Überschreiben**: Importierte Notizen füllen **leere**
+  Plätze und werden als „neu" gezählt; eine abweichende eigene Notiz **bleibt erhalten**
+  und wird als „übersprungen" gemeldet; identischer Text zählt als „unverändert".
+  Damit ist der Bericht ein sicherer Transportweg zwischen Rechnern, ohne dass
+  Ermittlungsarbeit verloren geht.
+- Die Statuszeile nennt die Zahlen („Import: 3 neu, 1 unverändert, 1 übersprungen"),
+  Dateien über 5 MiB und unlesbare Dateien werden klar abgelehnt.
+
+**Geliefert (Welle 15)**: `parseCaseNotes()` + `mergeNotes()` (reine, getestete
+Funktionen), Import-Steuerung im Filter-Panel (DE/EN, Statusansage), token-only CSS,
+1 neuer Datenlagen-Test mit vollständigem Roundtrip in beiden Sprachen (dashboard 38) +
+1 neuer Release-Pin (release 21) — `ci:pages` grün, 0 zusätzliche Actions-Minuten.
+
 ## 4. Budget-Zusammenfassung
 
 | Welle | Ort | Zusätzliche Actions-Minuten | Status |
@@ -371,6 +393,7 @@ CSS, 2 neue Datenlagen-Tests (dashboard 37) + 1 neuer Release-Pin (release 20) �
 | 12 Wiedergabe/Belegzeitraum | Browser | **0** | ✅ umgesetzt |
 | 13 Direktvergleich/Mehrfachausfall | Browser/Web Worker | **0** | ✅ umgesetzt |
 | 14 Fallsitzungen/Provenienz-Export | Browser/Web Worker | **0** | ✅ umgesetzt |
+| 15 Fallbericht-Roundtrip | Browser | **0** | ✅ umgesetzt |
 
 Kein Schritt erzeugt neue Workflows, neue Cron-Jobs, längere Jobs oder bezahlte
 Dienste. Die einzigen verbrauchsrelevanten Grenzen sind die bestehenden: 3
@@ -723,6 +746,27 @@ panel, evidence export in the footer (DE/EN, status announcements), token-only C
 2 new data-layer tests (dashboard 37) + 1 new release pin (release 20) — `ci:pages`
 green, 0 extra Actions minutes.
 
+### Wave 15 — case-report roundtrip (notes back in) — ✅ implemented (2026-10-20)
+
+- **Import notes**: an exported case report (DE or EN) can be read back in — the file
+  stays on the device, nothing is uploaded. The parser reads **only** the "Research
+  notes"/"Ermittlungsnotizen" section, requires the strict entry format
+  (`- **Label** (`id`)` plus the indented note block), preserves multi-line notes and
+  sanitizes every note with the same rules as live notes (2,000 characters, control
+  characters, whitespace). A foreign or truncated file honestly yields what it contains
+  instead of throwing.
+- **Merging without silent overwrites**: imported notes fill **empty** slots and count as
+  "new"; a differing local note is **kept** and reported as "skipped"; identical text
+  counts as "unchanged". That makes the report a safe transport between machines without
+  losing investigative work.
+- The status line names the numbers ("Import: 3 new, 1 unchanged, 1 skipped"), and files
+  above 5 MiB or unreadable files are rejected clearly.
+
+**Delivered (Wave 15)**: `parseCaseNotes()` + `mergeNotes()` (pure, tested functions),
+import control in the filter panel (DE/EN, status announcement), token-only CSS, 1 new
+data-layer test with a full roundtrip in both languages (dashboard 38) + 1 new release
+pin (release 21) — `ci:pages` green, 0 extra Actions minutes.
+
 ## 4. Budget summary
 
 | Wave | Location | Additional Actions minutes | Status |
@@ -741,6 +785,7 @@ green, 0 extra Actions minutes.
 | 12 playback/evidence window | browser | **0** | ✅ implemented |
 | 13 comparison/multi-failure | browser/web worker | **0** | ✅ implemented |
 | 14 sessions/provenance export | browser/web worker | **0** | ✅ implemented |
+| 15 notes roundtrip | browser | **0** | ✅ implemented |
 
 No step creates new workflows, new cron jobs, longer jobs or paid services. The only
 consumption-relevant limits remain the existing ones: 3 reservations/UTC day, 5-minute
