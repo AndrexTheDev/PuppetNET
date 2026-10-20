@@ -23,11 +23,14 @@ Stages
              production contract of ``TokenSaverEngine``) and extracts
              entities from a German sample sentence.
 ``gemini``   isolated live call following the production ``GeminiFallback``
-             protocol: ``countTokens`` (<=100) then ``generateContent`` with
-             <=50 output tokens and ``temperature=0`` on a single German
-             sentence with a complex relation structure. The reported
-             ``usageMetadata`` token counts are logged. If the configured
-             model (historically ``gemini-1.5-flash``) is no longer served,
+             protocol: ``countTokens`` then ``generateContent`` with <=50
+             output tokens and ``temperature=0`` on a single German sentence
+             with a complex relation structure. The reported ``usageMetadata``
+             token counts are logged. QA allows prompts up to 150 counted
+             tokens (hard cap) but flags anything above the production input
+             guard (100) as ``over_production_budget`` — the production
+             classifier would refuse such a call. If the configured model
+             (historically ``gemini-1.5-flash``) is no longer served,
              available models are listed and configured fallbacks are tried;
              a fallback-only answer is reported as ``warn``, not ``ok``.
 ``export``   offline smoke test of the publication path: a synthetic approved
@@ -243,9 +246,11 @@ def _gemini_call(session: Any, model: str, prompt: str) -> dict[str, Any]:
         return {"ok": False, "kind": "http", "http_status": counted.status_code,
                 "detail": f"countTokens: {_http_error_detail(counted)}"}
     count = counted.json().get("totalTokens")
-    if type(count) is not int or not 0 < count <= 100:
-        return {"ok": False, "kind": "budget", "detail": f"prompt is {count!r} tokens; production allows 1..100"}
-    config: dict[str, Any] = {"maxOutputTokens": min(50, 150 - count), "temperature": 0}
+    if type(count) is not int or count <= 0:
+        return {"ok": False, "kind": "budget", "detail": f"countTokens returned {count!r}"}
+    if count > 150:
+        return {"ok": False, "kind": "budget", "detail": f"prompt is {count} tokens; QA hard cap is 150"}
+    config: dict[str, Any] = {"maxOutputTokens": max(1, min(50, 150 - count)), "temperature": 0}
     if model.startswith(("gemini-2.5-", "gemini-3.")):
         config["thinkingConfig"] = {"thinkingBudget": 0}  # keep thinking models inside the 150-token guard
     result = session.post(url + ":generateContent", headers=headers,
@@ -261,6 +266,7 @@ def _gemini_call(session: Any, model: str, prompt: str) -> dict[str, Any]:
     except (KeyError, IndexError, TypeError):
         return {"ok": False, "kind": "shape", "detail": f"no candidate text in response: {str(payload)[:300]}"}
     return {"ok": True, "kind": "ok", "answer": answer, "prompt_tokens": count,
+            "over_production_budget": count > 100,
             "usage": {"prompt": usage.get("promptTokenCount"), "candidates": usage.get("candidatesTokenCount"),
                       "total": usage.get("totalTokenCount")}}
 
@@ -356,11 +362,15 @@ def check_gemini() -> dict[str, Any]:
     total = usage.get("total")
     log("OK", f"Gemini API responded via '{answered_model}': answer={outcome['answer']!r} "
               f"tokens(prompt/candidates/total)={usage['prompt']}/{usage['candidates']}/{total}")
+    if outcome.get("over_production_budget"):
+        log("WARN", f"prompt counted {usage['prompt']} tokens > the hardcoded production input guard (100): "
+                    "GeminiFallback.classify would REFUSE this call — tokenizer drift; "
+                    "review the budget in packages/pipeline/src/token_saver_nlp.py")
     if type(total) is int and total > 150:
         log("WARN", f"total {total} tokens exceeds the production budget guard (150); production would reject this")
         status = "warn"
-    elif answered_model != model:
-        log("WARN", f"configured model '{model}' is not served; only fallback '{answered_model}' answered. "
+    elif answered_model != model or outcome.get("over_production_budget"):
+        log("WARN", f"configured model '{model}' is not served; '{answered_model}' answered instead. "
                     "Set vars.GEMINI_MODEL accordingly — production stage 3 is silently dead otherwise.")
         status = "warn"
     else:
@@ -375,7 +385,9 @@ def check_gemini() -> dict[str, Any]:
         status = "warn" if status == "ok" else status
     return {"status": status, "detail": f"'{answered_model}' answered with {usage['total']} total tokens",
             "model_configured": model, "model_answered": answered_model,
-            "answer": outcome["answer"], "usage": usage, "attempts": attempts, "served_models": served}
+            "answer": outcome["answer"], "usage": usage,
+            "over_production_budget": bool(outcome.get("over_production_budget")),
+            "attempts": attempts, "served_models": served}
 
 
 # ---------------------------------------------------------------------------
