@@ -3,7 +3,7 @@ import palette from '../../src/styles/palette.json';
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import Sigma from 'sigma';
 import { MultiDirectedGraph } from 'graphology';
-import { COLORS, hash, type View } from './graph-data';
+import { COLORS, communityColor, hash, type View } from './graph-data';
 import { describeGraphNode, graphInstructions, graphKeyAction, nextIndex } from '../../lib/graph-keyboard';
 export interface NetworkHandle {
   positions: (version: number, values: Float32Array) => void;
@@ -11,17 +11,46 @@ export interface NetworkHandle {
   reset: () => void;
   focus: (id: string) => void;
 }
-interface Props { view: View | null; onSelect: (id: string, group: boolean) => void; onRatio: (ratio: number) => void; onClear: () => void }
+export interface PathHighlight { nodes: string[]; edges: string[] }
+interface Props { view: View | null; onSelect: (id: string, group: boolean) => void; onRatio: (ratio: number) => void; onClear: () => void;
+  colorMode?: 'type' | 'community'; path?: PathHighlight | null }
 const nextFrame = () => new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
-const NetworkGraph = forwardRef<NetworkHandle, Props>(function NetworkGraph({ view, onSelect, onRatio, onClear }, ref) {
+const NetworkGraph = forwardRef<NetworkHandle, Props>(function NetworkGraph({ view, onSelect, onRatio, onClear, colorMode = 'type', path = null }, ref) {
   const host = useRef<HTMLDivElement>(null), sigma = useRef<Sigma | null>(null), current = useRef<{ version: number; graph: MultiDirectedGraph; keys: string[] } | null>(null);
   const callbacks = useRef({ onSelect, onRatio, onClear }); callbacks.current = { onSelect, onRatio, onClear };
   const viewRef = useRef<View | null>(view); viewRef.current = view;
   const focusRef = useRef('');
   const pendingFocus = useRef<string | null>(null);
   const highlight = useRef<{ id: string; size: unknown; color: unknown } | null>(null);
+  const pathRef = useRef<PathHighlight | null>(path); pathRef.current = path;
+  const pathMark = useRef<{ nodes: { id: string; size: unknown; color: unknown }[]; edges: { key: string; size: unknown; color: unknown }[] }>({ nodes: [], edges: [] });
   const [error, setError] = useState(''), [building, setBuilding] = useState(false);
   const [focused, setFocused] = useState(''), [announcement, setAnnouncement] = useState('');
+
+  // Pathfinder highlight: same restore-then-merge pattern as the keyboard focus.
+  // The visible attributes change, graph data and layout stay untouched.
+  const applyPath = useCallback(() => {
+    const renderer = sigma.current, graph = current.current?.graph;
+    if (!renderer || !graph) return;
+    for (const item of pathMark.current.nodes) if (graph.hasNode(item.id)) graph.mergeNodeAttributes(item.id, { size: item.size, color: item.color });
+    for (const item of pathMark.current.edges) if (graph.hasEdge(item.key)) graph.mergeEdgeAttributes(item.key, { size: item.size, color: item.color });
+    pathMark.current = { nodes: [], edges: [] };
+    const active = pathRef.current;
+    if (active) {
+      for (const id of active.nodes) if (graph.hasNode(id)) {
+        const attr = graph.getNodeAttributes(id);
+        pathMark.current.nodes.push({ id, size: attr.size, color: attr.color });
+        graph.mergeNodeAttributes(id, { color: palette.gold, size: Number(attr.size ?? 3) * 1.7 });
+      }
+      for (const key of active.edges) if (graph.hasEdge(key)) {
+        const attr = graph.getEdgeAttributes(key);
+        pathMark.current.edges.push({ key, size: attr.size, color: attr.color });
+        graph.mergeEdgeAttributes(key, { color: palette.gold, size: Number(attr.size ?? .5) * 4 });
+      }
+    }
+    renderer.refresh();
+  }, []);
+  useEffect(() => { applyPath(); }, [path, applyPath]);
 
   const centerOn = useCallback((id: string) => {
     const renderer = sigma.current, graph = current.current?.graph;
@@ -115,7 +144,7 @@ const NetworkGraph = forwardRef<NetworkHandle, Props>(function NetworkGraph({ vi
         if (cancelled) return;
         for (const n of view.nodes.slice(i, i + 2000)) graph.addNode(n.id, {
           x: n.x + ((hash(n.id) % 100) - 50) * .0001, y: n.y,
-          label: n.label, color: COLORS[n.type], group: n.group,
+          label: n.label, color: colorMode === 'community' && n.community ? communityColor(n.community) : COLORS[n.type], group: n.group,
           size: n.group ? Math.min(19, 4 + Math.log2((n.count ?? 1) + 1)) : view.nodes.length > 10_000 ? 1.5 : 3.2,
         });
         await nextFrame();
@@ -133,9 +162,10 @@ const NetworkGraph = forwardRef<NetworkHandle, Props>(function NetworkGraph({ vi
       setBuilding(false);
       const waiting = pendingFocus.current;
       if (waiting) { pendingFocus.current = null; focusNode(waiting); }
+      applyPath();
     })().catch(cause => { if (!cancelled) { setError(String(cause)); setBuilding(false); } });
     return () => { cancelled = true; };
-  }, [view, focusNode]);
+  }, [view, focusNode, colorMode, applyPath]);
 
   function onKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
     const action = graphKeyAction(event.key);

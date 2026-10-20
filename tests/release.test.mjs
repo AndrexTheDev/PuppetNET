@@ -58,7 +58,10 @@ test('custom SITE_ORIGIN is used consistently across sitemap and Schema.org', ()
 
 test('resource defaults avoid unsolicited GPU renderer and force simulation', () => {
   const dashboard = read('apps/web/app/dashboard/Dashboard.tsx');
-  assert.ok(dashboard.includes("useState<'network' | 'map' | 'list'>('list')"));
+  // Default stays the cheap table view; the network renderer requires an
+  // explicit user choice — including a validated ?mode=network permalink
+  // (decodeViewState only accepts the whitelisted enum, junk cannot opt in).
+  assert.ok(dashboard.includes("useState<'network' | 'map' | 'list'>(initialUrl.current.mode ?? 'list')"));
   assert.ok(dashboard.includes("mode === 'network' && <NetworkGraph"));
   assert.match(read('apps/web/app/dashboard/graph.worker.ts'), /layoutWanted = false/);
   const scripts = JSON.parse(read('apps/web/package.json')).scripts;

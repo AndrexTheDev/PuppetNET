@@ -1,10 +1,7 @@
 'use client';
 import { useState } from 'react';
-import { COLORS, cypherExport, safeUrl, type Evidence, type GraphNode } from './graph-data';
-function download(name: string, text: string, type: string) {
-  const url = URL.createObjectURL(new Blob([text], { type })), a = document.createElement('a');
-  a.href = url; a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
+import { COLORS, communityColor, cypherExport, safeUrl, type Evidence, type GraphNode } from './graph-data';
+import { downloadText as download } from './download';
 export default function SidePanel({ node, evidence, onDrill, onClose, detailError }: { node: GraphNode | null; evidence: Evidence[]; onDrill: (id: string) => void; onClose: () => void; detailError: string }) {
   const [copied, setCopied] = useState('');
   if (!node) return <aside className="detail-panel" role="region" aria-labelledby="inspector-heading"><span className="eyebrow">INSPECTOR / 03</span><div className="empty-inspector"><div className="inspect-icon" aria-hidden="true">◎</div><h2 id="inspector-heading">Jede Verbindung<br />beginnt mit einer Frage.</h2><p>Wähle einen Knoten im Graphen, auf der Karte oder in der Datenliste. Hier erscheinen Eigenschaften und überprüfbare Quellen.</p></div><div className="inspector-foot">RECHERCHEHINWEISE ≠ TATSACHENBEWEISE</div></aside>;
@@ -13,8 +10,12 @@ export default function SidePanel({ node, evidence, onDrill, onClose, detailErro
     <div className="panel-row"><span className="eyebrow">INSPECTOR / 03</span><button className="icon-button" onClick={onClose} aria-label="Details schließen">×</button></div>
     <div className="node-badge" style={{ color: COLORS[node.type] }}>{node.group ? 'DARSTELLUNGSGRUPPE' : node.type.toUpperCase()}</div>
     <h2 className="node-title" id="inspector-heading">{node.label}</h2><code className="node-key">{node.id}</code>
-    <dl className="node-facts"><div><dt>Confidence{node.group ? ' · Mittelwert' : ''}</dt><dd>{(node.confidence * 100).toFixed(1)} %</dd></div><div><dt>{node.group ? 'Enthaltene Knoten' : 'Cluster-ID'}</dt><dd>{node.group ? node.count?.toLocaleString('de-DE') : node.cluster}</dd></div>
+    <dl className="node-facts"><div><dt>Confidence{node.group ? ' · Mittelwert' : ''}</dt><dd>{(node.confidence * 100).toFixed(1)} %</dd></div><div><dt>{node.group ? 'Enthaltene Knoten' : 'Community/Cluster'}</dt><dd>{node.group ? node.count?.toLocaleString('de-DE') : node.community ? <><span className="community-chip" aria-hidden="true" style={{ background: communityColor(node.community) }} /> {node.community}</> : node.cluster}</dd></div>
       {node.group && <div><dt>Interne Kanten</dt><dd>{node.internalEdges}</dd></div>}
+      {!node.group && node.rank !== undefined && <div><dt>PageRank (global)</dt><dd>{(node.rank * 100).toFixed(2)} %</dd></div>}
+      {!node.group && node.degree !== undefined && <div><dt>Verbindungen (gesamt)</dt><dd>{node.degree.toLocaleString('de-DE')}</dd></div>}
+      {!node.group && node.firstSeen && <div><dt>Erste Erwähnung</dt><dd><time dateTime={node.firstSeen}>{node.firstSeen}</time></dd></div>}
+      {!node.group && node.lastSeen && node.lastSeen !== node.firstSeen && <div><dt>Letzte Erwähnung</dt><dd><time dateTime={node.lastSeen}>{node.lastSeen}</time></dd></div>}
       {node.lat !== undefined && <div><dt>Koordinaten</dt><dd>{node.lat.toFixed(4)}, {node.lon?.toFixed(4)}</dd></div>}</dl>
     {node.group ? <><p className="muted">Diese LoD-Gruppe reduziert die Zeichenlast. Sie ist keine analytisch belegte Community. Kanten stehen für aggregierte Verbindungen.</p><button className="primary-button" onClick={() => onDrill(node.id)}>Gruppe untersuchen →</button><h3>Beispiel-IDs</h3><ul className="example-ids">{node.examples?.map(id => <li key={id}>{id}</li>)}</ul></> : <>
       <div className="section-heading"><h3>Quellnachweise</h3><span>{evidence.length}</span></div><p className="muted small-text">EVIDENCED_BY / MENTIONS / Dokumentreferenzen</p>

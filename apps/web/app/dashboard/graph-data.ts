@@ -4,25 +4,52 @@ export const TYPES = ['Person', 'Organization', 'Location', 'Craft', 'Document',
 export type EntityType = typeof TYPES[number];
 export const COLORS: Record<EntityType, string> = { Person: palette.green, Organization: palette.gold, Location: palette['green-muted'], Craft: palette.danger, Document: palette['gold-muted'], Other: palette.muted };
 export interface Evidence { id: string; title: string; url?: string; source?: string; date?: string }
+/** Wave-1 export analytics (deterministic, precomputed at publication time). */
+export interface GraphAnalytics {
+  version: number; nodes: number; edges: number; communities: number; largestCommunity: number;
+  density: number; hubs: { id: string; name: string; rank: number; degree: number }[];
+  temporalRange?: { first: string; last: string };
+}
 export interface GraphNode {
   id: string; label: string; type: EntityType; confidence: number; x: number; y: number;
   cluster: string; lat?: number; lon?: number; evidenceIds: string[];
   count?: number; examples?: string[]; internalEdges?: number; group?: boolean;
+  degree?: number; rank?: number; community?: string; firstSeen?: string; lastSeen?: string;
 }
 export interface GraphEdge { id: string; source: string; target: string; type: string; confidence: number; weight: number; evidenceIds: string[]; count?: number }
-export interface Dataset { nodes: GraphNode[]; edges: GraphEdge[]; evidence: Evidence[]; truncated?: boolean }
-export interface Filters { confidence: number; weight: number; types: EntityType[]; lod: boolean; ratio: number }
+export interface Dataset { nodes: GraphNode[]; edges: GraphEdge[]; evidence: Evidence[]; truncated?: boolean; analytics?: GraphAnalytics }
+export interface Filters { confidence: number; weight: number; types: EntityType[]; lod: boolean; ratio: number; community?: string; from?: string; to?: string }
 export interface MapPoint { id: string; lat: number; lon: number; count: number; label: string; exampleId: string }
 export interface View {
   version: number; nodes: GraphNode[]; edges: GraphEdge[]; mapPoints: MapPoint[];
   stats: { totalNodes: number; totalEdges: number; filteredNodes: number; filteredEdges: number; locatedNodes: number; grouped: boolean; level: string; focused: boolean; truncated: boolean };
+  analytics?: GraphAnalytics;
 }
 export const LIMITS = { nodes: 200_000, edges: 500_000, bytes: 64 * 1024 * 1024 };
 const record = (v: unknown): Record<string, unknown> => v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {};
 const text = (v: unknown, max = 500) => typeof v === 'string' || typeof v === 'number' ? String(v).slice(0, max) : '';
 const score = (v: unknown) => v === null || v === '' || !Number.isFinite(Number(v)) ? 0 : Math.max(0, Math.min(1, Number(v)));
 const ids = (v: unknown) => Array.isArray(v) ? v.slice(0, 200).map(x => text(x)).filter(Boolean) : [];
+const isoDate = (v: unknown): string | undefined => { const s = text(v, 40); return /^\d{4}-\d{2}-\d{2}/.test(s) ? s.slice(0, 10) : undefined; };
+const optInt = (v: unknown): number | undefined => v === null || v === '' || v === undefined ? undefined : Number.isFinite(Number(v)) && Number(v) >= 0 ? Math.trunc(Number(v)) : undefined;
 export function hash(value: string): number { let n = 2166136261; for (let i = 0; i < value.length; i++) n = Math.imul(n ^ value.charCodeAt(i), 16777619); return n >>> 0; }
+/** Deterministic community colour: stable hue per community id, no palette file needed. */
+export function communityColor(community: string): string { return `hsl(${hash(community) % 360} 58% 58%)`; }
+/** Validates the optional Wave-1 `analytics` block; anything malformed is dropped, never trusted. */
+export function normalizeAnalytics(value: unknown): GraphAnalytics | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const a = record(value);
+  const num = (v: unknown) => Number.isFinite(Number(v)) && Number(v) >= 0 ? Math.trunc(Number(v)) : 0;
+  const hubs = (Array.isArray(a.hubs) ? a.hubs : []).slice(0, 10).map(item => {
+    const h = record(item);
+    return { id: text(h.id, 200), name: text(h.name, 200), rank: score(h.rank), degree: num(h.degree) };
+  }).filter(h => h.id);
+  const out: GraphAnalytics = { version: num(a.version) || 1, nodes: num(a.nodes), edges: num(a.edges),
+    communities: num(a.communities), largestCommunity: num(a.largestCommunity), density: score(a.density), hubs };
+  const range = record(a.temporalRange), first = isoDate(range.first), last = isoDate(range.last);
+  if (first && last) out.temporalRange = { first, last };
+  return out;
+}
 export function safeUrl(value: unknown): string | undefined {
   try { const url = new URL(String(value)); return ['https:', 'http:'].includes(url.protocol) ? url.href : undefined; } catch { return undefined; }
 }
@@ -67,7 +94,12 @@ export function normalizeDataset(input: unknown): Dataset {
     return { id, label: text(attr.label ?? attr.name ?? id), type,
       confidence: score(attr.confidence), x: Number.isFinite(attr.x) ? Number(attr.x) : Math.cos(angle) * radius,
       y: Number.isFinite(attr.y) ? Number(attr.y) : Math.sin(angle) * radius, cluster: text(attr.cluster_id ?? attr.cluster ?? props.cluster_id ?? 'unassigned'),
-      ...(hasGeo ? { lat: latitude, lon: longitude } : {}), evidenceIds: [...ids(attr.evidenceIds ?? attr.doc_ids), ...embedded.map(d => d.id)] };
+      ...(hasGeo ? { lat: latitude, lon: longitude } : {}), evidenceIds: [...ids(attr.evidenceIds ?? attr.doc_ids), ...embedded.map(d => d.id)],
+      ...(optInt(attr.degree) !== undefined ? { degree: optInt(attr.degree) } : {}),
+      ...(Number.isFinite(Number(attr.rank)) && attr.rank !== null && attr.rank !== '' ? { rank: score(attr.rank) } : {}),
+      ...(text(attr.community, 24) ? { community: text(attr.community, 24) } : {}),
+      ...(isoDate(attr.firstSeen) ? { firstSeen: isoDate(attr.firstSeen) } : {}),
+      ...(isoDate(attr.lastSeen) ? { lastSeen: isoDate(attr.lastSeen) } : {}) };
   });
   let dangling = 0;
   const edges = raw.edges.map((item, i): GraphEdge | null => {
@@ -76,14 +108,28 @@ export function normalizeDataset(input: unknown): Dataset {
     return { id: `${text(attr.id ?? attr.key ?? 'edge')}:${i}`, source, target, type: text(attr.type ?? 'RELATED_TO', 80), confidence: score(attr.confidence), weight: score(attr.weight), evidenceIds: [...ids(attr.evidenceIds ?? attr.doc_ids), ...(attr.doc_id ? [text(attr.doc_id)] : [])] };
   }).filter((e): e is GraphEdge => e !== null);
   if (dangling) throw new Error(`${dangling} Kanten verweisen auf fehlende Knoten. Bitte einen geschlossenen Teilgraphen importieren.`);
-  return { nodes, edges, evidence, truncated: raw.truncated === true };
+  const analytics = normalizeAnalytics(raw.analytics);
+  return { nodes, edges, evidence, truncated: raw.truncated === true, ...(analytics ? { analytics } : {}) };
 }
 export function filterDataset(data: Dataset, filters: Filters): Dataset {
   const types = new Set(filters.types);
-  const nodes = data.nodes.filter(n => types.has(n.type) && n.confidence >= filters.confidence);
+  let nodes = data.nodes.filter(n => types.has(n.type) && n.confidence >= filters.confidence);
+  if (filters.community) nodes = nodes.filter(n => n.community === filters.community);
+  const from = isoDate(filters.from), to = isoDate(filters.to);
+  if (from || to) {
+    // Time window over published evidence spans; undated nodes drop out (honest
+    // absence, no guessing). ISO dates compare lexicographically.
+    nodes = nodes.filter(n => {
+      const start = n.firstSeen, end = n.lastSeen ?? n.firstSeen;
+      if (!start) return false;
+      if (from && (end ?? start) < from) return false;
+      if (to && start > to) return false;
+      return true;
+    });
+  }
   const keep = new Set(nodes.map(n => n.id));
   const edges = data.edges.filter(e => e.confidence >= filters.confidence && e.weight >= filters.weight && keep.has(e.source) && keep.has(e.target));
-  return { nodes, edges, evidence: data.evidence };
+  return { nodes, edges, evidence: data.evidence, ...(data.analytics ? { analytics: data.analytics } : {}) };
 }
 export function levelFor(count: number, filters: Filters): string {
   if (!filters.lod || count <= 5000) return 'Einzelknoten';
@@ -160,4 +206,141 @@ export function demoDataset(count = 900): Dataset {
     for (let k = 1; k <= 3; k++) edges.push({ id: `demo-edge:${i}:${k}`, source: `demo:${i}`, target: `demo:${(i + (k === 3 ? 1 : k * 24)) % count}`, type: k === 1 ? 'OWNS' : k === 2 ? 'ASSOCIATED_WITH' : 'MENTIONED_WITH', confidence: .3 + (hash(`${i}:${k}`) % 701) / 1000, weight: k === 1 ? .9 : k === 2 ? .6 : .3, evidenceIds: ['demo-document'] });
   }
   return { nodes, edges, evidence: [{ id: 'demo-document', title: 'Fiktiver Beispieldatensatz – keine realen Rechercheergebnisse', source: 'PuppetNET Demo', date: '2026-10-19' }] };
+}
+
+/* ---------------------------------------------------------------------------
+ * Wave 2 analysis primitives — pure, deterministic, unit-tested. They run in
+ * the browser/worker (free compute); none of them touches the CI budget.
+ * ------------------------------------------------------------------------- */
+
+/** Undirected BFS shortest path over a (filtered) dataset, hop-bounded.
+ * Deterministic: adjacency lists are sorted, so the same input always yields
+ * the same path. Returns null when no path exists within maxHops. */
+export function shortestPath(data: Dataset, source: string, target: string, maxHops = 6):
+    { nodes: string[]; edges: GraphEdge[] } | null {
+  const present = new Set(data.nodes.map(n => n.id));
+  if (!present.has(source) || !present.has(target)) return null;
+  if (source === target) return { nodes: [source], edges: [] };
+  const adjacency = new Map<string, { peer: string; edge: GraphEdge }[]>();
+  for (const edge of data.edges) {
+    if (!present.has(edge.source) || !present.has(edge.target)) continue;
+    for (const [from, to] of [[edge.source, edge.target], [edge.target, edge.source]] as const) {
+      const list = adjacency.get(from);
+      if (list) list.push({ peer: to, edge }); else adjacency.set(from, [{ peer: to, edge }]);
+    }
+  }
+  for (const list of adjacency.values()) {
+    list.sort((a, b) => a.peer < b.peer ? -1 : a.peer > b.peer ? 1 : a.edge.id < b.edge.id ? -1 : 1);
+  }
+  const previous = new Map<string, { peer: string; edge: GraphEdge }>();
+  const seen = new Set<string>([source]);
+  let frontier = [source];
+  for (let hop = 0; hop < maxHops && frontier.length; hop++) {
+    const next: string[] = [];
+    for (const id of frontier) {
+      for (const step of adjacency.get(id) ?? []) {
+        if (seen.has(step.peer)) continue;
+        seen.add(step.peer);
+        previous.set(step.peer, { peer: id, edge: step.edge });
+        if (step.peer === target) {
+          const nodes = [target], edges: GraphEdge[] = [];
+          let cursor = target;
+          while (cursor !== source) {
+            const step2 = previous.get(cursor)!;
+            edges.unshift(step2.edge);
+            nodes.unshift(step2.peer);
+            cursor = step2.peer;
+          }
+          return { nodes, edges };
+        }
+        next.push(step.peer);
+      }
+    }
+    frontier = next;
+  }
+  return null;
+}
+
+/** Fuzzy relevance: exact substring beats subsequence; earlier and denser wins. */
+export function fuzzyScore(query: string, value: string): number {
+  const q = query.trim().toLowerCase(), t = value.toLowerCase();
+  if (!q || !t) return 0;
+  const at = t.indexOf(q);
+  if (at >= 0) return 2000 - Math.min(at, 999) + (at === 0 ? 500 : 0);
+  let total = 0, cursor = 0, streak = 0;
+  for (const char of q) {
+    const found = t.indexOf(char, cursor);
+    if (found < 0) return 0;
+    streak = found === cursor ? streak + 1 : 0;
+    total += 10 + streak * 5;
+    cursor = found + 1;
+  }
+  return Math.min(total, 999);
+}
+
+/** Ranked search over nodes (label and id), stable order, bounded result. */
+export function rankSearch(nodes: GraphNode[], query: string, limit = 50): GraphNode[] {
+  const q = query.trim();
+  if (!q) return nodes.slice(0, limit);
+  const scored = nodes
+    .map(n => ({ n, s: Math.max(fuzzyScore(q, n.label), fuzzyScore(q, n.id)) }))
+    .filter(entry => entry.s > 0);
+  scored.sort((a, b) => b.s - a.s || a.n.label.localeCompare(b.n.label) || (a.n.id < b.n.id ? -1 : a.n.id > b.n.id ? 1 : 0));
+  return scored.slice(0, limit).map(entry => entry.n);
+}
+
+/** Resolves a pathfinder input (exact id/label first, then best fuzzy match). */
+export function resolveNodeRef(nodes: GraphNode[], ref: string): GraphNode | null {
+  const value = ref.trim();
+  if (!value) return null;
+  return nodes.find(n => n.id === value || n.label === value) ?? rankSearch(nodes, value, 1)[0] ?? null;
+}
+
+const csvCell = (value: string | number | undefined): string => {
+  const s = value === undefined || value === null ? '' : String(value);
+  return /[",\n\r]/.test(s) ? `"${s.replaceAll('"', '""')}"` : s;
+};
+
+/** RFC-4180 CSV of the visible view — client-side reporting without a server. */
+export function nodesToCSV(nodes: GraphNode[]): string {
+  const header = 'id,label,type,confidence,degree,rank,community,firstSeen,lastSeen';
+  const rows = nodes.map(n => [n.id, n.label, n.type, n.confidence.toFixed(3), n.degree, n.rank,
+    n.community, n.firstSeen, n.lastSeen].map(csvCell).join(','));
+  return [header, ...rows].join('\r\n') + '\r\n';
+}
+export function edgesToCSV(edges: GraphEdge[]): string {
+  const header = 'id,source,target,type,confidence,weight';
+  const rows = edges.map(e => [e.id, e.source, e.target, e.type, e.confidence.toFixed(3), e.weight.toFixed(3)].map(csvCell).join(','));
+  return [header, ...rows].join('\r\n') + '\r\n';
+}
+export function viewToJSON(view: { nodes: GraphNode[]; edges: GraphEdge[]; analytics?: GraphAnalytics }): string {
+  return JSON.stringify({ nodes: view.nodes, edges: view.edges, ...(view.analytics ? { analytics: view.analytics } : {}) }, null, 2) + '\n';
+}
+
+/** Shareable permalinks: bounded, validated URL state (no secrets, no free text). */
+export interface ViewUrlState { mode?: 'network' | 'map' | 'list'; q?: string; focus?: string; community?: string; from?: string; to?: string; color?: 'type' | 'community' }
+export function encodeViewState(state: ViewUrlState): string {
+  const params = new URLSearchParams();
+  if (state.mode) params.set('mode', state.mode);
+  if (state.q?.trim()) params.set('q', state.q.trim().slice(0, 120));
+  if (state.focus) params.set('focus', state.focus.slice(0, 200));
+  if (state.community) params.set('community', state.community.slice(0, 24));
+  if (state.color === 'community') params.set('color', 'community');
+  if (state.from) params.set('from', state.from);
+  if (state.to) params.set('to', state.to);
+  return params.toString();
+}
+export function decodeViewState(search: string): ViewUrlState {
+  const params = new URLSearchParams(search), state: ViewUrlState = {};
+  const bounded = (key: string, max: number) => { const v = params.get(key); return v && v.length <= max ? v : undefined; };
+  const mode = bounded('mode', 10);
+  if (mode === 'network' || mode === 'map' || mode === 'list') state.mode = mode;
+  const q = bounded('q', 120); if (q) state.q = q;
+  const focus = bounded('focus', 200); if (focus) state.focus = focus;
+  const community = bounded('community', 24); if (community) state.community = community;
+  if (params.get('color') === 'community') state.color = 'community';
+  const from = isoDate(params.get('from')), to = isoDate(params.get('to'));
+  if (from) state.from = from;
+  if (to) state.to = to;
+  return state;
 }

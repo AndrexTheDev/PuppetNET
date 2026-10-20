@@ -47,7 +47,7 @@ export default function EntityTable({
         <h2 id="table-heading">Tabellenansicht</h2>
         <p id="table-description">
           Textalternative zum WebGL-Graphen: jeder Knoten der geladenen Ansicht als Zeile, mit Tastatur und
-          Screenreader bedienbar. Die Spalten zeigen Typ, Confidence, Verbindungsgrad und Cluster.
+          Screenreader bedienbar. Die Spalten zeigen Typ, Confidence, Verbindungsgrad, Rank und Community/Cluster.
         </p>
       </div>
 
@@ -72,7 +72,8 @@ export default function EntityTable({
               <th scope="col">Typ</th>
               <th scope="col">Confidence</th>
               <th scope="col">Verbindungen</th>
-              <th scope="col">Cluster</th>
+              <th scope="col">Rank</th>
+              <th scope="col">Community/Cluster</th>
               <th scope="col">Aktionen</th>
             </tr>
           </thead>
@@ -90,7 +91,8 @@ export default function EntityTable({
                   <td>{ENTITY_TYPE_LABELS[node.type]}</td>
                   <td>{(node.confidence * 100).toFixed(0)} %</td>
                   <td>{node.degree.toLocaleString('de-DE')}</td>
-                  <td>{node.group ? `${node.count?.toLocaleString('de-DE') ?? '?'} Knoten` : node.cluster || '–'}</td>
+                  <td>{node.rank !== undefined ? `${(node.rank * 100).toFixed(1)} %` : '–'}</td>
+                  <td>{node.group ? `${node.count?.toLocaleString('de-DE') ?? '?'} Knoten` : node.community || node.cluster || '–'}</td>
                   <td className="table-actions">
                     <button type="button" onClick={() => onSelect(node.id, Boolean(node.group))}>
                       Details<span className="visually-hidden"> zu {node.label}</span>

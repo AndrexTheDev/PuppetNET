@@ -6,11 +6,14 @@ export type WorkerRequest =
   | { kind: 'drill'; version: number; group: string; filters: Filters }
   | { kind: 'reset'; version: number; filters: Filters }
   | { kind: 'detail'; id: string }
+  | { kind: 'path'; source: string; target: string }
   | { kind: 'layout'; running: boolean };
 export type WorkerResponse =
   | { kind: 'view'; view: View }
   | { kind: 'positions'; version: number; positions: Float32Array }
   | { kind: 'layout'; running: boolean }
   | { kind: 'detail'; node?: GraphNode; evidence: Evidence[] }
+  | { kind: 'path'; source: string; target: string; nodes: string[] | null;
+      edges: { id: string; source: string; target: string; type: string }[] | null; hops: number }
   | { kind: 'error'; version: number; message: string };
 export type SourceData = Dataset;
