@@ -1,13 +1,13 @@
 {
-  "generated_at": "2026-10-20T17:56:32+00:00",
+  "generated_at": "2026-10-20T18:17:30+00:00",
   "github_ref": "arena/888ab36c-puppetnet",
-  "github_run_id": "39470343404",
+  "github_run_id": "39473361116",
   "stages": {
     "export": {
       "detail": "graph_latest.json + manifest + 2 slices generated",
       "edges": 1,
       "nodes": 2,
-      "revision": "ecfbbfb01b5e",
+      "revision": "88ca72f160e7",
       "status": "ok"
     },
     "gemini": {
