@@ -242,3 +242,15 @@ test('wave 11: research notes stay local and the case report stays reproducible'
   assert.ok(dashboard.includes("t('dash.reportButton')"), 'the report export is dictionary-driven');
   assert.ok(read('apps/web/app/dashboard/SidePanel.tsx').includes("t('inspector.noteHint')"), 'the local-only promise is stated in the inspector');
 });
+
+test('wave 12: cumulative playback and evidence windows stay browser-side', () => {
+  const data = read('apps/web/app/dashboard/graph-data.ts');
+  assert.match(data, /export function nextPlaybackMonth\(months: string\[\], current: string \| undefined, direction: 1 \| -1\): string \| null/, 'playback stepping is pure');
+  assert.match(data, /export function evidenceWindow\(evidence: Evidence\[\]\)/, 'edge windows are pure');
+  assert.doesNotMatch(data.match(/export function nextPlaybackMonth[\s\S]*?\n}/)?.[0] ?? '', /Date\.now|Math\.random/, 'steps never invent time');
+  const dashboard = read('apps/web/app/dashboard/Dashboard.tsx');
+  assert.match(dashboard, /setInterval\(\(\) => stepPlaybackRef\.current\(1\), 1_400\)/, 'playback ticks through the frozen month list');
+  assert.ok(dashboard.includes("t('dash.playStart')"), 'playback controls are dictionary-driven');
+  assert.ok(dashboard.includes("t('dash.playNote')"), 'the cumulative semantics are explained in the UI');
+  assert.ok(read('apps/web/app/dashboard/SidePanel.tsx').includes("t('inspector.window')"), 'the edge inspector shows its documented window');
+});

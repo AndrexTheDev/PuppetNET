@@ -2,7 +2,7 @@
 import dynamic from 'next/dynamic';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import EntityTable, { type TableRow } from './EntityTable';
-import { COLORS, TYPES, LIMITS, NOTE_STORAGE_KEY, caseReport, decodeViewState, edgesToCSV, encodeViewState, monthWindow, nodesToCSV, normalizeNote, rankSearch, readNotes, resolveNodeRef, viewToJSON, type Evidence, type Filters, type GraphEdge, type GraphNode, type PathTimeline, type View, type ViewUrlState } from './graph-data';
+import { COLORS, TYPES, LIMITS, NOTE_STORAGE_KEY, caseReport, decodeViewState, edgesToCSV, encodeViewState, monthWindow, nextPlaybackMonth, nodesToCSV, normalizeNote, rankSearch, readNotes, resolveNodeRef, viewToJSON, type Evidence, type Filters, type GraphEdge, type GraphNode, type PathTimeline, type View, type ViewUrlState } from './graph-data';
 import type { NetworkHandle, PathHighlight } from './NetworkGraph';
 import type { WorkerRequest, WorkerResponse } from './protocol';
 import { loadStaticGraph, requestResearch, type Standby } from '../../src/lib/dataFetcher';
@@ -39,6 +39,11 @@ export default function Dashboard() {
   const [egoQuery, setEgoQuery] = useState(''), [egoDepth, setEgoDepth] = useState(2), [egoStatus, setEgoStatus] = useState('');
   const [brokers, setBrokers] = useState<{ id: string; label: string; share: number }[] | null>(null);
   const [analysisNotice, setAnalysisNotice] = useState('');
+  // Wave 12: cumulative playback — the month list is frozen while it runs
+  // (a time filter shrinks the visible timeline, so it cannot be re-derived).
+  const [playing, setPlaying] = useState(false);
+  const [playbackMonths, setPlaybackMonths] = useState<string[]>([]);
+  const playbackMonthsRef = useRef<string[]>([]); playbackMonthsRef.current = playbackMonths;
   const [louvainActive, setLouvainActive] = useState(false), [louvainCount, setLouvainCount] = useState(0);
   const [standby, setStandby] = useState<Standby | null>(null);
   const loadingApi = useRef<AbortController | null>(null), loadingDetail = useRef<AbortController | null>(null);
@@ -65,7 +70,7 @@ export default function Dashboard() {
   }, []);
   const clearSelected = useCallback(() => { selectedId.current = null; setSelected(null); setEvidence([]); selectedEdgeId.current = null; setSelectedEdge(null); setEdgeEvidence([]); loadingDetail.current?.abort(); setDetailError(''); }, []);
   const send = useCallback((request: WorkerRequest) => worker.current?.postMessage(request), []);
-  const requestView = useCallback((kind: 'filter' | 'reset' = 'filter') => { setBusy(true); setError(''); clearSelected(); setPathResult(null); setPathError(''); setBrokers(null); setAnalysisNotice(''); if (kind === 'reset') setEgoStatus(''); send({ kind, version: ++version.current, filters: filtersRef.current }); }, [send, clearSelected]);
+  const requestView = useCallback((kind: 'filter' | 'reset' = 'filter') => { setBusy(true); setError(''); clearSelected(); setPathResult(null); setPathError(''); setBrokers(null); setAnalysisNotice(''); if (kind === 'reset') { setEgoStatus(''); setPlaying(false); setPlaybackMonths([]); } send({ kind, version: ++version.current, filters: filtersRef.current }); }, [send, clearSelected]);
   useEffect(() => {
     const instance = new Worker(new URL('./graph.worker.ts', import.meta.url)); worker.current = instance;
     instance.onmessage = ({ data }: MessageEvent<WorkerResponse>) => {
@@ -141,6 +146,38 @@ export default function Dashboard() {
   }, []);
   const boot = useRef(true);
   useEffect(() => { if (boot.current) { boot.current = false; return; } const timeout = setTimeout(() => requestView(), 180); return () => clearTimeout(timeout); }, [filters, requestView]);
+  const stepPlayback = useCallback((direction: 1 | -1) => {
+    let months = playbackMonthsRef.current;
+    if (!months.length) {
+      months = (viewLatest.current?.timeline ?? []).map(bucket => bucket.month);
+      if (months.length < 2) { setPlaying(false); setAnnouncement(tRef.current('dash.playEmpty')); return; }
+      playbackMonthsRef.current = months; setPlaybackMonths(months);
+    }
+    const current = filtersRef.current.to ? filtersRef.current.to.slice(0, 7) : undefined;
+    const next = nextPlaybackMonth(months, current, direction);
+    const window = next ? monthWindow(next) : null;
+    if (!next || !window) { setPlaying(false); setAnnouncement(tRef.current('dash.annPlaybackEnd')); return; }
+    setFilters(f => ({ ...f, from: undefined, to: window.to }));
+    setAnnouncement(tRef.current(direction > 0 ? 'dash.annPlayback' : 'dash.annPlaybackBack', { month: next }));
+  }, []);
+  const stepPlaybackRef = useRef(stepPlayback); stepPlaybackRef.current = stepPlayback;
+  useEffect(() => {
+    if (!playing) return;
+    const timer = setInterval(() => stepPlaybackRef.current(1), 1_400);
+    return () => clearInterval(timer);
+  }, [playing]);
+  const startPlayback = () => {
+    const months = (viewLatest.current?.timeline ?? []).map(bucket => bucket.month);
+    if (months.length < 2) { setAnnouncement(tRef.current('dash.playEmpty')); return; }
+    playbackMonthsRef.current = months; setPlaybackMonths(months);
+    const current = filtersRef.current.to ? filtersRef.current.to.slice(0, 7) : undefined;
+    if (!current || !months.includes(current)) {
+      const first = monthWindow(months[0]);
+      if (first) setFilters(f => ({ ...f, from: undefined, to: first.to }));
+      setAnnouncement(tRef.current('dash.annPlayback', { month: months[0] }));
+    }
+    setPlaying(true);
+  };
   useEffect(() => {
     try { setNotes(readNotes(window.localStorage.getItem(NOTE_STORAGE_KEY))); } catch { /* storage blocked: notes stay in memory */ }
     notesReady.current = true;
@@ -311,6 +348,13 @@ export default function Dashboard() {
                 <strong>{number(bucket.count)}</strong>
               </li>;
             })}</ol>
+            <div className="playback">
+              <button type="button" className="outline-button playback-toggle" aria-pressed={playing} onClick={() => (playing ? setPlaying(false) : startPlayback())}>{playing ? `⏸ ${t('dash.playStop')}` : `▶ ${t('dash.playStart')}`}</button>
+              <button type="button" className="text-button" aria-label={t('dash.playPrev')} onClick={() => stepPlayback(-1)}>‹</button>
+              <button type="button" className="text-button" aria-label={t('dash.playNext')} onClick={() => stepPlayback(1)}>›</button>
+              <span className="playback-month">{filters.to ? filters.to.slice(0, 7) : '—'}</span>
+            </div>
+            <p className="muted">{t('dash.playNote')}</p>
             <p className="muted">{t('dash.timelineNote')}</p>
           </>}
           {view.duplicates && view.duplicates.length > 0 && <>

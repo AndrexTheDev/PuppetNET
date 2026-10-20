@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
-import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, monthWindow, bundleEdges, structuralVulnerability, pathTimeline, normalizeNote, readNotes, caseReport, NOTE_LIMIT, EGO_DEPTH_LIMIT, VULNERABILITY_NODE_LIMIT, normalizeInsights, ANALYSIS_LIMITS, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
+import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, monthWindow, bundleEdges, structuralVulnerability, pathTimeline, normalizeNote, readNotes, caseReport, nextPlaybackMonth, evidenceWindow, NOTE_LIMIT, EGO_DEPTH_LIMIT, VULNERABILITY_NODE_LIMIT, normalizeInsights, ANALYSIS_LIMITS, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
 import { apiBase, readResponse } from '../apps/web/app/dashboard/api';
 const filters: Filters = { confidence: 0, weight: 0, types: [...TYPES], lod: true, ratio: 1 };
 test('normalizes Worker and Graphology nodes without inventing coordinates', () => {
@@ -494,4 +494,27 @@ test('wave 11 case report is deterministic, bilingual and keeps hints and proof 
   assert.ok(english.includes('View level: single nodes'), 'the view level is translated, not leaked');
   assert.ok(english.includes('Hints, not proof'), 'the disclaimer travels');
   assert.equal(caseReport({ stats, nodes: data.nodes, edges: data.edges }, '2026-10-20'), caseReport({ stats, nodes: data.nodes, edges: data.edges }, '2026-10-20'), 'sparse input stays deterministic');
+});
+
+test('wave 12 cumulative playback steps through frozen months without looping', () => {
+  const months = ['2025-11', '2025-12', '2026-01'];
+  assert.equal(nextPlaybackMonth(months, undefined, 1), '2025-11', 'playback starts at the oldest month');
+  assert.equal(nextPlaybackMonth(months, '2025-11', 1), '2025-12');
+  assert.equal(nextPlaybackMonth(months, '2025-12', 1), '2026-01');
+  assert.equal(nextPlaybackMonth(months, '2026-01', 1), null, 'the end is an honest stop, never a wrap-around');
+  assert.equal(nextPlaybackMonth(months, '2025-12', -1), '2025-11');
+  assert.equal(nextPlaybackMonth(months, '2025-11', -1), null, 'backwards stops before the first month');
+  assert.equal(nextPlaybackMonth(months, '1999-01', 1), '2025-11', 'a foreign month restarts from the beginning');
+  assert.equal(nextPlaybackMonth([], '2026-01', 1), null);
+});
+
+test('wave 12 relationship windows normalize dates and count only what is dated', () => {
+  const window = evidenceWindow([
+    { id: 'a', title: 'A', date: '2021-03-02T10:00:00Z' },
+    { id: 'b', title: 'B', date: 'kein Datum' },
+    { id: 'c', title: 'C', date: '2020-12-31' },
+  ]);
+  assert.deepEqual(window, { first: '2020-12-31', last: '2021-03-02', dated: 2 }, 'undated documents do not widen the window');
+  assert.deepEqual(evidenceWindow([]), { first: undefined, last: undefined, dated: 0 });
+  assert.deepEqual(evidenceWindow([{ id: 'z', title: 'Z' }]), { first: undefined, last: undefined, dated: 0 });
 });

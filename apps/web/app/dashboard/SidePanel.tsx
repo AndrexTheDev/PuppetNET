@@ -1,6 +1,6 @@
 'use client';
 import { useState } from 'react';
-import { COLORS, NOTE_LIMIT, communityColor, cypherExport, normalizeNote, safeUrl, type Evidence, type GraphEdge, type GraphNode } from './graph-data';
+import { COLORS, NOTE_LIMIT, communityColor, cypherExport, evidenceWindow, normalizeNote, safeUrl, type Evidence, type GraphEdge, type GraphNode } from './graph-data';
 import { downloadText as download } from './download';
 import { useLanguage, useT } from './i18n';
 import { NUMBER_LOCALE } from '../../lib/i18n-strings';
@@ -14,13 +14,14 @@ export default function SidePanel({ node, evidence, edge, edgeEvidence, edgeLabe
   const { lang } = useLanguage();
   const t = useT();
   if (!node && !edge) return <aside className="detail-panel" role="region" aria-labelledby="inspector-heading"><span className="eyebrow">{t('inspector.eyebrow')}</span><div className="empty-inspector"><div className="inspect-icon" aria-hidden="true">◎</div><h2 id="inspector-heading">{t('inspector.emptyTitleA')}<br />{t('inspector.emptyTitleB')}</h2><p>{t('inspector.emptyText')}</p></div><div className="inspector-foot">{t('inspector.foot')}</div></aside>;
-  if (edge && !node) return <aside className="detail-panel" role="region" aria-labelledby="inspector-heading">
+  if (edge && !node) { const window = evidenceWindow(edgeEvidence); return <aside className="detail-panel" role="region" aria-labelledby="inspector-heading">
     <div className="panel-row"><span className="eyebrow">{t('inspector.eyebrow')}</span><button className="icon-button" onClick={onClose} aria-label={t('inspector.close')}>×</button></div>
     <div className="node-badge edge-badge">{t('inspector.edgeBadge', { type: edge.type })}</div>
     <h2 className="node-title" id="inspector-heading">{edgeLabels.source} → {edgeLabels.target}</h2>
     <code className="node-key">{edge.id}</code>
     <dl className="node-facts"><div><dt>{t('inspector.confidence')}</dt><dd>{(edge.confidence * 100).toFixed(1)} %</dd></div><div><dt>{t('inspector.weight')}</dt><dd>{(edge.weight * 100).toFixed(1)} %</dd></div>
-      {edge.count !== undefined && <div><dt>{t('inspector.bundled')}</dt><dd>{edge.count.toLocaleString(NUMBER_LOCALE[lang])}</dd></div>}</dl>
+      {edge.count !== undefined && <div><dt>{t('inspector.bundled')}</dt><dd>{edge.count.toLocaleString(NUMBER_LOCALE[lang])}</dd></div>}
+      <div><dt>{t('inspector.window')}</dt><dd>{window.dated > 0 ? <><time dateTime={window.first}>{window.first}</time>{window.last && window.last !== window.first ? <> → <time dateTime={window.last}>{window.last}</time></> : ''} · {window.dated}</> : t('inspector.windowNone')}</dd></div></dl>
     {edge.type === 'AGGREGATED'
       ? <p className="muted">{t('inspector.aggregatedText')}</p>
       : <>
@@ -32,6 +33,7 @@ export default function SidePanel({ node, evidence, edge, edgeEvidence, edgeLabe
         {edgeEvidence.length > 100 && <p className="muted">{t('inspector.evidenceCap')}</p>}
       </>}
   </aside>;
+  }
   if (!node) return null;
   const exported = cypherExport(node.id);
   return <aside className="detail-panel" role="region" aria-labelledby="inspector-heading">

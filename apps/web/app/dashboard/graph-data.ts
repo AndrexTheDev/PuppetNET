@@ -585,6 +585,26 @@ export function pathTimeline(data: Dataset, ids: string[]): PathTimeline | null 
   return { hops, first: starts[0], last: ends[ends.length - 1], anachronisms: hops.filter(h => !h.ordered).length };
 }
 
+/** Wave 12: the next month of a cumulative playback. The month list is
+ * captured when playback starts (the filtered timeline shrinks while it runs),
+ * so this helper only decides the step — out of range returns null and the
+ * caller stops instead of looping. */
+export function nextPlaybackMonth(months: string[], current: string | undefined, direction: 1 | -1): string | null {
+  if (months.length === 0) return null;
+  const index = current ? months.indexOf(current) : -1;
+  if (index < 0) return direction > 0 ? months[0] : null;
+  const next = index + direction;
+  return next >= 0 && next < months.length ? months[next] : null;
+}
+
+/** Wave 12: documented window of a single relationship — earliest to latest
+ * evidence date, normalized to the day. Undated documents are counted as
+ * absent, never guessed. */
+export function evidenceWindow(evidence: Evidence[]): { first?: string; last?: string; dated: number } {
+  const days = evidence.map(doc => isoDate(doc.date)).filter((day): day is string => !!day).sort();
+  return { first: days[0], last: days[days.length - 1], dated: days.length };
+}
+
 export function fuzzyScore(query: string, value: string): number {
   const q = query.trim().toLowerCase(), t = value.toLowerCase();
   if (!q || !t) return 0;

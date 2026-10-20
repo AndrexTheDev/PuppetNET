@@ -146,3 +146,8 @@
 .note-block textarea{width:100%;box-sizing:border-box;resize:vertical;min-height:5rem;background:var(--color-forest-900);color:var(--color-white);border:1px solid var(--line);border-radius:var(--radius-1,0.25rem);padding:var(--space-2,0.5rem);font:inherit}
 .note-counter{font-variant-numeric:tabular-nums;opacity:.7;font-size:.8em}
 .note-actions{display:flex;gap:var(--space-2,0.5rem);align-items:center;margin-top:var(--space-1,0.25rem)}
+
+/* Wave 12: cumulative playback controls (token-only) */
+.playback{display:flex;align-items:center;gap:var(--space-2,0.5rem);flex-wrap:wrap;margin-top:var(--space-2,0.5rem)}
+.playback-toggle{padding:0.35rem 0.7rem}
+.playback-month{font-variant-numeric:tabular-nums;opacity:.8;font-size:.85em}

@@ -294,6 +294,24 @@ Fallbericht-Button im Export-Footer, token-only CSS, 2 neue Datenlagen-Tests
 (dashboard 31) + 1 neuer Release-Pin (release 17) — `ci:pages` grün, 0 zusätzliche
 Actions-Minuten.
 
+### Welle 12 — Zeitliche Dynamik (Wiedergabe + Belegzeitraum) — ✅ umgesetzt (2026-10-20)
+
+- **Kumulative Wiedergabe**: Das Netz wächst Monat für Monat bis zum Ende des jeweiligen
+  Monats — Play/Pause plus Einzelschritt vor und zurück. Die Monatsliste wird beim Start
+  **eingefroren**, weil ein Zeitfilter die sichtbare Zeitachse verkürzt; das Ende ist ein
+  ehrlicher Stopp statt eines Rücksprungs. Jeder Schritt ist eine Statusansage für
+  Screenreader; „Zeitfilter löschen" beendet die Ansicht.
+- **Belegzeitraum pro Kante**: Der Kanten-Inspector zeigt jetzt das dokumentierte
+  Zeitfenster der Beziehung (frühestes bis spätestes Beleg-Datum, auf den Tag
+  normalisiert) inklusive Anzahl datierter Belege — und sagt offen „keine datierten
+  Belege", wenn es keine gibt, statt ein Datum zu erfinden.
+
+**Geliefert (Welle 12)**: `nextPlaybackMonth()` + `evidenceWindow()` (reine, getestete
+Funktionen), Wiedergabe-Steuerung in der Zeitachse (DE/EN, `aria-pressed`,
+Statusansagen), Belegzeitraum-Zeile im Kanten-Panel, token-only CSS, 2 neue
+Datenlagen-Tests (dashboard 33) + 1 neuer Release-Pin (release 18) — `ci:pages` grün,
+0 zusätzliche Actions-Minuten.
+
 ## 4. Budget-Zusammenfassung
 
 | Welle | Ort | Zusätzliche Actions-Minuten | Status |
@@ -309,6 +327,7 @@ Actions-Minuten.
 | 9 Bündelung/Verwundbarkeit | Browser/Web Worker | **0** | ✅ umgesetzt |
 | 10 Zeitplausibilität/Ausfall | Browser/Web Worker | **0** | ✅ umgesetzt |
 | 11 Notizen/Fallbericht | Browser (localStorage) | **0** | ✅ umgesetzt |
+| 12 Wiedergabe/Belegzeitraum | Browser | **0** | ✅ umgesetzt |
 
 Kein Schritt erzeugt neue Workflows, neue Cron-Jobs, längere Jobs oder bezahlte
 Dienste. Die einzigen verbrauchsrelevanten Grenzen sind die bestehenden: 3
@@ -605,6 +624,24 @@ counter), case-report button in the export footer, token-only CSS, 2 new data-la
 tests (dashboard 31) + 1 new release pin (release 17) — `ci:pages` green, 0 extra
 Actions minutes.
 
+### Wave 12 — temporal dynamics (playback + evidence window) — ✅ implemented (2026-10-20)
+
+- **Cumulative playback**: the network grows month by month up to the end of each month
+  — play/pause plus single steps forward and back. The month list is **frozen** when
+  playback starts, because a time filter shortens the visible timeline; the end is an
+  honest stop instead of a wrap-around. Every step is a screen-reader announcement;
+  "Clear time filter" leaves the view.
+- **Evidence window per edge**: the edge inspector now shows the documented time window
+  of the relationship (earliest to latest evidence date, normalized to the day) including
+  the number of dated documents — and says "no dated evidence" openly when there is
+  none instead of inventing a date.
+
+**Delivered (Wave 12)**: `nextPlaybackMonth()` + `evidenceWindow()` (pure, tested
+functions), playback controls in the timeline (DE/EN, `aria-pressed`, status
+announcements), evidence-window row in the edge panel, token-only CSS, 2 new data-layer
+tests (dashboard 33) + 1 new release pin (release 18) — `ci:pages` green, 0 extra
+Actions minutes.
+
 ## 4. Budget summary
 
 | Wave | Location | Additional Actions minutes | Status |
@@ -620,6 +657,7 @@ Actions minutes.
 | 9 bundling/vulnerability | browser/web worker | **0** | ✅ implemented |
 | 10 chronology/failure | browser/web worker | **0** | ✅ implemented |
 | 11 notes/case report | browser (localStorage) | **0** | ✅ implemented |
+| 12 playback/evidence window | browser | **0** | ✅ implemented |
 
 No step creates new workflows, new cron jobs, longer jobs or paid services. The only
 consumption-relevant limits remain the existing ones: 3 reservations/UTC day, 5-minute
