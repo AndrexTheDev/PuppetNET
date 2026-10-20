@@ -12,6 +12,7 @@ export type WorkerRequest =
   | { kind: 'broker' }
   | { kind: 'louvain'; active: boolean }
   | { kind: 'impact'; version: number; ids: string[] }
+  | { kind: 'evidenceCsv'; version: number }
   | { kind: 'layout'; running: boolean };
 export type WorkerResponse =
   | { kind: 'view'; view: View }
@@ -26,5 +27,6 @@ export type WorkerResponse =
   | { kind: 'louvain'; active: boolean; communities: number; notice?: string }
   | { kind: 'ego'; id: string; depth: number; size: number | null }
   | { kind: 'impact'; version: number; removed: number; components: number; largest: number; isolated: number }
+  | { kind: 'evidenceCsv'; version: number; count: number; csv: string }
   | { kind: 'error'; version: number; message: string };
 export type SourceData = Dataset;

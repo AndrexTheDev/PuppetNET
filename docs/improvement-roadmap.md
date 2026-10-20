@@ -331,6 +331,28 @@ Ausfall-Auswahl im Analytik-Panel (DE/EN), token-only CSS, 2 neue Datenlagen-Tes
 (dashboard 35) + 1 neuer Release-Pin (release 19) — `ci:pages` grün, 0 zusätzliche
 Actions-Minuten.
 
+### Welle 14 — Fallsitzungen + Provenienz-Export — ✅ umgesetzt (2026-10-20)
+
+- **Gespeicherte Ansichten**: Modus, Suche, Community, Zeitfenster, Farbmodus und Fokus
+  lassen sich unter einem Namen als Fallsitzung sichern und mit einem Klick
+  wiederherstellen. Gespeichert wird **nur im Browser** (localStorage, versionierter
+  Schlüssel), Namen werden von Steuerzeichen und Mehrfach-Leerraum befreit und auf 60
+  Zeichen begrenzt, beim Lesen wird jeder Eintrag erneut geprüft (leere, undatierte oder
+  doppelte Einträge fallen raus), die Liste ist auf 50 Sitzungen begrenzt und bleibt
+  alphabetisch sortiert — gleicher Name überschreibt statt zu duplizieren.
+- **Provenienz-Export (CSV)**: Alle Belege, die den **sichtbaren** Ausschnitt stützen —
+  eine Zeile je Dokument mit Quelle, Datum, URL und der Liste der Entitäten **und**
+  Beziehungen, die es belegt. Damit ist die Kette „Aussage ← Beleg" exportierbar, nicht
+  nur im Inspector sichtbar; nicht mehr auflösbare Dokument-IDs bleiben als ID erhalten
+  statt zu verschwinden.
+
+**Geliefert (Welle 14)**: `normalizeSavedName()` / `readSavedViews()` / `upsertSavedView()`
+/ `removeSavedView()` / `evidenceToCSV()` (reine, getestete Funktionen),
+Protokoll/Worker-Anfrage `evidenceCsv` (berechnet auf dem sichtbaren Ausschnitt),
+Sitzungs-Block im Filter-Panel, Beleg-Export im Footer (DE/EN, Statusansagen), token-only
+CSS, 2 neue Datenlagen-Tests (dashboard 37) + 1 neuer Release-Pin (release 20) —
+`ci:pages` grün, 0 zusätzliche Actions-Minuten.
+
 ## 4. Budget-Zusammenfassung
 
 | Welle | Ort | Zusätzliche Actions-Minuten | Status |
@@ -348,6 +370,7 @@ Actions-Minuten.
 | 11 Notizen/Fallbericht | Browser (localStorage) | **0** | ✅ umgesetzt |
 | 12 Wiedergabe/Belegzeitraum | Browser | **0** | ✅ umgesetzt |
 | 13 Direktvergleich/Mehrfachausfall | Browser/Web Worker | **0** | ✅ umgesetzt |
+| 14 Fallsitzungen/Provenienz-Export | Browser/Web Worker | **0** | ✅ umgesetzt |
 
 Kein Schritt erzeugt neue Workflows, neue Cron-Jobs, längere Jobs oder bezahlte
 Dienste. Die einzigen verbrauchsrelevanten Grenzen sind die bestehenden: 3
@@ -680,6 +703,26 @@ functions), `impact` protocol/worker request, side-by-side table + failure selec
 the analytics panel (DE/EN), token-only CSS, 2 new data-layer tests (dashboard 35) +
 1 new release pin (release 19) — `ci:pages` green, 0 extra Actions minutes.
 
+### Wave 14 — case sessions + provenance export — ✅ implemented (2026-10-20)
+
+- **Saved views**: mode, search, community, time window, colour mode and focus can be
+  stored under a name as a case session and restored with one click. Stored **only in
+  this browser** (localStorage, versioned key); names lose control characters and
+  repeated whitespace and are capped at 60 characters, every entry is re-validated on
+  read (empty, undated or duplicate entries drop out), the list is capped at 50 sessions
+  and stays alphabetically sorted — the same name overwrites instead of duplicating.
+- **Provenance export (CSV)**: every document that supports the **visible** slice — one
+  row per document with source, date, URL and the entities **and** relationships it
+  backs. That makes the "claim ← evidence" chain exportable instead of inspector-only;
+  documents that no longer resolve keep their raw id instead of disappearing.
+
+**Delivered (Wave 14)**: `normalizeSavedName()` / `readSavedViews()` / `upsertSavedView()`
+/ `removeSavedView()` / `evidenceToCSV()` (pure, tested functions), `evidenceCsv`
+protocol/worker request (computed on the visible slice), sessions block in the filter
+panel, evidence export in the footer (DE/EN, status announcements), token-only CSS,
+2 new data-layer tests (dashboard 37) + 1 new release pin (release 20) — `ci:pages`
+green, 0 extra Actions minutes.
+
 ## 4. Budget summary
 
 | Wave | Location | Additional Actions minutes | Status |
@@ -697,6 +740,7 @@ the analytics panel (DE/EN), token-only CSS, 2 new data-layer tests (dashboard 3
 | 11 notes/case report | browser (localStorage) | **0** | ✅ implemented |
 | 12 playback/evidence window | browser | **0** | ✅ implemented |
 | 13 comparison/multi-failure | browser/web worker | **0** | ✅ implemented |
+| 14 sessions/provenance export | browser/web worker | **0** | ✅ implemented |
 
 No step creates new workflows, new cron jobs, longer jobs or paid services. The only
 consumption-relevant limits remain the existing ones: 3 reservations/UTC day, 5-minute

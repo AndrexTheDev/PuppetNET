@@ -267,3 +267,18 @@ test('wave 13: entity resolution compares, the app never merges, failure tests s
   assert.ok(dashboard.includes("t('dash.dupeCompareNote')"), 'the no-merge rule is stated to the user');
   assert.ok(dashboard.includes("t('dash.impactSelect')"), 'the failure selection is labelled');
 });
+
+test('wave 14: saved sessions and the provenance export never leave the browser', () => {
+  const data = read('apps/web/app/dashboard/graph-data.ts');
+  assert.match(data, /export const SAVED_VIEW_STORAGE_KEY = 'puppetnet\.views\.v1'/, 'sessions use a versioned local key');
+  assert.match(data, /export function readSavedViews\(raw: unknown\): SavedView\[\]/, 'stored sessions are sanitized, never trusted');
+  assert.match(data, /export function upsertSavedView\(list: SavedView\[\], name: string, query: string, saved: string\): SavedView\[\]/, 'saving is pure so it can be tested');
+  assert.match(data, /export function evidenceToCSV\(data: Dataset, nodes: GraphNode\[\], edges: GraphEdge\[\], limit = 5_000\)/, 'the export is bounded');
+  const worker = read('apps/web/app/dashboard/graph.worker.ts');
+  assert.match(worker, /const csv = evidenceToCSV\(slice, slice\.nodes, slice\.edges\)/, 'the worker exports the visible slice only');
+  const dashboard = read('apps/web/app/dashboard/Dashboard.tsx');
+  assert.ok(dashboard.includes('window.localStorage.getItem(SAVED_VIEW_STORAGE_KEY)'), 'sessions load from this browser only');
+  assert.ok(dashboard.includes("t('dash.viewsTitle')"), 'the sessions block is dictionary-driven');
+  assert.ok(dashboard.includes("t('dash.evidenceCsvAria')"), 'the evidence export is labelled');
+  assert.ok(!/fetch\([^)]*savedViews/i.test(dashboard), 'saved sessions are never uploaded');
+});

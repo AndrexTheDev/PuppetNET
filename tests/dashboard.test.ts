@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
-import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, monthWindow, bundleEdges, structuralVulnerability, pathTimeline, normalizeNote, readNotes, caseReport, nextPlaybackMonth, evidenceWindow, compareDuplicates, multiFailureImpact, NOTE_LIMIT, EGO_DEPTH_LIMIT, VULNERABILITY_NODE_LIMIT, normalizeInsights, ANALYSIS_LIMITS, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
+import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, monthWindow, bundleEdges, structuralVulnerability, pathTimeline, normalizeNote, readNotes, caseReport, nextPlaybackMonth, evidenceWindow, compareDuplicates, multiFailureImpact, normalizeSavedName, readSavedViews, upsertSavedView, removeSavedView, evidenceToCSV, SAVED_VIEW_LIMIT, NOTE_LIMIT, EGO_DEPTH_LIMIT, VULNERABILITY_NODE_LIMIT, normalizeInsights, ANALYSIS_LIMITS, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
 import { apiBase, readResponse } from '../apps/web/app/dashboard/api';
 const filters: Filters = { confidence: 0, weight: 0, types: [...TYPES], lod: true, ratio: 1 };
 test('normalizes Worker and Graphology nodes without inventing coordinates', () => {
@@ -557,4 +557,54 @@ test('wave 13 multi-node failure simulation counts parts, largest survivor and i
   assert.equal(multiFailureImpact(path.nodes, path.edges, ['a', 'b', 'c', 'd'], 2)?.removed, 2, 'the selection is bounded');
   const withGroup = [...path.nodes, { ...path.nodes[0], id: 'group:x', group: true }];
   assert.deepEqual(multiFailureImpact(withGroup, path.edges, ['group:x']), null, 'LoD display groups are not entities');
+});
+
+test('wave 14 saved views are sanitized, bounded and sorted like a case folder', () => {
+  assert.equal(normalizeSavedName('  Fall\u0000 Nordlicht  '), 'Fall Nordlicht', 'control characters never survive');
+  assert.equal(normalizeSavedName('x'.repeat(90)).length, 60, 'names are capped');
+  assert.equal(normalizeSavedName(42), '');
+  const list = readSavedViews(JSON.stringify([
+    { name: 'Zeta', query: 'mode=network', saved: '2026-10-20T10:00:00Z' },
+    { name: '  alpha  ', query: 'mode=list&q=test', saved: '2026-10-19' },
+    { name: 'Alpha', query: 'mode=map', saved: '2026-10-21' },
+    { name: '', query: 'mode=list', saved: '2026-10-21' },
+    { name: 'Broken', query: '', saved: '2026-10-21' },
+    { name: 'Undated', query: 'mode=list', saved: 'irgendwann' },
+  ]));
+  assert.deepEqual(list.map(entry => entry.name), ['alpha', 'Zeta'], 'sorted by name, blanks and dupes dropped');
+  assert.deepEqual(readSavedViews('kein json'), []);
+  assert.deepEqual(readSavedViews(null), []);
+  const many = Array.from({ length: 80 }, (_, i) => ({ name: `view-${String(i).padStart(2, '0')}`, query: 'mode=list', saved: '2026-10-20' }));
+  assert.equal(readSavedViews(JSON.stringify(many)).length, SAVED_VIEW_LIMIT, 'the store stays bounded');
+
+  let views = upsertSavedView([], 'Fall Nordlicht', 'mode=list&q=nordlicht', '2026-10-20T08:00:00Z');
+  assert.deepEqual(views.map(entry => [entry.name, entry.query, entry.saved]), [['Fall Nordlicht', 'mode=list&q=nordlicht', '2026-10-20']], 'dates normalize to the day');
+  views = upsertSavedView(views, 'fall nordlicht', 'mode=network', '2026-10-21');
+  assert.equal(views.length, 1, 'the same name overwrites instead of duplicating');
+  assert.equal(views[0].query, 'mode=network');
+  views = upsertSavedView(views, 'Alpha', 'mode=map', '2026-10-21');
+  assert.deepEqual(views.map(entry => entry.name), ['Alpha', 'fall nordlicht'], 'the list stays sorted');
+  assert.equal(upsertSavedView(views, '   ', 'mode=map', '2026-10-21'), views, 'a blank name is a no-op');
+  assert.equal(upsertSavedView(views, 'Neu', 'mode=map', 'kein Datum'), views, 'an invalid date is a no-op');
+  assert.deepEqual(removeSavedView(views, 'ALPHA').map(entry => entry.name), ['fall nordlicht'], 'deleting is case-insensitive');
+  assert.deepEqual(removeSavedView(views, 'fehlt').map(entry => entry.name), ['Alpha', 'fall nordlicht'], 'unknown names change nothing');
+});
+
+test('wave 14 evidence export lists documents per entity and relationship', () => {
+  const data = normalizeDataset({
+    nodes: [{ key: 'n1', name: 'Nordlicht', evidenceIds: ['d1'] }, { key: 'n2', name: 'Hansa' }],
+    evidence: [
+      { id: 'd2', title: 'Presse' },
+      { id: 'd1', title: 'Register, Handelsregister', source: 'HR', date: '2021-01-01', url: 'https://x.test/1' },
+    ],
+    edges: [{ source: 'n1', target: 'n2', evidenceIds: ['d1', 'd2'] }],
+  });
+  const csv = evidenceToCSV(data, data.nodes, data.edges);
+  const lines = csv.trimEnd().split('\n');
+  assert.equal(lines[0], 'id,title,source,date,url,used_by');
+  assert.equal(lines[1], 'd1,"Register, Handelsregister",HR,2021-01-01,https://x.test/1,Nordlicht | Nordlicht → Hansa', 'commas are quoted and entity plus relationship uses are listed');
+  assert.ok(lines[2].startsWith('d2,Presse,,,,Nordlicht → Hansa'), 'a document only used by a relationship lists just that use, undated stays empty');
+  assert.equal(evidenceToCSV(data, data.nodes, data.edges), csv, 'deterministic');
+  assert.equal(evidenceToCSV(normalizeDataset({ nodes: [{ key: 'a', name: 'A' }], edges: [], evidence: [] }), [], []), 'id,title,source,date,url,used_by\n', 'an empty slice exports the header only');
+  assert.equal(evidenceToCSV(data, data.nodes, data.edges, 1).trimEnd().split('\n').length, 2, 'the export is bounded');
 });

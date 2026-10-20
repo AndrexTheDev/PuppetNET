@@ -3,7 +3,7 @@ import { MultiDirectedGraph, UndirectedGraph } from 'graphology';
 import forceAtlas2 from 'graphology-layout-forceatlas2';
 import betweenness from 'graphology-metrics/centrality/betweenness';
 import louvain from 'graphology-communities-louvain';
-import { demoDataset, normalizeDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, levelFor, shortestPath, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, bundleEdges, structuralVulnerability, pathTimeline, multiFailureImpact, EGO_DEPTH_LIMIT, ANALYSIS_LIMITS, LIMITS, TYPES, type Dataset, type Filters, type View } from './graph-data';
+import { demoDataset, normalizeDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, levelFor, shortestPath, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, bundleEdges, structuralVulnerability, pathTimeline, multiFailureImpact, evidenceToCSV, EGO_DEPTH_LIMIT, ANALYSIS_LIMITS, LIMITS, TYPES, type Dataset, type Filters, type View } from './graph-data';
 import type { WorkerRequest, WorkerResponse } from './protocol';
 const scope = self as unknown as { onmessage: ((event: MessageEvent<WorkerRequest>) => void) | null; postMessage: (value: WorkerResponse, transfer?: Transferable[]) => void };
 let dataset: Dataset = { nodes: [], edges: [], evidence: [] };
@@ -151,6 +151,14 @@ scope.onmessage = async ({ data }) => {
       if (neighborhood) focus = new Set(neighborhood);
       build(data.filters);
       send({ kind: 'ego', id: data.id, depth: Math.max(1, Math.min(EGO_DEPTH_LIMIT, Math.trunc(data.depth) || 1)), size: neighborhood ? neighborhood.length : null });
+      return;
+    }
+    if (data.kind === 'evidenceCsv') {
+      // Wave 14: provenance export for the visible slice — the worker holds the
+      // document table, the UI only ever sees the finished CSV.
+      const slice = currentFiltered(lastFilters);
+      const csv = evidenceToCSV(slice, slice.nodes, slice.edges);
+      send({ kind: 'evidenceCsv', version: data.version, count: Math.max(0, csv.split('\n').length - 2), csv });
       return;
     }
     if (data.kind === 'impact') {

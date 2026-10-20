@@ -752,6 +752,81 @@ export function resolveNodeRef(nodes: GraphNode[], ref: string): GraphNode | nul
   return nodes.find(n => n.id === value || n.label === value) ?? rankSearch(nodes, value, 1)[0] ?? null;
 }
 
+/** Wave 14: saved views are case sessions — a name plus the encoded view
+ * state (mode, query, focus, community, time window, colour). They live in this
+ * browser only, are capped and sanitized on read, and stay ordered by name so
+ * the list never jumps around. */
+export const SAVED_VIEW_LIMIT = 50;
+export const SAVED_VIEW_STORAGE_KEY = 'puppetnet.views.v1';
+export interface SavedView { name: string; query: string; saved: string }
+export function normalizeSavedName(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  return value.replace(/[\u0000-\u001f\u007f]/g, '').replace(/\s+/g, ' ').trim().slice(0, 60);
+}
+export function readSavedViews(raw: unknown): SavedView[] {
+  let parsed: unknown = raw;
+  if (typeof raw === 'string') {
+    try { parsed = JSON.parse(raw); } catch { return []; }
+  }
+  const list = Array.isArray(parsed) ? parsed : [];
+  const out: SavedView[] = [];
+  const seen = new Set<string>();
+  for (const item of list) {
+    if (out.length >= SAVED_VIEW_LIMIT) break;
+    const entry = record(item);
+    const name = normalizeSavedName(entry.name);
+    const query = typeof entry.query === 'string' ? entry.query.slice(0, 600) : '';
+    const saved = isoDate(entry.saved);
+    if (!name || !query || !saved || seen.has(name.toLowerCase())) continue;
+    seen.add(name.toLowerCase());
+    out.push({ name, query, saved });
+  }
+  return out.sort(compareSavedViews);
+}
+const compareSavedViews = (a: SavedView, b: SavedView) =>
+  a.name.toLowerCase() < b.name.toLowerCase() ? -1 : a.name.toLowerCase() > b.name.toLowerCase() ? 1 : a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
+/** Saves (or overwrites) a view under its name; the list stays bounded and
+ * sorted, and a blank name is a no-op instead of an unnamed entry. */
+export function upsertSavedView(list: SavedView[], name: string, query: string, saved: string): SavedView[] {
+  const cleanName = normalizeSavedName(name), cleanQuery = query.slice(0, 600), day = isoDate(saved);
+  if (!cleanName || !cleanQuery || !day) return list;
+  const next = list.filter(entry => entry.name.toLowerCase() !== cleanName.toLowerCase());
+  next.push({ name: cleanName, query: cleanQuery, saved: day });
+  return next.sort(compareSavedViews).slice(0, SAVED_VIEW_LIMIT);
+}
+export function removeSavedView(list: SavedView[], name: string): SavedView[] {
+  const cleanName = normalizeSavedName(name).toLowerCase();
+  return list.filter(entry => entry.name.toLowerCase() !== cleanName);
+}
+/** Wave 14: provenance export — every document that supports the visible
+ * nodes or edges, with the entities it backs. Deterministic, bounded, and
+ * honest about documents that no longer resolve (they keep their raw id). */
+export function evidenceToCSV(data: Dataset, nodes: GraphNode[], edges: GraphEdge[], limit = 5_000): string {
+  const documents = new Map(data.evidence.map(doc => [doc.id, doc]));
+  const uses = new Map<string, Set<string>>();
+  const labels = new Map(data.nodes.map(node => [node.id, node.label]));
+  const add = (docId: string, use: string) => {
+    const set = uses.get(docId) ?? new Set<string>();
+    set.add(use);
+    uses.set(docId, set);
+  };
+  for (const node of nodes) node.evidenceIds.forEach(docId => add(docId, labels.get(node.id) ?? node.id));
+  for (const edge of edges) {
+    const from = labels.get(edge.source) ?? edge.source, to = labels.get(edge.target) ?? edge.target;
+    edge.evidenceIds.forEach(docId => add(docId, `${from} → ${to}`));
+  }
+  const header = 'id,title,source,date,url,used_by';
+  const rows = [...uses.entries()]
+    .map(([docId, usedBy]) => ({ docId, usedBy }))
+    .sort((a, b) => (a.docId < b.docId ? -1 : a.docId > b.docId ? 1 : 0))
+    .slice(0, Math.max(1, limit))
+    .map(({ docId, usedBy }) => {
+      const doc = documents.get(docId);
+      return [docId, doc?.title, doc?.source, doc?.date, doc?.url, [...usedBy].sort().join(' | ')].map(csvCell).join(',');
+    });
+  return [header, ...rows].join('\n') + '\n';
+}
+
 const csvCell = (value: string | number | undefined): string => {
   const s = value === undefined || value === null ? '' : String(value);
   return /[",\n\r]/.test(s) ? `"${s.replaceAll('"', '""')}"` : s;
