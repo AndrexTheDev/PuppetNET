@@ -82,6 +82,30 @@ def _parse_state_timestamp(value: Any) -> datetime | None:
     return stamp if stamp.tzinfo is not None else stamp.replace(tzinfo=timezone.utc)
 
 
+def _prune_state(entries: dict[str, str | None], cutoff: datetime) -> dict[str, str | None]:
+    """Drop entries older than ``cutoff``, then bound the map to LOCAL_STATE_LIMIT.
+
+    Keeps the most recently seen entries, not the lexicographically largest
+    keys: the pre-recency version sorted the digests, which kept an arbitrary
+    slice and could drop documents read minutes ago. Entries without a usable
+    timestamp survive the retention cut (they may be from a legacy file whose
+    only date evidence was consumed on read) and sort oldest for the cap.
+    """
+    pruned = {
+        key: seen_at
+        for key, seen_at in entries.items()
+        if (stamp := _parse_state_timestamp(seen_at)) is None or stamp >= cutoff
+    }
+    if len(pruned) > LOCAL_STATE_LIMIT:
+        pruned = dict(
+            sorted(
+                pruned.items(),
+                key=lambda item: _parse_state_timestamp(item[1]) or datetime.min.replace(tzinfo=timezone.utc),
+            )[-LOCAL_STATE_LIMIT:]
+        )
+    return pruned
+
+
 logger = get_logger("pipeline")
 
 
@@ -205,7 +229,8 @@ class IngestPipeline:
                 self._init_nlp(specs)
                 self._init_triplets()
                 known_hashes = self._load_dedupe_index()
-                self._harvest(specs, known_hashes)
+                known_urls = self._load_known_urls()
+                self._harvest(specs, known_hashes, known_urls)
                 self._flush_pending(final=True)
                 self._analyse_graph()
         except Neo4jUnavailable as exc:
@@ -418,11 +443,29 @@ class IngestPipeline:
         self.logger.info("dedupe index ready: %d known document hashes", len(hashes))
         return hashes
 
+    def _load_known_urls(self) -> set[str]:
+        """Wave 4: URLs ingested inside the window — the pre-fetch skip list.
+
+        Content hashes can only be checked *after* an article was fetched and
+        parsed; URLs are known from the feed entry itself, so this index is what
+        lets the RSS adapter skip reposted stories before spending HTTP requests
+        and time budget on them. Same authority model as the hash index: graph
+        first (when reachable and dedupe is on), local state as the fallback
+        that survives a graph outage.
+        """
+        urls: set[str] = set()
+        if self.writer is not None and self.settings.only_new_documents:
+            urls |= self.writer.recent_document_urls()
+        urls |= self._read_local_urls()
+        self.logger.info("known-url index ready: %d URLs inside the dedupe window", len(urls))
+        return urls
+
     # ------------------------------------------------------------------ #
     # Harvest
     # ------------------------------------------------------------------ #
-    def _harvest(self, specs: Sequence[SourceSpec], known_hashes: set[str]) -> None:
+    def _harvest(self, specs: Sequence[SourceSpec], known_hashes: set[str], known_urls: set[str] | None = None) -> None:
         total_documents = 0
+        known_urls = set(known_urls or ())
         for spec in specs:
             if self._interrupted or time.monotonic() >= self.deadline:
                 self.logger.warning("stopping before %s: budget exhausted", spec.id)
@@ -438,6 +481,7 @@ class IngestPipeline:
                 spec=spec,
                 run_id=self.run_id,
                 known_hashes=set(known_hashes),
+                known_urls=set(known_urls),
                 nlp=self.nlp,
                 deadline=self.deadline,
             )
@@ -489,6 +533,7 @@ class IngestPipeline:
 
             summary = self._flush_source(spec, documents, entities, relations)
             known_hashes.update(context.known_hashes)
+            known_urls.update(context.known_urls)
             total_documents += len(documents)
 
             self._source_reports.append(
@@ -758,21 +803,27 @@ class IngestPipeline:
         already holds, while dropping one that should have been kept costs a
         re-read.
         """
-        entries = self._read_local_state_entries()
+        return self._windowed_entries(self._read_local_state_entries(), "hashes")
+
+    def _read_local_urls(self) -> set[str]:
+        """URLs seen inside *this run's* dedupe window (Wave 4 pre-fetch skip)."""
+        return self._windowed_entries(self._read_local_url_entries(), "urls")
+
+    def _windowed_entries(self, entries: dict[str, str | None], what: str) -> set[str]:
         window = int(self.settings.dedupe_window_days or 0)
         if window <= 0:
             return set(entries)
         cutoff = utcnow() - timedelta(days=window)
         kept = {
-            digest
-            for digest, seen_at in entries.items()
+            key
+            for key, seen_at in entries.items()
             if (stamp := _parse_state_timestamp(seen_at)) is None or stamp >= cutoff
         }
         skipped = len(entries) - len(kept)
         if skipped:
             self.logger.debug(
-                "local dedupe cache: %d of %d hashes are older than the %d-day window",
-                skipped, len(entries), window,
+                "local dedupe cache: %d of %d %s are older than the %d-day window",
+                skipped, len(entries), what, window,
             )
         return kept
 
@@ -804,6 +855,28 @@ class IngestPipeline:
             return {str(item): None for item in payload if item}
         return {}
 
+    def _read_local_url_entries(self) -> dict[str, str | None]:
+        """The ``{"urls": {url: seen_at}}`` map added by Wave 4.
+
+        Additive by design: files written before Wave 4 simply have no ``urls``
+        key and yield an empty map; files written after it are still read by
+        pre-Wave-4 code, which only ever looks at ``hashes``.
+        """
+        path = self._state_file()
+        if not path.exists():
+            return {}
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except (OSError, ValueError):
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        entries = payload.get("urls")
+        if not isinstance(entries, dict):
+            return {}
+        return {str(url): str(stamp) if stamp else None for url, stamp in entries.items() if url}
+
     def _flush_local_state(self, documents: Sequence[Document]) -> None:
         """Record what was read, pruned to a retention that serves every tier.
 
@@ -817,33 +890,24 @@ class IngestPipeline:
             return
         path = self._state_file()
         entries = self._read_local_state_entries()
+        url_entries = self._read_local_url_entries()
         stamp = iso(utcnow())
         for document in documents:
             if document.content_hash:
                 entries[document.content_hash] = stamp
+            if document.url:
+                url_entries[document.url] = stamp
 
         retention = max(int(self.settings.dedupe_window_days or 0), LOCAL_STATE_RETENTION_DAYS)
         cutoff = utcnow() - timedelta(days=retention)
-        entries = {
-            digest: seen_at
-            for digest, seen_at in entries.items()
-            if (stamp_seen := _parse_state_timestamp(seen_at)) is None or stamp_seen >= cutoff
-        }
-        if len(entries) > LOCAL_STATE_LIMIT:
-            # Keep the most recently seen entries, not the lexicographically
-            # largest hashes: the previous version sorted the digests, which kept
-            # an arbitrary slice and could drop documents read minutes ago.
-            entries = dict(
-                sorted(
-                    entries.items(),
-                    key=lambda item: _parse_state_timestamp(item[1]) or datetime.min.replace(tzinfo=timezone.utc),
-                )[-LOCAL_STATE_LIMIT:]
-            )
+        entries = _prune_state(entries, cutoff)
+        url_entries = _prune_state(url_entries, cutoff)
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             with path.open("w", encoding="utf-8") as handle:
                 json.dump(
-                    {"format": 2, "updated_at": stamp, "count": len(entries), "hashes": entries},
+                    {"format": 2, "updated_at": stamp, "count": len(entries), "hashes": entries,
+                     "url_count": len(url_entries), "urls": url_entries},
                     handle,
                 )
         except OSError as exc:

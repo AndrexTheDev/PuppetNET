@@ -480,6 +480,13 @@ WHERE d.last_ingested_at >= $since
 RETURN d.content_hash AS content_hash, d.doc_id AS doc_id
 """
 
+RECENT_DOCUMENT_URLS = """
+MATCH (d:Document)
+WHERE d.last_ingested_at >= $since AND d.url IS NOT NULL
+RETURN d.url AS url
+LIMIT 100000
+"""
+
 ENTITY_ALIAS_INDEX = """
 MATCH (e:Entity)
 WHERE e.aliases IS NOT NULL OR e.name IS NOT NULL

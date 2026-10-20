@@ -10,6 +10,14 @@ export interface GraphAnalytics {
   density: number; hubs: { id: string; name: string; rank: number; degree: number }[];
   temporalRange?: { first: string; last: string };
 }
+/** Wave-4 correlation insights: bounded deterministic rule hits from the export
+ *  (nominee chains, star structures, community bridges, shared officers).
+ *  Structural hints with edge-id evidence, never accusations. */
+export interface GraphInsight {
+  rule: string; version: number; title: string; description: string; support: number;
+  entities: { id: string; name: string; type?: string }[];
+  evidence: string[];
+}
 export interface GraphNode {
   id: string; label: string; type: EntityType; confidence: number; x: number; y: number;
   cluster: string; lat?: number; lon?: number; evidenceIds: string[];
@@ -17,13 +25,14 @@ export interface GraphNode {
   degree?: number; rank?: number; community?: string; firstSeen?: string; lastSeen?: string;
 }
 export interface GraphEdge { id: string; source: string; target: string; type: string; confidence: number; weight: number; evidenceIds: string[]; count?: number }
-export interface Dataset { nodes: GraphNode[]; edges: GraphEdge[]; evidence: Evidence[]; truncated?: boolean; analytics?: GraphAnalytics }
+export interface Dataset { nodes: GraphNode[]; edges: GraphEdge[]; evidence: Evidence[]; truncated?: boolean; analytics?: GraphAnalytics; insights?: GraphInsight[] }
 export interface Filters { confidence: number; weight: number; types: EntityType[]; lod: boolean; ratio: number; community?: string; from?: string; to?: string }
 export interface MapPoint { id: string; lat: number; lon: number; count: number; label: string; exampleId: string }
 export interface View {
   version: number; nodes: GraphNode[]; edges: GraphEdge[]; mapPoints: MapPoint[];
   stats: { totalNodes: number; totalEdges: number; filteredNodes: number; filteredEdges: number; locatedNodes: number; grouped: boolean; level: string; focused: boolean; truncated: boolean };
   analytics?: GraphAnalytics;
+  insights?: GraphInsight[];
 }
 export const LIMITS = { nodes: 200_000, edges: 500_000, bytes: 64 * 1024 * 1024 };
 const record = (v: unknown): Record<string, unknown> => v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {};
@@ -48,6 +57,24 @@ export function normalizeAnalytics(value: unknown): GraphAnalytics | undefined {
     communities: num(a.communities), largestCommunity: num(a.largestCommunity), density: score(a.density), hubs };
   const range = record(a.temporalRange), first = isoDate(range.first), last = isoDate(range.last);
   if (first && last) out.temporalRange = { first, last };
+  return out;
+}
+/** Validates the optional Wave-4 `insights` block; malformed items are dropped. */
+export function normalizeInsights(value: unknown): GraphInsight[] {
+  if (!Array.isArray(value)) return [];
+  const out: GraphInsight[] = [];
+  for (const item of value.slice(0, 24)) {
+    const i = record(item);
+    const rule = text(i.rule, 40), title = text(i.title, 120), description = text(i.description, 400);
+    if (!rule || !title) continue;
+    const entities = (Array.isArray(i.entities) ? i.entities : []).slice(0, 5).map(raw => {
+      const e = record(raw);
+      return { id: text(e.id, 200), name: text(e.name, 200), ...(text(e.type, 40) ? { type: text(e.type, 40) } : {}) };
+    }).filter(e => e.id && e.name);
+    out.push({ rule, version: Number.isFinite(Number(i.version)) ? Math.trunc(Number(i.version)) : 1,
+      title, description, support: score(i.support), entities,
+      evidence: (Array.isArray(i.evidence) ? i.evidence : []).slice(0, 4).map(x => text(x, 64)).filter(Boolean) });
+  }
   return out;
 }
 export function safeUrl(value: unknown): string | undefined {
@@ -109,7 +136,9 @@ export function normalizeDataset(input: unknown): Dataset {
   }).filter((e): e is GraphEdge => e !== null);
   if (dangling) throw new Error(`${dangling} Kanten verweisen auf fehlende Knoten. Bitte einen geschlossenen Teilgraphen importieren.`);
   const analytics = normalizeAnalytics(raw.analytics);
-  return { nodes, edges, evidence, truncated: raw.truncated === true, ...(analytics ? { analytics } : {}) };
+  const insights = normalizeInsights(raw.insights);
+  return { nodes, edges, evidence, truncated: raw.truncated === true, ...(analytics ? { analytics } : {}),
+    ...(insights.length ? { insights } : {}) };
 }
 export function filterDataset(data: Dataset, filters: Filters): Dataset {
   const types = new Set(filters.types);
@@ -129,7 +158,8 @@ export function filterDataset(data: Dataset, filters: Filters): Dataset {
   }
   const keep = new Set(nodes.map(n => n.id));
   const edges = data.edges.filter(e => e.confidence >= filters.confidence && e.weight >= filters.weight && keep.has(e.source) && keep.has(e.target));
-  return { nodes, edges, evidence: data.evidence, ...(data.analytics ? { analytics: data.analytics } : {}) };
+  return { nodes, edges, evidence: data.evidence, ...(data.analytics ? { analytics: data.analytics } : {}),
+    ...(data.insights ? { insights: data.insights } : {}) };
 }
 export function levelFor(count: number, filters: Filters): string {
   if (!filters.lod || count <= 5000) return 'Einzelknoten';
@@ -313,8 +343,9 @@ export function edgesToCSV(edges: GraphEdge[]): string {
   const rows = edges.map(e => [e.id, e.source, e.target, e.type, e.confidence.toFixed(3), e.weight.toFixed(3)].map(csvCell).join(','));
   return [header, ...rows].join('\r\n') + '\r\n';
 }
-export function viewToJSON(view: { nodes: GraphNode[]; edges: GraphEdge[]; analytics?: GraphAnalytics }): string {
-  return JSON.stringify({ nodes: view.nodes, edges: view.edges, ...(view.analytics ? { analytics: view.analytics } : {}) }, null, 2) + '\n';
+export function viewToJSON(view: { nodes: GraphNode[]; edges: GraphEdge[]; analytics?: GraphAnalytics; insights?: GraphInsight[] }): string {
+  return JSON.stringify({ nodes: view.nodes, edges: view.edges, ...(view.analytics ? { analytics: view.analytics } : {}),
+    ...(view.insights?.length ? { insights: view.insights } : {}) }, null, 2) + '\n';
 }
 
 /** Shareable permalinks: bounded, validated URL state (no secrets, no free text). */

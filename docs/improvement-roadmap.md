@@ -112,7 +112,7 @@ rein statisch (Build-Zeit, kein JS zur Laufzeit, 0 Actions-Minuten):
   `knows` für Personen-Nachbarn (absolute `@id`-Referenzen).
 Deutlicher Hinweis überall: Strukturmaße sind Lagehinweise, keine Bewertungen.
 
-### Welle 4 — Ingestion-Qualität im bestehenden Budget (0 Zusatz-Minuten)
+### Welle 4 — Ingestion-Qualität im bestehenden Budget (0 Zusatz-Minuten) — ✅ umgesetzt (2026-10-20)
 
 1. **Novel-Document-Priorisierung**: Abgleich gegen die veröffentlichte Revision, bevor
    ein Dokument einen der 10 Slots pro Lauf verbraucht → mehr *neue* Informationen pro
@@ -122,8 +122,23 @@ Deutlicher Hinweis überall: Strukturmaße sind Lagehinweise, keine Bewertungen.
 3. **Feed-Gesundheitsbericht**: tote Feeds in der Laufzusammenfassung (Sekunden, keine
    neue Minute) — Operator sieht Quellenqualität sofort.
 4. **Korrelations-Regeln** (SpiderFoot-Prinzip, aber bounded): deterministischer
-   Regelsatz auf dem Export-Graphen (Nominee-Ketten, Hub-and-Spoke, Community-Brücken)
-   → optionaler `insights`-Block; Regeln als Code, versioniert, keine LLM-Kosten.
+   Regelsatz auf dem Export-Graphen (Nominee-Ketten, Hub-and-Spoke, Community-Brücken,
+   Personenverflechtungen) → optionaler `insights`-Block; Regeln als Code, versioniert,
+   keine LLM-Kosten.
+
+**Geliefert (Welle 4)**: URL-Dedupe *vor* dem Artikel-Fetch (bekannte Storys verbrauchen
+weder HTTP-Request noch Slot; umformulierte Reposts fliegen über den URL-Abgleich raus,
+State additiv `urls`/`url_count` neben den bestehenden `hashes`); ~35 deutsche Verben,
+~60 Rollen-Nomen und Copula-Erkennung („ist Geschäftsführerin der …", „ist Tochter von
+…" — per Entitätstyp als Familie oder Konzern disambiguiert) im Token-Saver, dazu ~25
+deutsche Verb- und ~17 Substantiv-Regeln im Relation-Mapper inkl. deutscher Hedges
+(„angeblich") und Negationen („nicht", „bestreitet"); Feed-Gesundheits-Ledger
+(`ok/empty/dead` pro Feed, bounded auf 100) mit Tabelle in der Laufzusammenfassung;
+vier versionierte Korrelationsregeln im Export (`nominee-chain`, `hub-spoke`,
+`community-bridge`, `shared-officer`, max. 8 pro Regel / 24 gesamt, jede mit
+Kanten-Evidenz), sichtbar als klickbare „Korrelations-Insights" im Dashboard —
+insight-freie Graphen exportieren byte-identisch weiter. 1312 Python-Tests,
+`ci:pages` grün, 0 zusätzliche Actions-Minuten.
 
 ### Welle 5 — Vertrauen & Compliance (Differenzierung in der Nische)
 
@@ -148,7 +163,7 @@ Actions-Kosten, aber größerer Testaufwand → bewusst ans Ende priorisiert.
 | 1 Export-Analytics | bestehender Export-Schritt | **0** | ✅ umgesetzt |
 | 2 Analyse-UI | Browser/Web Worker | **0** | ✅ umgesetzt (inkl. 2b) |
 | 3 Entitätsseiten | Pages-Build | **0** | ✅ umgesetzt |
-| 4 Ingestion-Qualität | bestehende ≤5-min-Jobs | **0** | geplant |
+| 4 Ingestion-Qualität | bestehende ≤5-min-Jobs | **0** | ✅ umgesetzt |
 | 5 Compliance/Trust | statische Seiten + Doku | **0** | geplant |
 | 6 i18n/PWA | Pages-Build/Browser | **0** | optional |
 
@@ -272,7 +287,7 @@ fully static (build time, no runtime JS, 0 Actions minutes):
   `knows` for person neighbors (absolute `@id` references).
 Clear note everywhere: structural metrics are position hints, not verdicts.
 
-### Wave 4 — ingestion quality inside the existing budget (0 extra minutes)
+### Wave 4 — ingestion quality inside the existing budget (0 extra minutes) — ✅ implemented (2026-10-20)
 
 1. **Novel-document prioritization**: check against the published revision before a
    document consumes one of the 10 slots per run → more *new* information per run at an
@@ -282,8 +297,22 @@ Clear note everywhere: structural metrics are position hints, not verdicts.
 3. **Feed-health report**: dead feeds in the run summary (seconds, not a new minute) —
    the operator sees source quality immediately.
 4. **Correlation rules** (SpiderFoot principle, but bounded): deterministic rule set over
-   the export graph (nominee chains, hub-and-spoke, community bridges) → optional
-   `insights` block; rules as code, versioned, no LLM cost.
+   the export graph (nominee chains, hub-and-spoke, community bridges, shared officers)
+   → optional `insights` block; rules as code, versioned, no LLM cost.
+
+**Shipped (Wave 4)**: URL dedupe *before* the article fetch (known stories burn neither
+an HTTP request nor a slot; re-worded reposts are caught by the URL check; the state
+file gains `urls`/`url_count` additively next to the pinned `hashes`); ~35 German verbs,
+~60 role nouns and copula parsing ("ist Geschäftsführerin der …", "ist Tochter von …" —
+disambiguated by entity type into family vs. corporate) in the token saver, plus ~25
+German verb and ~17 noun rules in the relation mapper including German hedges
+("angeblich") and negations ("nicht", "bestreitet"); a feed-health ledger
+(`ok/empty/dead` per feed, bounded at 100) with a table in the run summary; four
+versioned correlation rules in the export (`nominee-chain`, `hub-spoke`,
+`community-bridge`, `shared-officer`, max 8 per rule / 24 overall, each citing edge
+evidence), rendered as clickable "correlation insights" in the dashboard —
+insight-free graphs keep exporting byte-identically. 1312 Python tests,
+`ci:pages` green, 0 extra Actions minutes.
 
 ### Wave 5 — trust & compliance (differentiation in the niche)
 
@@ -308,7 +337,7 @@ minutes but carry a larger testing burden → deliberately prioritized last.
 | 1 Export analytics | existing export step | **0** | ✅ implemented |
 | 2 Analysis UI | browser/web worker | **0** | ✅ implemented (incl. 2b) |
 | 3 Entity pages | Pages build | **0** | ✅ implemented |
-| 4 Ingestion quality | existing ≤5-min jobs | **0** | planned |
+| 4 Ingestion quality | existing ≤5-min jobs | **0** | ✅ implemented |
 | 5 Compliance/trust | static pages + docs | **0** | planned |
 | 6 i18n/PWA | Pages build/browser | **0** | optional |
 

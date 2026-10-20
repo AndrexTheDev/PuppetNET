@@ -232,6 +232,20 @@ export default function Dashboard() {
         {view?.analytics && <div className="analytics-panel"><div className="section-heading"><h3>Analytik (Export)</h3></div>
           <dl className="analytics-facts"><div><dt>Communities</dt><dd>{number(view.analytics.communities)}</dd></div><div><dt>Dichte</dt><dd>{(view.analytics.density * 100).toFixed(2)} %</dd></div>{view.analytics.temporalRange && <div><dt>Zeitraum</dt><dd>{view.analytics.temporalRange.first} → {view.analytics.temporalRange.last}</dd></div>}</dl>
           {view.analytics.hubs.length > 0 && <><h4 className="hub-heading">Top-Hubs (PageRank)</h4><ol className="hub-list">{view.analytics.hubs.map(hub => <li key={hub.id}><button type="button" className="text-button" onClick={() => { if (mode !== 'network') changeMode('network'); select(hub.id); requestAnimationFrame(() => network.current?.focus(hub.id)); }}>{hub.name}</button><span className="hub-rank">{(hub.rank * 100).toFixed(1)} %</span></li>)}</ol></>}
+          {view.insights && view.insights.length > 0 && <>
+            <h4 className="hub-heading">Korrelations-Insights (Export)</h4>
+            <ul className="insight-list">{view.insights.map((insight, index) => (
+              <li key={`${insight.rule}-${index}`}>
+                <span className="insight-rule">{insight.rule}</span>
+                <strong>{insight.title}</strong>
+                {insight.description && <p className="insight-description">{insight.description}</p>}
+                <span className="insight-entities">{insight.entities.map(entity => (
+                  <button key={entity.id} type="button" className="text-button" onClick={() => { if (mode !== 'network') changeMode('network'); select(entity.id); requestAnimationFrame(() => network.current?.focus(entity.id)); }}>{entity.name}</button>
+                ))}</span>
+              </li>
+            ))}</ul>
+            <p className="muted">Deterministische Regeln auf dem veröffentlichten Graphen (Strohmann-Ketten, Sternstrukturen, Community-Brücken, Personenverflechtungen), jede mit Kanten-Evidenz im Export — Strukturhinweise, keine Schuldzuweisungen.</p>
+          </>}
         </div>}
         <div className="algorithm-panel"><div className="section-heading"><h3>Graph-Algorithmen</h3></div>
           <p className="muted">Betweenness und Louvain laufen im Web Worker auf deinen geladenen Daten — freie Browser-Rechenzeit, keine CI-Minuten, keine Cloud.</p>
@@ -269,7 +283,7 @@ export default function Dashboard() {
         <div id="visualization-stage" className={mode === 'network' ? 'graph-pane' : 'graph-pane hidden-pane'}>{mode === 'network' && <NetworkGraph ref={network} view={view} onSelect={select} onRatio={onRatio} onClear={clearSelected} colorMode={colorMode} path={pathHighlight} />}<div className="graph-tools"><button aria-label="Vergrößern" onClick={() => network.current?.zoom(.65)}>+</button><button aria-label="Verkleinern" onClick={() => network.current?.zoom(1.5)}>−</button><button aria-label="Ansicht einpassen" onClick={() => network.current?.reset()}>⌖</button><button onClick={() => send({ kind: 'layout', running: !layoutRunning })}>{layoutRunning ? 'Pause' : 'Layout'}</button></div></div>
         {mode === 'map' && <><MapModule points={view?.mapPoints ?? []} onSelect={id => select(id)} /><div className="data-footnote">{number(view?.stats.locatedNodes)} Knoten mit gültigen Koordinaten. Räumlich aggregiert, maximal 1.000 Marker.</div></>}
         {mode === 'list' && <EntityTable rows={tableRows} total={list.length} page={listPage} pageSize={pageSize} query={search} onQuery={value => { setSearch(value); setListPage(0); }} onPage={setListPage} onSelect={select} onFocusGraph={id => { changeMode('network'); select(id); requestAnimationFrame(() => network.current?.focus(id)); }} />}
-        <div className="visualization-footer"><span><span className="status-dot" /> {number(view?.stats.totalNodes)} Knoten geladen</span><span className="view-export"><button type="button" onClick={() => downloadText('puppetnet-knoten.csv', nodesToCSV(view?.nodes ?? []), 'text/csv;charset=utf-8')}>Knoten CSV ↓</button><button type="button" onClick={() => downloadText('puppetnet-kanten.csv', edgesToCSV(view?.edges ?? []), 'text/csv;charset=utf-8')}>Kanten CSV ↓</button><button type="button" onClick={() => downloadText('puppetnet-ansicht.json', viewToJSON({ nodes: view?.nodes ?? [], edges: view?.edges ?? [], analytics: view?.analytics }), 'application/json')}>JSON ↓</button></span><span>{view?.stats.focused ? <button onClick={() => requestView('reset')}>← Gesamten Ausschnitt anzeigen</button> : 'Klick: untersuchen · Scroll: zoomen'}</span></div>
+        <div className="visualization-footer"><span><span className="status-dot" /> {number(view?.stats.totalNodes)} Knoten geladen</span><span className="view-export"><button type="button" onClick={() => downloadText('puppetnet-knoten.csv', nodesToCSV(view?.nodes ?? []), 'text/csv;charset=utf-8')}>Knoten CSV ↓</button><button type="button" onClick={() => downloadText('puppetnet-kanten.csv', edgesToCSV(view?.edges ?? []), 'text/csv;charset=utf-8')}>Kanten CSV ↓</button><button type="button" onClick={() => downloadText('puppetnet-ansicht.json', viewToJSON({ nodes: view?.nodes ?? [], edges: view?.edges ?? [], analytics: view?.analytics, insights: view?.insights }), 'application/json')}>JSON ↓</button></span><span>{view?.stats.focused ? <button onClick={() => requestView('reset')}>← Gesamten Ausschnitt anzeigen</button> : 'Klick: untersuchen · Scroll: zoomen'}</span></div>
       </section>
       <SidePanel node={selected} evidence={evidence} detailError={detailError} onClose={() => { clearSelected(); setAnnouncement('Details geschlossen.'); }} onDrill={group => { clearSelected(); setBusy(true); send({ kind: 'drill', group, version: ++version.current, filters: filtersRef.current }); }} />
     </div>}

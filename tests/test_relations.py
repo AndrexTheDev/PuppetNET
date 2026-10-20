@@ -386,3 +386,47 @@ def test_extra_rules_can_be_injected():
     assert decision.predicate is RelationType.MEMBER_OF
     assert decision.evidence == pytest.approx(0.91)
     assert mapper.describe()["verb_rules"] == len(VERB_RULES) + 1
+
+
+# --------------------------------------------------------------------------- #
+# Wave 4 — German rule coverage
+# --------------------------------------------------------------------------- #
+
+
+def test_german_verb_rules_map_to_canonical_predicates(mapper):
+    assert mapper.from_verb("besitzen", P, O).predicate is RelationType.OWNS
+    assert mapper.from_verb("halten", P, O).predicate is RelationType.SHAREHOLDER_OF
+    assert mapper.from_verb("gründen", P, O).predicate is RelationType.FOUNDED
+    assert mapper.from_verb("übernehmen", O, O).predicate is RelationType.ACQUIRED
+    assert mapper.from_verb("finanzieren", O, O).predicate is RelationType.FUNDED
+    assert mapper.from_verb("heiraten", P, P).predicate is RelationType.FAMILY_OF
+    assert mapper.from_verb("sanktionieren", O, O).predicate is RelationType.SANCTIONED_BY
+    assert mapper.from_verb("ernennen", O, P).predicate is RelationType.APPOINTED_BY
+    assert mapper.from_verb("wohnen", P, L).predicate is RelationType.LOCATED_IN
+    assert mapper.from_verb("betreiben", O, C).predicate is RelationType.OPERATES
+
+
+def test_german_noun_rules_map_to_canonical_predicates(mapper):
+    assert mapper.from_noun("geschäftsführer", P, O).predicate is RelationType.OFFICER_OF
+    assert mapper.from_noun("vorstand", P, O).predicate is RelationType.DIRECTOR_OF
+    assert mapper.from_noun("eigentümer", P, O).predicate is RelationType.OWNS
+    assert mapper.from_noun("aktionär", P, O).predicate is RelationType.SHAREHOLDER_OF
+    assert mapper.from_noun("gründer", P, O).predicate is RelationType.FOUNDED
+    assert mapper.from_noun("tochtergesellschaft", O, O).predicate is RelationType.SUBSIDIARY_OF
+    assert mapper.from_noun("muttergesellschaft", O, O).predicate is RelationType.PARENT_OF
+    assert mapper.from_noun("strohmann", P, O).predicate is RelationType.NOMINEE_OF
+    assert mapper.from_noun("treuhänder", P, O).predicate is RelationType.TRUSTEE_OF
+    assert mapper.from_noun("hauptsitz", O, L).predicate is RelationType.LOCATED_IN
+    assert mapper.from_noun("handelsregister", O, L).predicate is RelationType.REGISTERED_IN
+    # "Tochter" alone is type-gated: family between people, subsidiary between orgs.
+    assert mapper.from_noun("tochter", P, P).predicate is RelationType.FAMILY_OF
+    assert mapper.from_noun("tochter", O, O).predicate is RelationType.SUBSIDIARY_OF
+
+
+def test_german_hedges_and_negations_are_recognised(mapper):
+    plain = mapper.from_verb("besitzen", P, O, sentence="Kerimow besitzt Midea.")
+    hedged = mapper.from_verb("besitzen", P, O, sentence="Kerimow besitzt angeblich Midea.")
+    assert plain.hedged is False and hedged.hedged is True
+    assert hedged.evidence == pytest.approx(plain.evidence * 0.75, abs=1e-6)
+    assert mapper.from_verb("besitzen", P, O, sentence="Kerimow besitzt Midea nicht.").negated is True
+    assert mapper.from_verb("besitzen", P, O, sentence="Kerimow bestreitet die Beteiligung.").negated is True

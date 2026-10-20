@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
-import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, namePartition, brokerShares, ANALYSIS_LIMITS, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
+import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, namePartition, brokerShares, normalizeInsights, ANALYSIS_LIMITS, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
 import { apiBase, readResponse } from '../apps/web/app/dashboard/api';
 const filters: Filters = { confidence: 0, weight: 0, types: [...TYPES], lod: true, ratio: 1 };
 test('normalizes Worker and Graphology nodes without inventing coordinates', () => {
@@ -224,4 +224,25 @@ test('broker shares normalize, drop zero/invalid betweenness and stay bounded', 
   assert.equal(brokerShares(many).length, 10, 'top list stays bounded');
   assert.deepEqual(brokerShares({ z: 1, y: 1 }).map(b => b.id), ['y', 'z'], 'value ties break by id');
   assert.ok(ANALYSIS_LIMITS.broker < ANALYSIS_LIMITS.louvain);
+});
+
+test('carries, validates and bounds export insights', () => {
+  const base = { nodes: [{ id: 'a' }, { id: 'b' }], edges: [{ source: 'a', target: 'b' }] };
+  const insight = { rule: 'nominee-chain', version: 1, title: 'Mögliche Strohmann-Kette', description: 'A ist Strohmann für B.', support: .8,
+    entities: [{ id: 'a', name: 'A', type: 'Person' }, { id: 'b', name: 'B' }], evidence: ['edge:1'] };
+  const data = normalizeDataset({ ...base, insights: [insight] });
+  assert.deepEqual(data.insights, [insight]);
+  assert.equal(filterDataset(data, filters).insights?.length, 1);
+  assert.equal('insights' in normalizeDataset(base), false, 'insight-free exports stay untouched');
+  // Anything malformed is dropped, never trusted.
+  assert.equal(normalizeDataset({ ...base, insights: 'nope' }).insights, undefined);
+  assert.equal(normalizeDataset({ ...base, insights: [{ title: 'ohne rule' }, { rule: '', title: 'x' }, null] }).insights, undefined);
+  const direct = normalizeInsights([{ rule: 'hub-spoke', title: 'Stern', support: 5, entities: [{ id: '', name: 'x' }, { id: 'h', name: 'Hub' }], evidence: [1, '', 'e'] }, { rule: 'x' }]);
+  assert.equal(direct.length, 1);
+  assert.equal(direct[0].version, 1);
+  assert.equal(direct[0].support, 1, 'support is clamped to [0,1]');
+  assert.deepEqual(direct[0].entities, [{ id: 'h', name: 'Hub' }]);
+  assert.deepEqual(direct[0].evidence, ['1', 'e']);
+  const capped = normalizeInsights(Array.from({ length: 40 }, (_, i) => ({ rule: 'r', title: `t${i}`, description: 'd', support: .5, entities: [], evidence: [] })));
+  assert.equal(capped.length, 24, 'the UI never renders more than the export cap');
 });

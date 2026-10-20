@@ -28,12 +28,103 @@ from puppetnet.parsing.nlp_engine import ParseResult
 logger = logging.getLogger(__name__)
 
 PREDICATES = ("OWNS", "FOUNDED", "EMPLOYED_BY", "LOCATED_IN", "MEMBER_OF", "MET_WITH")
-VERBS = {"besitzen": "OWNS", "gründen": "FOUNDED", "treffen": "MET_WITH"}
+#: Wave 4: German verb lemmas (de_core_news_sm dictionary forms) whose canonical
+#: graph direction is subject→object. Direct-object constructions only: the
+#: dependency filter (sb + oa/da) is what keeps these precise, prepositional
+#: objects ("beteiligt sich an X") never reach this map.
+VERBS = {
+    # ownership, stakes & control (Beteiligungsformulierungen)
+    "besitzen": "OWNS", "halten": "SHAREHOLDER_OF", "gehören": "OWNED_BY",
+    "erwerben": "ACQUIRED", "kaufen": "ACQUIRED", "übernehmen": "ACQUIRED", "aufkaufen": "ACQUIRED",
+    "gründen": "FOUNDED", "errichten": "FOUNDED",
+    "leiten": "CONTROLS", "führen": "CONTROLS", "kontrollieren": "CONTROLS",
+    "steuern": "CONTROLS", "lenken": "CONTROLS", "verwalten": "CONTROLS",
+    # money flows
+    "finanzieren": "FUNDED", "fördern": "FUNDED", "subventionieren": "FUNDED",
+    "zahlen": "PAID_TO", "bezahlen": "PAID_TO", "investieren": "INVESTED_IN",
+    "überweisen": "TRANSFERRED_TO", "verkaufen": "TRANSFERRED_TO",
+    "veräußern": "TRANSFERRED_TO", "übertragen": "TRANSFERRED_TO",
+    # work & contracts
+    "beschäftigen": "EMPLOYS", "anstellen": "EMPLOYS", "einstellen": "EMPLOYS",
+    "beauftragen": "CONTRACTED_WITH", "verpflichten": "EMPLOYS",
+    # membership & social
+    "beitreten": "MEMBER_OF", "angehören": "MEMBER_OF",
+    "treffen": "MET_WITH", "begegnen": "MET_WITH", "heiraten": "FAMILY_OF",
+    # craft operation (direct object = the craft)
+    "betreiben": "OPERATES", "chartern": "OPERATES", "fliegen": "OPERATES",
+}
+#: German verbs whose canonical predicate direction is object→subject, mirroring
+#: the reverse rules in puppetnet.parsing.relations ("X sanktioniert Y" →
+#: (Y)-[:SANCTIONED_BY]->(X)). The endpoints are swapped before the edge is built.
+REVERSED_VERBS = {
+    "sanktionieren": "SANCTIONED_BY",
+    "beschuldigen": "ACCUSED_OF", "anklagen": "ACCUSED_OF", "verklagen": "ACCUSED_OF",
+    "verurteilen": "ACCUSED_OF", "verdächtigen": "ACCUSED_OF",
+    "ernennen": "APPOINTED_BY", "berufen": "APPOINTED_BY",
+    "wählen": "APPOINTED_BY", "nominieren": "APPOINTED_BY",
+}
+#: Wave 4 register vocabulary (Handelsregister): role nouns in the copula
+#: construction "X ist <Rolle> von/der Y" — the single most common way German
+#: business text states officer, ownership and stakeholding facts. Unambiguous
+#: lemmas only; kinship/corporate doubles live in KINSHIP_OR_CORPORATE.
+ROLE_NOUNS = {
+    # governance & officers
+    "geschäftsführer": "OFFICER_OF", "geschäftsführerin": "OFFICER_OF",
+    "direktor": "OFFICER_OF", "direktorin": "OFFICER_OF",
+    "präsident": "OFFICER_OF", "präsidentin": "OFFICER_OF",
+    "ceo": "OFFICER_OF", "cfo": "OFFICER_OF", "coo": "OFFICER_OF",
+    "manager": "OFFICER_OF", "managerin": "OFFICER_OF",
+    "prokurist": "OFFICER_OF", "prokuristin": "OFFICER_OF",
+    "vorstand": "DIRECTOR_OF", "vorstandsmitglied": "DIRECTOR_OF",
+    "vorstandsvorsitzender": "DIRECTOR_OF", "vorstandsvorsitzende": "DIRECTOR_OF",
+    "aufsichtsrat": "DIRECTOR_OF", "aufsichtsratsmitglied": "DIRECTOR_OF",
+    "aufsichtsratsvorsitzender": "DIRECTOR_OF", "aufsichtsratsvorsitzende": "DIRECTOR_OF",
+    "verwaltungsrat": "DIRECTOR_OF", "verwaltungsratsmitglied": "DIRECTOR_OF",
+    # ownership & stakes
+    "eigentümer": "OWNS", "eigentümerin": "OWNS", "inhaber": "OWNS", "inhaberin": "OWNS",
+    "besitzer": "OWNS", "besitzerin": "OWNS",
+    "aktionär": "SHAREHOLDER_OF", "aktionärin": "SHAREHOLDER_OF",
+    "hauptaktionär": "SHAREHOLDER_OF", "großaktionär": "SHAREHOLDER_OF",
+    "anteilseigner": "SHAREHOLDER_OF", "gesellschafter": "SHAREHOLDER_OF",
+    "gesellschafterin": "SHAREHOLDER_OF",
+    "gründer": "FOUNDED", "gründerin": "FOUNDED", "mitgründer": "FOUNDED",
+    "stifter": "FOUNDED", "stifterin": "FOUNDED",
+    "muttergesellschaft": "PARENT_OF", "holding": "PARENT_OF",
+    "tochtergesellschaft": "SUBSIDIARY_OF", "niederlassung": "SUBSIDIARY_OF",
+    "zweigniederlassung": "SUBSIDIARY_OF", "schwestergesellschaft": "ASSOCIATED_WITH",
+    # intermediaries & trustees (nominee structures)
+    "treuhänder": "TRUSTEE_OF", "treuhänderin": "TRUSTEE_OF",
+    "strohmann": "NOMINEE_OF", "strohfrau": "NOMINEE_OF",
+    "mittelsmann": "INTERMEDIARY_FOR", "vermittler": "INTERMEDIARY_FOR",
+    # employment & representation
+    "mitarbeiter": "EMPLOYED_BY", "mitarbeiterin": "EMPLOYED_BY",
+    "angestellter": "EMPLOYED_BY", "angestellte": "EMPLOYED_BY",
+    "beschäftigter": "EMPLOYED_BY", "beschäftigte": "EMPLOYED_BY",
+    "berater": "EMPLOYED_BY", "beraterin": "EMPLOYED_BY",
+    "anwalt": "EMPLOYED_BY", "anwältin": "EMPLOYED_BY",
+    "lobbyist": "EMPLOYED_BY", "lobbyistin": "EMPLOYED_BY",
+    "sprecher": "EMPLOYED_BY", "sprecherin": "EMPLOYED_BY",
+    "mitglied": "MEMBER_OF", "parteimitglied": "MEMBER_OF",
+    # unambiguous kinship
+    "ehefrau": "FAMILY_OF", "ehemann": "FAMILY_OF", "gattin": "FAMILY_OF", "gatte": "FAMILY_OF",
+    "witwe": "FAMILY_OF", "witwer": "FAMILY_OF",
+    "onkel": "FAMILY_OF", "tante": "FAMILY_OF", "neffe": "FAMILY_OF", "nichte": "FAMILY_OF",
+    "cousin": "FAMILY_OF", "cousine": "FAMILY_OF", "enkel": "FAMILY_OF", "enkelin": "FAMILY_OF",
+    "bruder": "FAMILY_OF", "schwester": "FAMILY_OF",
+}
+#: "Mutter"/"Tochter" are both kinship and corporate terms. Resolved by entity
+#: type at parse time: person↔person is FAMILY_OF, otherwise the corporate sense.
+KINSHIP_OR_CORPORATE = {"mutter": ("FAMILY_OF", "PARENT_OF"), "tochter": ("FAMILY_OF", "SUBSIDIARY_OF"),
+                        "sohn": ("FAMILY_OF", ""), "vater": ("FAMILY_OF", "")}
 # Drop complete marketing filler lines, not grammatical stopwords: deleting
 # "nicht", prepositions or auxiliaries would corrupt negation/dependency direction.
 FILLER_LINE = re.compile(r"(?:jetzt (?:kostenlos )?(?:abonnieren|registrieren)|"
                          r"(?:hier )?klicken sie hier|mehr erfahren|alle rechte vorbehalten)[.! ]*", re.I)
 NEGATIVE = re.compile(r"\b(nicht|kein\w*|angeblich|möglicherweise|mutmaßlich|soll|könnte)\b", re.I)
+#: Dependency labels that attach a nominal to a role noun or the copula:
+#: op = prepositional object ("von Y"), nk = PP-internal noun kernel,
+#: ag/og = attributive/object genitive ("der Y AG"), pd = predicate nominal.
+_ROLE_OBJECT_DEPS = {"op", "nk", "ag", "og"}
 
 #: Default since the 2026-10-20 QA live probe: gemini-1.5-flash is retired
 #: (HTTP 404), gemini-2.5-flash is gated for newer accounts, and full
@@ -202,6 +293,26 @@ class TokenSaverEngine:
         unique = {entity.canonical_key: entity for entity in entity_by_span.values()}
         result.entities = list(unique.values())
         signatures = set()
+
+        def entity_at(token_index: int) -> Entity | None:
+            return next((e for (lo, hi), e in entity_by_span.items() if lo <= token_index < hi), None)
+
+        def emit(a: Entity, b: Entity, predicate: str, *, index: int, sentence_text: str,
+                 verb_lemma: str, cloud: bool = False, role: str = "") -> None:
+            relation = Relation(subject=a, obj=b, predicate=RelationType(predicate),
+                                confidence=document.source_weight * (.5 if cloud else .85),
+                                method=ExtractionMethod.PATTERN if cloud else ExtractionMethod.DEPENDENCY,
+                                source_id=document.source_id, doc_id=document.doc_id,
+                                source_weight=document.source_weight, evidence=sentence_text[:1000],
+                                sentence_index=index, verb=verb_lemma,
+                                extra={"extractor": "gemini" if cloud else "spacy_de",
+                                       **({"role": role} if role else {}),
+                                       "requires_review": True, "public": False})
+            if relation.signature() not in signatures:
+                result.relations.append(relation)
+                signatures.add(relation.signature())
+                result.dependency_triples += not cloud
+
         for index, sentence in enumerate(doc.sents):
             if index >= 100:
                 break
@@ -210,40 +321,102 @@ class TokenSaverEngine:
                 result.negated_dropped += 1
                 continue
             for verb in sentence:
-                if verb.pos_ != "VERB":
+                # German copulas are tagged AUX ("ist"), content verbs VERB.
+                # Only "sein" may enter as an AUX — every other auxiliary
+                # (haben/werden/modals) stays out so it can neither flip voice
+                # nor reach the cloud fallback.
+                if verb.pos_ == "AUX":
+                    if verb.lemma_.lower() != "sein":
+                        continue
+                elif verb.pos_ != "VERB":
                     continue
                 # German TIGER dependencies: sb=subject, oa/da=objects.
                 # Skip passive/ambiguous voice: never reverse ownership by guessing.
                 if any(t.lemma_ == "werden" for t in verb.children):
                     continue
+                lemma = verb.lemma_.lower()
                 subjects = [t for t in verb.children if t.dep_ in {"sb", "nsubj"}]
+                # Wave 4: copula + register role noun ("X ist Geschäftsführer von Y").
+                # Resolved locally and deterministically; "sein" never goes to the
+                # cloud fallback, so role sentences cannot burn the Gemini budget.
+                if lemma == "sein":
+                    for subject in subjects:
+                        a = entity_at(subject.i)
+                        if a is None:
+                            continue
+                        relation = self._copula_role(verb, a, entity_at)
+                        if relation is None:
+                            continue
+                        emit(*relation[:2], relation[2], index=index, sentence_text=sentence.text,
+                             verb_lemma="sein", role=relation[3])
+                    continue
                 objects = [t for t in verb.children if t.dep_ in {"oa", "da", "obj", "dobj"}]
                 for subject in subjects:
                     for obj in objects:
-                        a = next((e for (lo, hi), e in entity_by_span.items() if lo <= subject.i < hi), None)
-                        b = next((e for (lo, hi), e in entity_by_span.items() if lo <= obj.i < hi), None)
+                        a = entity_at(subject.i)
+                        b = entity_at(obj.i)
                         if not a or not b or a.canonical_key == b.canonical_key:
                             continue
-                        predicate = VERBS.get(verb.lemma_.lower())
+                        predicate = VERBS.get(lemma)
+                        reverse = False
+                        if predicate is None:
+                            predicate = REVERSED_VERBS.get(lemma)
+                            reverse = predicate is not None
                         cloud = False
                         if predicate is None:
                             predicate = self.fallback.classify(sentence.text, a.name, b.name)
                             cloud = predicate is not None
                         if predicate is None:
                             continue
-                        relation = Relation(subject=a, obj=b, predicate=RelationType(predicate),
-                                            confidence=document.source_weight * (.5 if cloud else .85),
-                                            method=ExtractionMethod.PATTERN if cloud else ExtractionMethod.DEPENDENCY,
-                                            source_id=document.source_id, doc_id=document.doc_id,
-                                            source_weight=document.source_weight, evidence=sentence.text[:1000],
-                                            sentence_index=index, verb=verb.lemma_,
-                                            extra={"extractor": "gemini" if cloud else "spacy_de",
-                                                   "requires_review": True, "public": False})
-                        if relation.signature() not in signatures:
-                            result.relations.append(relation)
-                            signatures.add(relation.signature())
-                            result.dependency_triples += not cloud
+                        if reverse:
+                            a, b = b, a
+                        emit(a, b, predicate, index=index, sentence_text=sentence.text,
+                             verb_lemma=verb.lemma_, cloud=cloud)
         return result
+
+    @staticmethod
+    def _copula_role(verb: Any, subject_entity: Entity, entity_at: Any) -> tuple[Entity, Entity, str, str] | None:
+        """Parse "X ist <role noun> von/der Y" into a typed role edge.
+
+        The role noun must be a predicate nominal (pd/nk) of the copula and its
+        lemma must be in the closed register vocabulary. The object entity is the
+        first entity attached through a prepositional or genitive nominal
+        (op/nk/ag/og) of the role noun or the copula — bounded, no recursion into
+        coordinated clauses, and never the subject entity itself. Returns
+        (subject, object, predicate, role_lemma) or None.
+        """
+        role_token = next((t for t in verb.children
+                           if t.dep_ in {"pd", "nk"} and t.pos_ in {"NOUN", "PROPN"}
+                           and (t.lemma_.lower() in ROLE_NOUNS or t.lemma_.lower() in KINSHIP_OR_CORPORATE)), None)
+        if role_token is None:
+            return None
+        role = role_token.lemma_.lower()
+        target: Entity | None = None
+        for head in (role_token, verb):
+            for child in head.children:
+                if child.dep_ not in _ROLE_OBJECT_DEPS:
+                    continue
+                for token in child.subtree:
+                    candidate = entity_at(token.i)
+                    if candidate is not None and candidate.canonical_key != subject_entity.canonical_key:
+                        target = candidate
+                        break
+                if target is not None:
+                    break
+            if target is not None:
+                break
+        if target is None:
+            return None
+        predicate = ROLE_NOUNS.get(role)
+        if predicate is None:
+            family, corporate = KINSHIP_OR_CORPORATE.get(role, ("", ""))
+            if subject_entity.entity_type is EntityType.PERSON and target.entity_type is EntityType.PERSON:
+                predicate = family
+            else:
+                predicate = corporate
+            if not predicate:
+                return None
+        return subject_entity, target, predicate, role
 
     def describe(self) -> dict[str, Any]:
         return {"backend": self.backend, "has_parser": True, "has_ner": True,

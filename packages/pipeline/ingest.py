@@ -125,6 +125,7 @@ class FetcherSession:
     run_id: str = ""
     deadline: float = 0.0
     known_hashes: set[str] = field(default_factory=set)
+    known_urls: set[str] = field(default_factory=set)
     nlp: Any = None
 
     @classmethod
@@ -136,6 +137,7 @@ class FetcherSession:
         run_id: str = "",
         max_runtime_seconds: float | None = None,
         known_hashes: Iterable[str] | None = None,
+        known_urls: Iterable[str] | None = None,
         nlp: Any = None,
     ) -> FetcherSession:
         resolved_id = run_id or settings.run_id or f"fetch-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}"
@@ -147,6 +149,7 @@ class FetcherSession:
             run_id=resolved_id,
             deadline=time.monotonic() + budget if budget > 0 else 0.0,
             known_hashes=set(known_hashes or ()),
+            known_urls=set(known_urls or ()),
             nlp=nlp,
         )
         session.settings.run_id = resolved_id
@@ -176,6 +179,7 @@ class FetcherSession:
             spec=spec,
             run_id=self.run_id,
             known_hashes=self.known_hashes,
+            known_urls=self.known_urls,
             nlp=self.nlp,
             deadline=self.deadline,
         )

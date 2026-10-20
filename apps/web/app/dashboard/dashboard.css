@@ -89,3 +89,12 @@
 .algorithm-actions{display:flex;gap:6px;flex-wrap:wrap}
 .algorithm-actions button{padding:6px 10px;font-size:11px}
 .algorithm-actions button[aria-pressed=true]{border-color:var(--color-gold-muted);color:var(--color-gold)}
+
+/* Wave 4: export-time correlation insights (rule hits with entity links). */
+.insight-list{list-style:none;margin:6px 0 0;padding:0;display:flex;flex-direction:column;gap:8px;max-height:320px;overflow-y:auto}
+.insight-list li{border:1px solid var(--color-forest-700);border-radius:8px;padding:8px 10px;background:var(--color-forest-850)}
+.insight-rule{display:inline-block;font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--color-muted-dark);border:1px solid var(--color-forest-600);border-radius:999px;padding:1px 7px;margin:0 0 4px}
+.insight-list strong{display:block;font-size:12px;color:var(--color-white)}
+.insight-description{margin:4px 0 6px;font-size:11px;color:var(--color-muted);line-height:1.5}
+.insight-entities{display:flex;flex-wrap:wrap;gap:4px}
+.insight-entities .text-button{font-size:11px;padding:2px 7px}

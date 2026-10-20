@@ -65,7 +65,7 @@ function build(filters: Filters) {
   const filtered = currentFiltered(filters);
   const grouped = groupDataset(filtered, filters), geo = geographicPoints(filtered.nodes);
   members = grouped.members;
-  view = { version, nodes: grouped.nodes, edges: grouped.edges, mapPoints: geo.points, stats: { totalNodes: dataset.nodes.length, totalEdges: dataset.edges.length, filteredNodes: filtered.nodes.length, filteredEdges: filtered.edges.length, locatedNodes: geo.count, grouped: !!members.size, level: levelFor(filtered.nodes.length, filters), focused: !!focus, truncated: dataset.truncated === true }, ...(dataset.analytics ? { analytics: dataset.analytics } : {}) };
+  view = { version, nodes: grouped.nodes, edges: grouped.edges, mapPoints: geo.points, stats: { totalNodes: dataset.nodes.length, totalEdges: dataset.edges.length, filteredNodes: filtered.nodes.length, filteredEdges: filtered.edges.length, locatedNodes: geo.count, grouped: !!members.size, level: levelFor(filtered.nodes.length, filters), focused: !!focus, truncated: dataset.truncated === true }, ...(dataset.analytics ? { analytics: dataset.analytics } : {}), ...(dataset.insights?.length ? { insights: dataset.insights } : {}) };
   graph = new MultiDirectedGraph();
   for (const n of view.nodes) graph.addNode(n.id, { x: n.x, y: n.y, size: 2 });
   for (const e of view.edges) graph.addDirectedEdgeWithKey(e.id, e.source, e.target, { weight: Math.max(.001, e.weight) });
