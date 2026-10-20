@@ -246,8 +246,8 @@ def _gemini_call(session: Any, model: str, prompt: str) -> dict[str, Any]:
     if type(count) is not int or not 0 < count <= 100:
         return {"ok": False, "kind": "budget", "detail": f"prompt is {count!r} tokens; production allows 1..100"}
     config: dict[str, Any] = {"maxOutputTokens": min(50, 150 - count), "temperature": 0}
-    if model.startswith("gemini-2.5-flash"):
-        config["thinkingConfig"] = {"thinkingBudget": 0}
+    if model.startswith(("gemini-2.5-", "gemini-3.")):
+        config["thinkingConfig"] = {"thinkingBudget": 0}  # keep thinking models inside the 150-token guard
     result = session.post(url + ":generateContent", headers=headers,
                           json={"contents": contents, "generationConfig": config},
                           timeout=(5, 30), allow_redirects=False)
@@ -307,36 +307,51 @@ def check_gemini() -> dict[str, Any]:
         return {"status": "fail", "detail": "requests not installed", "model": model}
     session = requests.Session()
     prompt = _gemini_prompt()
+    attempts: list[dict[str, Any]] = []
+    served: list[str] = []
     try:
         outcome = _gemini_call(session, model, prompt)
         answered_model = model
+        attempts.append({"model": model, **{k: outcome[k] for k in ("ok", "kind", "detail") if k in outcome},
+                         "http_status": outcome.get("http_status")})
         if not outcome["ok"] and outcome["kind"] == "http" and outcome.get("http_status") == 404:
             log("WARN", f"model '{model}' was not served by the API: {outcome['detail']}")
             served = _gemini_list_models(session, key)
             fallbacks = [m.strip() for m in os.getenv(
-                "GEMINI_FALLBACK_MODELS", "gemini-2.5-flash,gemini-2.0-flash").split(",") if m.strip()]
+                "GEMINI_FALLBACK_MODELS", "gemini-3.8-flash,gemini-2.5-flash,gemini-2.0-flash").split(",")
+                if m.strip()]
             for candidate in fallbacks:
-                if candidate == model or (served and candidate not in served):
+                # Try every configured fallback regardless of the catalog listing: the
+                # list may contain models this account cannot actually call (and may
+                # omit the recommended replacement), so it is diagnostics, not a filter.
+                if candidate == model:
                     continue
                 log("INFO", f"retrying with fallback model '{candidate}'")
                 outcome = _gemini_call(session, candidate, prompt)
                 answered_model = candidate
+                attempts.append({"model": candidate,
+                                 **{k: outcome[k] for k in ("ok", "kind", "detail") if k in outcome},
+                                 "http_status": outcome.get("http_status")})
                 if outcome["ok"] or outcome.get("http_status") != 404:
                     break
     except requests.RequestException as exc:
         log("FAIL", f"Gemini API unreachable ({type(exc).__name__}): {str(exc)[:300]}")
-        return {"status": "fail", "detail": f"network error: {type(exc).__name__}", "model": model}
+        return {"status": "fail", "detail": f"network error: {type(exc).__name__}", "model": model,
+                "attempts": attempts, "served_models": served}
     if not outcome["ok"]:
         detail = outcome["detail"]
         if outcome["kind"] == "http" and outcome.get("http_status") in (400, 403) and (
                 "API_KEY" in detail or "PERMISSION_DENIED" in detail or "invalid" in detail.lower()):
             log("FAIL", f"Gemini API rejected the key: {detail}")
-            return {"status": "fail", "detail": f"API key invalid/rejected: {detail}", "model": model}
+            return {"status": "fail", "detail": f"API key invalid/rejected: {detail}", "model": model,
+                    "attempts": attempts, "served_models": served}
         if outcome["kind"] == "http" and outcome.get("http_status") == 429:
             log("FAIL", f"Gemini API quota/rate limit: {detail}")
-            return {"status": "fail", "detail": f"quota/rate limited: {detail}", "model": model}
+            return {"status": "fail", "detail": f"quota/rate limited: {detail}", "model": model,
+                    "attempts": attempts, "served_models": served}
         log("FAIL", f"Gemini API call failed ({outcome['kind']}): {detail}")
-        return {"status": "fail", "detail": detail, "model": model}
+        return {"status": "fail", "detail": detail, "model": model,
+                "attempts": attempts, "served_models": served}
     usage = outcome["usage"]
     total = usage.get("total")
     log("OK", f"Gemini API responded via '{answered_model}': answer={outcome['answer']!r} "
@@ -360,7 +375,7 @@ def check_gemini() -> dict[str, Any]:
         status = "warn" if status == "ok" else status
     return {"status": status, "detail": f"'{answered_model}' answered with {usage['total']} total tokens",
             "model_configured": model, "model_answered": answered_model,
-            "answer": outcome["answer"], "usage": usage}
+            "answer": outcome["answer"], "usage": usage, "attempts": attempts, "served_models": served}
 
 
 # ---------------------------------------------------------------------------
