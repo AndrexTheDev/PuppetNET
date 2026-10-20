@@ -306,3 +306,18 @@ test('wave 16: the note index and the case bundle stay local and reproducible', 
   assert.ok(dashboard.includes("t('dash.caseBundleAria')"), 'the bundle export is labelled');
   assert.ok(!/fetch\([^)]*caseBundle/i.test(dashboard), 'the bundle is generated locally, never uploaded');
 });
+
+test('wave 17: provenance gaps are computed in the worker and bundles reject junk', () => {
+  const data = read('apps/web/app/dashboard/graph-data.ts');
+  assert.match(data, /export function provenanceGaps\(nodes: GraphNode\[\], edges: GraphEdge\[\], limit = 8\): ProvenanceGaps/, 'gap analysis is pure and bounded');
+  assert.match(data, /export const CONFIDENCE_THRESHOLD = 0\.5/, 'the single-source rule has a named threshold');
+  assert.match(data, /export function readCaseBundle\(raw: unknown\)/, 'bundles are parsed defensively');
+  assert.match(data, /if \(bundle\.format !== 'puppetnet-case' \|\| Number\(bundle\.version\) !== 1\) return null;/, 'wrong formats and versions are rejected whole');
+  const worker = read('apps/web/app/dashboard/graph.worker.ts');
+  assert.match(worker, /const gaps = provenanceGaps\(filtered\.nodes, grouped\.edges\)/, 'gaps are computed on the visible slice');
+  assert.match(worker, /\.\.\.\(vulnerability \? \{ vulnerability \} : \{\}\), gaps \}/, 'coverage travels with every view, even when clean');
+  const dashboard = read('apps/web/app/dashboard/Dashboard.tsx');
+  assert.ok(dashboard.includes("t('dash.gapsTitle')"), 'the gap panel is dictionary-driven');
+  assert.ok(dashboard.includes("t('dash.gapsNone')"), 'a clean slice is stated positively');
+  assert.ok(dashboard.includes('parseCaseNotes') && dashboard.includes('readCaseBundle'), 'both import paths exist');
+});

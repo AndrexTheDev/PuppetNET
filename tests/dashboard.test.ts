@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
-import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, monthWindow, bundleEdges, structuralVulnerability, pathTimeline, normalizeNote, readNotes, caseReport, nextPlaybackMonth, evidenceWindow, compareDuplicates, multiFailureImpact, normalizeSavedName, readSavedViews, upsertSavedView, removeSavedView, evidenceToCSV, parseCaseNotes, mergeNotes, searchNoteIndex, caseBundle, SAVED_VIEW_LIMIT, NOTE_LIMIT, EGO_DEPTH_LIMIT, VULNERABILITY_NODE_LIMIT, normalizeInsights, ANALYSIS_LIMITS, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
+import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, monthWindow, bundleEdges, structuralVulnerability, pathTimeline, normalizeNote, readNotes, caseReport, nextPlaybackMonth, evidenceWindow, compareDuplicates, multiFailureImpact, normalizeSavedName, readSavedViews, upsertSavedView, removeSavedView, evidenceToCSV, parseCaseNotes, mergeNotes, searchNoteIndex, caseBundle, readCaseBundle, provenanceGaps, SAVED_VIEW_LIMIT, NOTE_LIMIT, EGO_DEPTH_LIMIT, VULNERABILITY_NODE_LIMIT, normalizeInsights, ANALYSIS_LIMITS, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
 import { apiBase, readResponse } from '../apps/web/app/dashboard/api';
 const filters: Filters = { confidence: 0, weight: 0, types: [...TYPES], lod: true, ratio: 1 };
 test('normalizes Worker and Graphology nodes without inventing coordinates', () => {
@@ -691,4 +691,70 @@ test('wave 16 case bundle is a deterministic, versioned envelope', () => {
     views: [{ name: 'alpha', query: 'mode=network', saved: '2026-10-19' }, { name: 'Zeta', query: 'mode=list', saved: '2026-10-20T10:00:00Z' }],
   }), bundle, 'key and session order never change the bytes');
   assert.equal(JSON.parse(caseBundle({ notes: {}, views: [], report: '', generated: '2026-10-20' })).format, 'puppetnet-case', 'an empty case still produces a valid bundle');
+});
+
+test('wave 17 provenance gaps count sources and flag thin evidence', () => {
+  const data = normalizeDataset({
+    nodes: [
+      { key: 'a', name: 'Alpha', evidenceIds: ['d1'] },
+      { key: 'b', name: 'Beta' },
+      { key: 'c', name: 'Gamma', evidenceIds: ['d1'] },
+    ],
+    evidence: [{ id: 'd1', title: 'Register' }],
+    edges: [
+      { source: 'a', target: 'b', type: 'OWNS', confidence: 0.9, evidenceIds: ['d1'] },
+      { source: 'a', target: 'c', type: 'OWNS', confidence: 0.4, evidenceIds: ['d1'] },
+      { source: 'b', target: 'c', type: 'OWNS', confidence: 0.95 },
+      { source: 'a', target: 'c', type: 'MET', confidence: 0.9, evidenceIds: ['d1', 'd2'] },
+    ],
+  });
+  const gaps = provenanceGaps(data.nodes, data.edges);
+  assert.deepEqual([gaps.nodes, gaps.nodesBacked, gaps.edges, gaps.edgesBacked], [3, 2, 4, 3]);
+  assert.deepEqual(gaps.singleSource.map(edge => edge.id), ['edge:0'], 'only a high-confidence edge with exactly one source counts');
+  assert.equal(gaps.singleSourceCount, 1);
+  assert.equal(gaps.unbacked[0].id, 'b', 'an entity without any document is listed');
+  assert.equal(gaps.unbackedNodeCount, 1);
+  assert.equal(gaps.unbacked[0].type, 'Other');
+  assert.deepEqual(provenanceGaps(data.nodes, data.edges), gaps, 'deterministic');
+  const clean = normalizeDataset({
+    nodes: [{ key: 'a', name: 'A', evidenceIds: ['d1'] }],
+    evidence: [{ id: 'd1', title: 'D' }], edges: [],
+  });
+  const none = provenanceGaps(clean.nodes, clean.edges);
+  assert.deepEqual([none.singleSourceCount, none.unbackedNodeCount, none.nodesBacked], [0, 0, 1], 'a clean slice reports honest zeros, not null');
+  const low = normalizeDataset({
+    nodes: [{ key: 'a', name: 'A' }, { key: 'b', name: 'B' }],
+    edges: [{ source: 'a', target: 'b', confidence: 0.2, evidenceIds: ['only'] }], evidence: [],
+  });
+  assert.equal(provenanceGaps(low.nodes, low.edges).singleSourceCount, 0, 'low-confidence single-source links are not nagged about');
+  const grouped = [{ ...data.nodes[0], id: 'group:x', group: true }, ...data.nodes];
+  assert.equal(provenanceGaps(grouped, data.edges).nodes, 3, 'LoD display groups are not claims');
+  const aggregated = [...data.edges, { ...data.edges[0], id: 'agg', type: 'AGGREGATED' }];
+  assert.equal(provenanceGaps(data.nodes, aggregated).edges, 4, 'aggregated LoD edges are excluded');
+  assert.equal(provenanceGaps(data.nodes, data.edges, 1).singleSource.length, 1, 'the lists are bounded');
+});
+
+test('wave 17 case bundles read back safely or not at all', () => {
+  const bundle = caseBundle({
+    notes: { a: 'eins', b: '  zwei  ' },
+    views: [{ name: 'Fall Nordlicht', query: 'mode=list&q=nordlicht', saved: '2026-10-20T09:00:00Z' }],
+    report: '# PuppetNET — Fallbericht\n',
+    generated: '2026-10-20T12:00:00.000Z',
+  });
+  const read = readCaseBundle(bundle);
+  assert.deepEqual(read?.notes, { a: 'eins', b: 'zwei' }, 'notes are re-sanitized on read');
+  assert.deepEqual(read?.views.map(view => [view.name, view.query, view.saved]), [['Fall Nordlicht', 'mode=list&q=nordlicht', '2026-10-20']]);
+  assert.equal(read?.report, '# PuppetNET — Fallbericht\n');
+  assert.equal(readCaseBundle('kein json'), null, 'junk is rejected');
+  assert.equal(readCaseBundle('{}'), null);
+  assert.equal(readCaseBundle(JSON.stringify({ format: 'puppetnet-case' })), null, 'a missing version is rejected');
+  assert.equal(readCaseBundle(JSON.stringify({ format: 'puppetnet-case', version: 2, notes: {}, views: [], report: '' })), null, 'a future version is rejected');
+  const minimal = readCaseBundle(JSON.stringify({ format: 'puppetnet-case', version: 1 }));
+  assert.deepEqual([minimal?.notes, minimal?.views, minimal?.report], [{}, [], ''], 'a sparse bundle reads as empty, not as a crash');
+  const hostile = readCaseBundle(JSON.stringify({ format: 'puppetnet-case', version: 1, notes: { a: 'x'.repeat(5000), '': 'leer' }, views: [{ name: '', query: '', saved: '' }], report: 42 }));
+  assert.equal(hostile?.notes.a.length, NOTE_LIMIT, 'oversized notes are capped');
+  assert.deepEqual(hostile?.views, [], 'invalid sessions drop out');
+  assert.equal(hostile?.report, '', 'a non-string report never reaches the UI');
+  const roundtrip = readCaseBundle(bundle);
+  assert.equal(caseBundle({ notes: roundtrip!.notes, views: roundtrip!.views, report: roundtrip!.report, generated: '2026-10-20T12:00:00.000Z' }), bundle, 'bundle -> read -> bundle is stable');
 });

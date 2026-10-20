@@ -33,6 +33,18 @@ export interface Vulnerability {
   maxCore: number;
   maxCoreSize: number;
 }
+/** Wave 17: provenance coverage of the visible slice — the methodology rule
+ * "high-confidence links need two independent sources" made checkable. */
+export interface ProvenanceGaps {
+  nodes: number; nodesBacked: number;
+  edges: number; edgesBacked: number;
+  /** High-confidence relationships documented by a single source. */
+  singleSource: { id: string; source: string; target: string; type: string; confidence: number; evidence: number }[];
+  /** Entities without any backing document. */
+  unbacked: { id: string; label: string; type: EntityType }[];
+  singleSourceCount: number;
+  unbackedNodeCount: number;
+}
 /** Wave 10: one hop of a link chain with the documented window of the
  * relationship(s) connecting its two nodes. `ordered` is false when the hop is
  * documented entirely before the previous hop began — an anachronism that needs
@@ -56,6 +68,8 @@ export interface View {
   duplicates?: { label: string; ids: string[]; sameType: boolean }[];
   /** Wave 9: articulation points, bridges and the k-core nucleus. */
   vulnerability?: Vulnerability;
+  /** Wave 17: provenance coverage and the gaps behind the visible claims. */
+  gaps?: ProvenanceGaps;
 }
 export const LIMITS = { nodes: 200_000, edges: 500_000, bytes: 64 * 1024 * 1024 };
 const record = (v: unknown): Record<string, unknown> => v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {};
@@ -983,6 +997,56 @@ export function caseBundle(input: CaseBundleInput): string {
   }, null, 2) + '\n';
 }
 
+export const CONFIDENCE_THRESHOLD = 0.5;
+
+/**
+ * Wave 17: where the evidence is thin. Counts the documents behind every visible
+ * entity and relationship, lists high-confidence relationships carried by a
+ * single source (the methodology rule asks for two independent ones) and the
+ * entities without any backing document. LoD display groups are not claims and
+ * stay out; the lists are bounded and deterministic, and a slice without gaps
+ * still returns honest zero counts instead of null — "nothing missing" is a
+ * result, not an absent answer.
+ */
+export function provenanceGaps(nodes: GraphNode[], edges: GraphEdge[], limit = 8): ProvenanceGaps {
+  const singles = nodes.filter(node => !node.group);
+  const ids = new Set(singles.map(node => node.id));
+  const nodesBacked = singles.filter(node => node.evidenceIds.length > 0).length;
+  const visibleEdges = edges.filter(edge => ids.has(edge.source) && ids.has(edge.target) && edge.type !== 'AGGREGATED');
+  const edgesBacked = visibleEdges.filter(edge => edge.evidenceIds.length > 0).length;
+  const singleSource = visibleEdges
+    .filter(edge => edge.evidenceIds.length === 1 && edge.confidence >= CONFIDENCE_THRESHOLD)
+    .map(edge => ({ id: edge.id, source: edge.source, target: edge.target, type: edge.type, confidence: edge.confidence, evidence: edge.evidenceIds.length }))
+    .sort((a, b) => b.confidence - a.confidence || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  const unbacked = singles
+    .filter(node => node.evidenceIds.length === 0)
+    .map(node => ({ id: node.id, label: node.label, type: node.type }))
+    .sort((a, b) => (a.label.toLowerCase() < b.label.toLowerCase() ? -1 : a.label.toLowerCase() > b.label.toLowerCase() ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  return {
+    nodes: singles.length, nodesBacked,
+    edges: visibleEdges.length, edgesBacked,
+    singleSource: singleSource.slice(0, Math.max(1, limit)),
+    unbacked: unbacked.slice(0, Math.max(1, limit)),
+    singleSourceCount: singleSource.length,
+    unbackedNodeCount: unbacked.length,
+  };
+}
+
+/** Wave 17: reads a case bundle back in (Wave-16 format). Unknown formats,
+ * wrong versions and junk are rejected with null instead of partially applying
+ * half a case; notes and sessions go through the same sanitizers as the live
+ * store. The report is returned as text only — it is never executed. */
+export function readCaseBundle(raw: unknown): { notes: Record<string, string>; views: SavedView[]; report: string } | null {
+  let parsed: unknown = raw;
+  if (typeof raw === 'string') {
+    try { parsed = JSON.parse(raw); } catch { return null; }
+  }
+  const bundle = record(parsed);
+  if (bundle.format !== 'puppetnet-case' || Number(bundle.version) !== 1) return null;
+  const report = typeof bundle.report === 'string' ? bundle.report.slice(0, 2_000_000) : '';
+  return { notes: readNotes(bundle.notes), views: readSavedViews(bundle.views), report };
+}
+
 export interface CaseReportInput {
   stats: View['stats'];
   nodes: GraphNode[];
@@ -992,6 +1056,7 @@ export interface CaseReportInput {
   timeline?: { month: string; count: number }[];
   duplicates?: { label: string; ids: string[]; sameType: boolean }[];
   vulnerability?: Vulnerability;
+  gaps?: ProvenanceGaps;
   notes?: Record<string, string>;
 }
 /** Wave 11 case report: a deterministic Markdown file for the case folder —
@@ -1006,6 +1071,7 @@ const CASE_REPORT_TEXT = {
     notes: 'Ermittlungsnotizen', noNotes: '_Keine Notizen erfasst._', analytics: 'Analytik',
     communities: 'Communities', density: 'Dichte', range: 'Zeitraum', hubs: 'Hubs',
     structure: 'Struktur', cutEdges: 'Schnittkanten', edges: 'Kanten', kcore: 'max. k-Kern', nodes: 'Knoten',
+    provenance: 'Provenienz', backed: 'belegt', unbackedNodes: 'Entitäten ohne Beleg', singleSource: 'Hochsichere Beziehungen mit nur einer Quelle', none: 'keine',
     articulation: 'Artikulationspunkt', degree: 'Grad', splits: 'zerfällt in {parts} Teile, größter {largest}',
     rules: 'Regelhinweise', duplicates: 'Mögliche Dubletten', mixed: 'gemischte Typen',
     timeline: 'Erwähnungen pro Monat',
@@ -1017,6 +1083,7 @@ const CASE_REPORT_TEXT = {
     notes: 'Research notes', noNotes: '_No notes recorded._', analytics: 'Analytics',
     communities: 'Communities', density: 'Density', range: 'Time range', hubs: 'Hubs',
     structure: 'Structure', cutEdges: 'Cut edges', edges: 'edges', kcore: 'max. k-core', nodes: 'nodes',
+    provenance: 'Provenance', backed: 'backed', unbackedNodes: 'entities without evidence', singleSource: 'High-confidence relationships with a single source', none: 'none',
     articulation: 'Articulation point', degree: 'degree', splits: 'splits into {parts} parts, largest {largest}',
     rules: 'Rule hits', duplicates: 'Possible duplicates', mixed: 'mixed types',
     timeline: 'Mentions per month',
@@ -1057,6 +1124,14 @@ export function caseReport(input: CaseReportInput, generated: string, lang: 'de'
     lines.push('', `## ${text.structure}`, '');
     lines.push(`- ${text.cutEdges}: ${v.cutEdges} · ${text.kcore}: ${v.maxCore} (${v.maxCoreSize} ${text.nodes})`);
     for (const vertex of v.cutVertices) lines.push(`- ${text.articulation} ${clean(vertex.label)} (${text.degree} ${vertex.degree}) — ${fill(text.splits, { parts: vertex.impact.components, largest: vertex.impact.largest })}`);
+  }
+  if (input.gaps) {
+    const g = input.gaps;
+    lines.push('', `## ${text.provenance}`, '');
+    lines.push(`- ${text.nodes}: ${g.nodesBacked}/${g.nodes} ${text.backed} · ${text.edges}: ${g.edgesBacked}/${g.edges} ${text.backed}`);
+    lines.push(`- ${text.singleSource}: ${g.singleSourceCount}`);
+    for (const edge of g.singleSource) lines.push(`  - \`${edge.id}\` ${clean(edge.type)} (${(edge.confidence * 100).toFixed(1)} %) — ${clean(labelOf.get(edge.source) ?? edge.source)} → ${clean(labelOf.get(edge.target) ?? edge.target)}`);
+    lines.push(`- ${text.unbackedNodes}: ${g.unbackedNodeCount}${g.unbacked.length ? ` — ${g.unbacked.map(node => clean(node.label)).join(', ')}` : ` (${text.none})`}`);
   }
   if (input.insights?.length) {
     lines.push('', `## ${text.rules}`, '');

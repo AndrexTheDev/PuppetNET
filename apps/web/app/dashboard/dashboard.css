@@ -182,3 +182,8 @@
 .note-hits li{display:flex;flex-direction:column;gap:0.1rem;border-left:2px solid var(--line);padding-left:var(--space-2,0.5rem)}
 .note-hit{font-weight:600;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .note-snippet{font-size:.8em;opacity:.75;overflow-wrap:anywhere}
+
+/* Wave 17: provenance gaps + case-bundle import (token-only) */
+.gaps-panel{margin-top:var(--space-3,1rem);border-top:1px solid var(--line);padding-top:var(--space-2,0.5rem)}
+.gaps-heading{margin:var(--space-2,0.5rem) 0 0;font-size:.85em;font-weight:600;opacity:.85}
+.bundle-import{margin-top:var(--space-1,0.25rem)}

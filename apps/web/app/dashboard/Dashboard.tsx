@@ -2,7 +2,7 @@
 import dynamic from 'next/dynamic';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import EntityTable, { type TableRow } from './EntityTable';
-import { COLORS, TYPES, LIMITS, NOTE_STORAGE_KEY, caseReport, decodeViewState, edgesToCSV, encodeViewState, monthWindow, nextPlaybackMonth, nodesToCSV, caseBundle, compareDuplicates, mergeNotes, parseCaseNotes, searchNoteIndex, removeSavedView, upsertSavedView, readSavedViews, SAVED_VIEW_STORAGE_KEY, normalizeNote, rankSearch, readNotes, resolveNodeRef, viewToJSON, type Evidence, type Filters, type GraphEdge, type GraphNode, type PathTimeline, type View, type ViewUrlState } from './graph-data';
+import { COLORS, TYPES, LIMITS, NOTE_STORAGE_KEY, caseReport, decodeViewState, edgesToCSV, encodeViewState, monthWindow, nextPlaybackMonth, nodesToCSV, caseBundle, compareDuplicates, mergeNotes, parseCaseNotes, provenanceGaps, readCaseBundle, searchNoteIndex, removeSavedView, upsertSavedView, readSavedViews, SAVED_VIEW_STORAGE_KEY, normalizeNote, rankSearch, readNotes, resolveNodeRef, viewToJSON, type Evidence, type Filters, type GraphEdge, type GraphNode, type PathTimeline, type View, type ViewUrlState } from './graph-data';
 import type { NetworkHandle, PathHighlight } from './NetworkGraph';
 import type { WorkerRequest, WorkerResponse } from './protocol';
 import { loadStaticGraph, requestResearch, type Standby } from '../../src/lib/dataFetcher';
@@ -51,6 +51,8 @@ export default function Dashboard() {
   const viewsReady = useRef(false);
   const [notesImportStatus, setNotesImportStatus] = useState('');
   const [noteQuery, setNoteQuery] = useState('');
+  const [bundleStatus, setBundleStatus] = useState('');
+  const bundleInput = useRef<HTMLInputElement | null>(null);
   const notesImport = useRef<HTMLInputElement | null>(null);
   // Wave 12: cumulative playback — the month list is frozen while it runs
   // (a time filter shrinks the visible timeline, so it cannot be re-derived).
@@ -367,10 +369,32 @@ export default function Dashboard() {
   const noteHits = useMemo(() => (view && Object.keys(notes).length ? searchNoteIndex(view.nodes, notes, noteQuery) : []), [notes, noteQuery, view]);
   const exportCaseBundle = () => {
     if (!view) return;
-    const report = caseReport({ stats: view.stats, nodes: view.nodes, edges: view.edges, analytics: view.analytics, insights: view.insights, timeline: view.timeline, duplicates: view.duplicates, vulnerability: view.vulnerability, notes }, new Date().toISOString(), lang);
+    const report = caseReport({ stats: view.stats, nodes: view.nodes, edges: view.edges, analytics: view.analytics, insights: view.insights, timeline: view.timeline, duplicates: view.duplicates, vulnerability: view.vulnerability, gaps: view.gaps, notes }, new Date().toISOString(), lang);
     downloadText('puppetnet-fallakte.json', caseBundle({ notes, views: savedViews, report, generated: new Date().toISOString() }), 'application/json');
     setAnnouncement(t('dash.annBundle', { notes: number(Object.keys(notes).length), views: number(savedViews.length) }));
   };
+  const importCaseBundle = async (file: File | null | undefined) => {
+    if (!file) return;
+    if (file.size > 20 * 1024 * 1024) { setBundleStatus(t('dash.notesImportTooBig')); return; }
+    try {
+      const bundle = readCaseBundle(await file.text());
+      if (!bundle) { setBundleStatus(t('dash.bundleImportInvalid')); return; }
+      const merged = mergeNotes(notes, bundle.notes);
+      setNotes(merged.notes);
+      const addedViews = bundle.views.length;
+      setSavedViews(current => {
+        let list = current;
+        for (const entry of bundle.views) list = upsertSavedView(list, entry.name, entry.query, entry.saved);
+        return list;
+      });
+      setBundleStatus(t('dash.bundleImported', {
+        added: number(merged.added), skipped: number(merged.skipped), views: number(addedViews),
+        report: bundle.report ? t('dash.bundleReportYes') : t('dash.bundleReportNo'),
+      }));
+    } catch { setBundleStatus(t('dash.notesImportError')); }
+    finally { if (bundleInput.current) bundleInput.current.value = ''; }
+  };
+  const gaps = useMemo(() => (view ? view.gaps ?? provenanceGaps(view.nodes, view.edges) : null), [view]);
   const timelineMax = useMemo(() => (view?.timeline ?? []).reduce((max, bucket) => Math.max(max, bucket.count), 0), [view]);
   useEffect(() => {
     const wanted = initialFocus.current;
@@ -484,6 +508,19 @@ export default function Dashboard() {
               : <p className="muted">{t('dash.vulnNone')}</p>}
             <p className="muted">{t('dash.vulnText')}</p>
           </div>}
+          {gaps && <div className="gaps-panel">
+            <h4 className="hub-heading">{t('dash.gapsTitle')}</h4>
+            <p className="muted small-text">{t('dash.gapsCoverage', { backed: number(gaps.nodesBacked), total: number(gaps.nodes), edgesBacked: number(gaps.edgesBacked), edges: number(gaps.edges) })}</p>
+            {gaps.singleSourceCount === 0 && gaps.unbackedNodeCount === 0
+              ? <p className="muted" role="status">{t('dash.gapsNone')}</p>
+              : <>
+                {gaps.singleSource.length > 0 && <><h5 className="gaps-heading">{t('dash.gapsSingle')} ({number(gaps.singleSourceCount)})</h5>
+                <ul className="hub-list">{gaps.singleSource.map(edge => <li key={edge.id}><button type="button" className="text-button" aria-label={t('dash.gapsEdgeAria', { type: edge.type, from: edge.source, to: edge.target })} onClick={() => { if (mode !== 'network') changeMode('network'); requestAnimationFrame(() => network.current?.focus(edge.source)); }}>{edge.type}</button><span className="hub-rank">{(edge.confidence * 100).toFixed(0)} %</span></li>)}</ul></>}
+                {gaps.unbacked.length > 0 && <><h5 className="gaps-heading">{t('dash.gapsUnbacked')} ({number(gaps.unbackedNodeCount)})</h5>
+                <ul className="hub-list">{gaps.unbacked.map(node => <li key={node.id}><button type="button" className="text-button" onClick={() => { if (mode !== 'network') changeMode('network'); select(node.id); requestAnimationFrame(() => network.current?.focus(node.id)); }}>{node.label}</button><span className="hub-rank">{node.type}</span></li>)}</ul></>}
+              </>}
+            <p className="muted">{t('dash.gapsText')}</p>
+          </div>}
           {view.insights && view.insights.length > 0 && <>
             <h4 className="hub-heading">{t('dash.insightsTitle')}</h4>
             <ul className="insight-list">{view.insights.map((insight, index) => (
@@ -566,6 +603,10 @@ export default function Dashboard() {
             <input ref={notesImport} type="file" accept=".md,text/markdown,text/plain" aria-label={t('dash.notesImportAria')} onChange={e => { void importCaseNotes(e.target.files?.[0]); }} />
           </label>
           {notesImportStatus && <p className="muted" role="status">{notesImportStatus}</p>}
+          <label className="import-button outlined-import bundle-import">{t('dash.bundleImport')}
+            <input ref={bundleInput} type="file" accept=".json,application/json" aria-label={t('dash.bundleImportAria')} onChange={e => { void importCaseBundle(e.target.files?.[0]); }} />
+          </label>
+          {bundleStatus && <p className="muted" role="status">{bundleStatus}</p>}
         </div>
         {Object.keys(notes).length > 0 && <div className="notes-index">
           <p className="muted" role="status">{t('dash.notesCount', { count: number(Object.keys(notes).length) })}</p>
@@ -591,7 +632,7 @@ export default function Dashboard() {
         <div id="visualization-stage" className={mode === 'network' ? 'graph-pane' : 'graph-pane hidden-pane'}>{mode === 'network' && <NetworkGraph ref={network} view={view} onSelect={select} onSelectEdge={selectEdge} onRatio={onRatio} onClear={clearSelected} colorMode={colorMode} path={pathHighlight} />}<div className="graph-tools"><button aria-label={t('dash.zoomInAria')} onClick={() => network.current?.zoom(.65)}>+</button><button aria-label={t('dash.zoomOutAria')} onClick={() => network.current?.zoom(1.5)}>−</button><button aria-label={t('dash.fitAria')} onClick={() => network.current?.reset()}>⌖</button><button onClick={() => send({ kind: 'layout', running: !layoutRunning })}>{layoutRunning ? 'Pause' : 'Layout'}</button></div></div>
         {mode === 'map' && <><MapModule points={view?.mapPoints ?? []} onSelect={id => select(id)} /><div className="data-footnote">{t('dash.mapFootnote', { count: number(view?.stats.locatedNodes) })}</div></>}
         {mode === 'list' && <EntityTable rows={tableRows} total={list.length} page={listPage} pageSize={pageSize} query={search} onQuery={value => { setSearch(value); setListPage(0); }} onPage={setListPage} onSelect={select} onFocusGraph={id => { changeMode('network'); select(id); requestAnimationFrame(() => network.current?.focus(id)); }} />}
-        <div className="visualization-footer"><span><span className="status-dot" /> {t('dash.nodesLoaded', { count: number(view?.stats.totalNodes) })}</span><span className="view-export"><button type="button" onClick={() => downloadText('puppetnet-knoten.csv', nodesToCSV(view?.nodes ?? []), 'text/csv;charset=utf-8')}>{t('dash.nodesCsv')}</button><button type="button" onClick={() => downloadText('puppetnet-kanten.csv', edgesToCSV(view?.edges ?? []), 'text/csv;charset=utf-8')}>{t('dash.edgesCsv')}</button><button type="button" onClick={() => downloadText('puppetnet-ansicht.json', viewToJSON({ nodes: view?.nodes ?? [], edges: view?.edges ?? [], analytics: view?.analytics, insights: view?.insights }), 'application/json')}>JSON ↓</button><button type="button" aria-label={t('dash.evidenceCsvAria')} onClick={() => { if (!view) return; send({ kind: 'evidenceCsv', version: version.current }); }}>{t('dash.evidenceCsv')}</button><button type="button" aria-label={t('dash.caseBundleAria')} onClick={exportCaseBundle}>{t('dash.caseBundle')}</button><button type="button" aria-label={t('dash.reportAria')} onClick={() => { if (!view) return; downloadText('puppetnet-fallbericht.md', caseReport({ stats: view.stats, nodes: view.nodes, edges: view.edges, analytics: view.analytics, insights: view.insights, timeline: view.timeline, duplicates: view.duplicates, vulnerability: view.vulnerability, notes }, new Date().toISOString(), lang), 'text/markdown;charset=utf-8'); }}>{t('dash.reportButton')}</button></span><span>{view?.stats.focused ? <button onClick={() => requestView('reset')}>{t('dash.showAll')}</button> : t('dash.clickHintFoot')}</span></div>
+        <div className="visualization-footer"><span><span className="status-dot" /> {t('dash.nodesLoaded', { count: number(view?.stats.totalNodes) })}</span><span className="view-export"><button type="button" onClick={() => downloadText('puppetnet-knoten.csv', nodesToCSV(view?.nodes ?? []), 'text/csv;charset=utf-8')}>{t('dash.nodesCsv')}</button><button type="button" onClick={() => downloadText('puppetnet-kanten.csv', edgesToCSV(view?.edges ?? []), 'text/csv;charset=utf-8')}>{t('dash.edgesCsv')}</button><button type="button" onClick={() => downloadText('puppetnet-ansicht.json', viewToJSON({ nodes: view?.nodes ?? [], edges: view?.edges ?? [], analytics: view?.analytics, insights: view?.insights }), 'application/json')}>JSON ↓</button><button type="button" aria-label={t('dash.evidenceCsvAria')} onClick={() => { if (!view) return; send({ kind: 'evidenceCsv', version: version.current }); }}>{t('dash.evidenceCsv')}</button><button type="button" aria-label={t('dash.caseBundleAria')} onClick={exportCaseBundle}>{t('dash.caseBundle')}</button><button type="button" aria-label={t('dash.reportAria')} onClick={() => { if (!view) return; downloadText('puppetnet-fallbericht.md', caseReport({ stats: view.stats, nodes: view.nodes, edges: view.edges, analytics: view.analytics, insights: view.insights, timeline: view.timeline, duplicates: view.duplicates, vulnerability: view.vulnerability, gaps: view.gaps, notes }, new Date().toISOString(), lang), 'text/markdown;charset=utf-8'); }}>{t('dash.reportButton')}</button></span><span>{view?.stats.focused ? <button onClick={() => requestView('reset')}>{t('dash.showAll')}</button> : t('dash.clickHintFoot')}</span></div>
       </section>
       <SidePanel node={selected} evidence={evidence} edge={selectedEdge} edgeEvidence={edgeEvidence} edgeLabels={{
         source: selectedEdge ? view?.nodes.find(n => n.id === selectedEdge.source)?.label ?? selectedEdge.source : '',

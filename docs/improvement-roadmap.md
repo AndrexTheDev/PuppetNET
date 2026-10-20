@@ -395,6 +395,29 @@ Funktionen), Notiz-Index + Fallakte-Export (DE/EN, Statusansage, Anzahl je Treff
 token-only CSS, 2 neue Datenlagen-Tests (dashboard 40) + 1 neuer Release-Pin (release 22)
 — `ci:pages` grün, 0 zusätzliche Actions-Minuten.
 
+### Welle 17 — Provenienz-Lücken + Fallakte-Roundtrip — ✅ umgesetzt (2026-10-20)
+
+- **Provenienz-Lücken**: Die Methodik verlangt für hochsichere Verknüpfungen **zwei
+  unabhängige Quellen** — jetzt prüfbar. Das Panel zeigt Belegdeckung
+  („belegt: 12/14 Knoten · 9/11 Kanten"), listet **hochsichere Beziehungen mit nur einer
+  Quelle** (Konfidenz ≥ 50 %) und **Entitäten ohne jeden Beleg**, jeweils fokussierbar.
+  Ehrlich bei sauberem Ausschnitt: dann steht positiv da, dass keine Lücken bestehen —
+  keine leere Liste, kein `null`. LoD-Gruppen und aggregierte Gruppenkanten sind keine
+  Aussagen und bleiben außen vor; Listen deterministisch und begrenzt.
+- **Fallakte-Roundtrip**: Eine exportierte Fallakte (Welle 16) lässt sich wieder einlesen —
+  Format und Version werden **ganz** geprüft (falsche Version → Ablehnung statt
+  Teilimport), Notizen und Sitzungen laufen durch dieselben Sanitizer wie der Live-Speicher,
+  der Bericht kommt als reiner Text zurück (nie ausgeführt). Notizen werden wie in Welle 15
+  zusammengeführt: leere Plätze füllen, eigene Notiz nie überschreiben.
+- Der Provenienz-Abschnitt wandert zusätzlich in den **Fallbericht** (DE/EN), damit die
+  Beleglage im Dokument steht und nicht nur im UI.
+
+**Geliefert (Welle 17)**: `provenanceGaps()` + `readCaseBundle()` (reine, getestete
+Funktionen), `View.gaps` im Worker-View, Lücken-Panel + Fallakte-Import (DE/EN,
+Statusansagen), Provenienz-Abschnitt im Bericht, token-only CSS, 2 neue Datenlagen-Tests
+(dashboard 42) + 1 neuer Release-Pin (release 23) — `ci:pages` grün, 0 zusätzliche
+Actions-Minuten.
+
 ## 4. Budget-Zusammenfassung
 
 | Welle | Ort | Zusätzliche Actions-Minuten | Status |
@@ -415,6 +438,7 @@ token-only CSS, 2 neue Datenlagen-Tests (dashboard 40) + 1 neuer Release-Pin (re
 | 14 Fallsitzungen/Provenienz-Export | Browser/Web Worker | **0** | ✅ umgesetzt |
 | 15 Fallbericht-Roundtrip | Browser | **0** | ✅ umgesetzt |
 | 16 Notiz-Index/Fallakte | Browser | **0** | ✅ umgesetzt |
+| 17 Provenienz-Lücken/Fallakte-Import | Browser/Web Worker | **0** | ✅ umgesetzt |
 
 Kein Schritt erzeugt neue Workflows, neue Cron-Jobs, längere Jobs oder bezahlte
 Dienste. Die einzigen verbrauchsrelevanten Grenzen sind die bestehenden: 3
@@ -806,6 +830,28 @@ note index + case-bundle export (DE/EN, status announcement, hit counts), token-
 2 new data-layer tests (dashboard 40) + 1 new release pin (release 22) — `ci:pages`
 green, 0 extra Actions minutes.
 
+### Wave 17 — provenance gaps + case-bundle roundtrip — ✅ implemented (2026-10-20)
+
+- **Provenance gaps**: the methodology asks for **two independent sources** on
+  high-confidence links — now checkable. The panel shows coverage ("backed: 12/14 nodes ·
+  9/11 edges"), lists **high-confidence relationships with a single source** (confidence
+  ≥ 50 %) and **entities without any document**, each focusable. Honest on a clean
+  slice: it positively states that there are no gaps — no empty list, no `null`. LoD
+  groups and aggregated group edges are not claims and stay out; lists are deterministic
+  and bounded.
+- **Case-bundle roundtrip**: an exported bundle (Wave 16) can be read back in — format and
+  version are validated **as a whole** (wrong version → rejection instead of a partial
+  import), notes and sessions pass the same sanitizers as the live store, and the report
+  returns as plain text (never executed). Notes merge like in Wave 15: fill empty slots,
+  never overwrite the investigator's own note.
+- The provenance section also travels into the **case report** (DE/EN), so the evidence
+  situation is in the document, not just the UI.
+
+**Delivered (Wave 17)**: `provenanceGaps()` + `readCaseBundle()` (pure, tested functions),
+`View.gaps` in the worker view, gaps panel + bundle import (DE/EN, status announcements),
+provenance section in the report, token-only CSS, 2 new data-layer tests (dashboard 42) +
+1 new release pin (release 23) — `ci:pages` green, 0 extra Actions minutes.
+
 ## 4. Budget summary
 
 | Wave | Location | Additional Actions minutes | Status |
@@ -826,6 +872,7 @@ green, 0 extra Actions minutes.
 | 14 sessions/provenance export | browser/web worker | **0** | ✅ implemented |
 | 15 notes roundtrip | browser | **0** | ✅ implemented |
 | 16 note index/case bundle | browser | **0** | ✅ implemented |
+| 17 provenance gaps/bundle import | browser/web worker | **0** | ✅ implemented |
 
 No step creates new workflows, new cron jobs, longer jobs or paid services. The only
 consumption-relevant limits remain the existing ones: 3 reservations/UTC day, 5-minute
