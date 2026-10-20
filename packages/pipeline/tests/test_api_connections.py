@@ -28,7 +28,8 @@ Stages
              with a complex relation structure. The reported ``usageMetadata``
              token counts are logged. QA allows prompts up to 150 counted
              tokens (hard cap) but flags anything above the production input
-             guard (100) as ``over_production_budget`` — the production
+             guard (120, raised from 100 in 2026-10 after tokenizer drift
+             measurements) as ``over_production_budget`` — the production
              classifier would refuse such a call. If the configured model
              (historically ``gemini-1.5-flash``) is no longer served,
              available models are listed and configured fallbacks are tried;
@@ -277,7 +278,7 @@ def _gemini_call(session: Any, model: str, prompt: str) -> dict[str, Any]:
     except (KeyError, IndexError, TypeError):
         return {"ok": False, "kind": "shape", "detail": f"no candidate text in response: {str(payload)[:300]}"}
     return {"ok": True, "kind": "ok", "answer": answer, "prompt_tokens": count,
-            "over_production_budget": count > 100,
+            "over_production_budget": count > 120,
             "usage": {"prompt": usage.get("promptTokenCount"), "candidates": usage.get("candidatesTokenCount"),
                       "total": usage.get("totalTokenCount")}}
 
@@ -312,7 +313,7 @@ def _gemini_list_models(session: Any, key: str) -> list[str]:
 
 
 def check_gemini() -> dict[str, Any]:
-    model = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+    model = os.getenv("GEMINI_MODEL", "gemini-flash-lite-latest")  # mirrors DEFAULT_GEMINI_MODEL in token_saver_nlp
     log("STEP", f"Stage 'gemini': live classification call against '{model}' (<=50 output tokens)")
     key = os.getenv("GEMINI_API_KEY", "")
     if not key.strip():
@@ -388,7 +389,7 @@ def check_gemini() -> dict[str, Any]:
     log("OK", f"Gemini API responded via '{answered_model}': answer={outcome['answer']!r} "
               f"tokens(prompt/candidates/total)={usage['prompt']}/{usage['candidates']}/{total}")
     if outcome.get("over_production_budget"):
-        log("WARN", f"prompt counted {usage['prompt']} tokens > the hardcoded production input guard (100): "
+        log("WARN", f"prompt counted {usage['prompt']} tokens > the hardcoded production input guard (120): "
                     "GeminiFallback.classify would REFUSE this call — tokenizer drift; "
                     "review the budget in packages/pipeline/src/token_saver_nlp.py")
     if type(total) is int and total > 150:
