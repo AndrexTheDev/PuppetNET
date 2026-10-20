@@ -198,3 +198,18 @@ test('wave 8: entity-resolution hints stay browser-side and never auto-merge', (
   assert.ok(dashboard.includes('setSearch(group.label)'), 'comparing duplicates only switches the table query');
   assert.ok(!/merge|dedupe\(/.test(data.match(/export function duplicateCandidates[\s\S]*?\n}/)?.[0] ?? ''), 'no silent merging');
 });
+
+test('wave 9: bundling and vulnerability analysis stay deterministic and browser-side', () => {
+  const data = read('apps/web/app/dashboard/graph-data.ts');
+  assert.match(data, /export function bundleEdges\(edges: GraphEdge\[\]\): GraphEdge\[\]/, 'bundling is a pure function');
+  assert.match(data, /export function structuralVulnerability\(nodes: GraphNode\[\], edges: GraphEdge\[\], limit = 12, maxNodes = VULNERABILITY_NODE_LIMIT\)/, 'bounded, injectable node limit');
+  assert.match(data, /export const VULNERABILITY_NODE_LIMIT = 50_000/);
+  const worker = read('apps/web/app/dashboard/graph.worker.ts');
+  assert.match(worker, /const vulnerability = structuralVulnerability\(filtered\.nodes, filtered\.edges\)/, 'the worker analyses the visible slice');
+  assert.match(worker, /const viewEdges = filters\.bundle \? bundleEdges\(grouped\.edges\) : grouped\.edges/, 'bundling is opt-in');
+  assert.match(worker, /\.\.\.\(vulnerability \? \{ vulnerability \} : \{\}\)/, 'no fabricated analytics blocks');
+  const dashboard = read('apps/web/app/dashboard/Dashboard.tsx');
+  assert.ok(dashboard.includes("t('dash.bundleLabel')"), 'bundling toggle is dictionary-driven');
+  assert.ok(dashboard.includes("t('dash.vulnTitle')"), 'vulnerability block is dictionary-driven');
+  assert.ok(dashboard.includes("t('dash.vulnCutEdges')"), 'cut edges are explained, not just counted');
+});

@@ -24,9 +24,15 @@ export interface GraphNode {
   count?: number; examples?: string[]; internalEdges?: number; group?: boolean;
   degree?: number; rank?: number; community?: string; firstSeen?: string; lastSeen?: string;
 }
-export interface GraphEdge { id: string; source: string; target: string; type: string; confidence: number; weight: number; evidenceIds: string[]; count?: number }
+export interface GraphEdge { id: string; source: string; target: string; type: string; confidence: number; weight: number; evidenceIds: string[]; count?: number; types?: string[] }
 export interface Dataset { nodes: GraphNode[]; edges: GraphEdge[]; evidence: Evidence[]; truncated?: boolean; analytics?: GraphAnalytics; insights?: GraphInsight[] }
-export interface Filters { confidence: number; weight: number; types: EntityType[]; lod: boolean; ratio: number; community?: string; from?: string; to?: string }
+export interface Filters { confidence: number; weight: number; types: EntityType[]; lod: boolean; ratio: number; community?: string; from?: string; to?: string; bundle?: boolean }
+export interface Vulnerability {
+  cutVertices: { id: string; label: string; degree: number }[];
+  cutEdges: number;
+  maxCore: number;
+  maxCoreSize: number;
+}
 export interface MapPoint { id: string; lat: number; lon: number; count: number; label: string; exampleId: string }
 export interface View {
   version: number; nodes: GraphNode[]; edges: GraphEdge[]; mapPoints: MapPoint[];
@@ -37,6 +43,8 @@ export interface View {
   timeline?: { month: string; count: number }[];
   /** Wave 8: entity-resolution hints — same normalized label, different ids. */
   duplicates?: { label: string; ids: string[]; sameType: boolean }[];
+  /** Wave 9: articulation points, bridges and the k-core nucleus. */
+  vulnerability?: Vulnerability;
 }
 export const LIMITS = { nodes: 200_000, edges: 500_000, bytes: 64 * 1024 * 1024 };
 const record = (v: unknown): Record<string, unknown> => v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {};
@@ -394,6 +402,120 @@ export function monthWindow(month: string): { from: string; to: string } | null 
   if (index < 1 || index > 12) return null;
   const lastDay = new Date(Date.UTC(year, index, 0)).getUTCDate();
   return { from: `${month}-01`, to: `${month}-${String(lastDay).padStart(2, '0')}` };
+}
+
+/** Wave 9: bundle parallel relationships of the same unordered pair into one
+ * edge — Maltego-style link charts drown in multi-edges otherwise. The bundle
+ * keeps the strongest documented confidence and the union of provenance; the
+ * count and the sorted type list make the rest visible instead of hiding it.
+ * Self-loops stay untouched, the input is never mutated, the order is stable. */
+export function bundleEdges(edges: GraphEdge[]): GraphEdge[] {
+  const bundles = new Map<string, GraphEdge>();
+  for (const edge of edges) {
+    const [a, b] = edge.source <= edge.target ? [edge.source, edge.target] : [edge.target, edge.source];
+    const key = edge.source === edge.target ? `self:${edge.id}` : `pair:${a}|${b}`;
+    const previous = bundles.get(key);
+    if (!previous) { bundles.set(key, { ...edge, count: edge.count ?? 1, types: [edge.type] }); continue; }
+    const types = [...new Set([...(previous.types ?? [previous.type]), edge.type])].sort();
+    const evidenceIds = [...new Set([...previous.evidenceIds, ...edge.evidenceIds])].sort();
+    const better = edge.confidence > previous.confidence || (edge.confidence === previous.confidence && edge.id < previous.id);
+    const base = better ? edge : previous;
+    bundles.set(key, {
+      ...base,
+      id: base.id, source: a, target: b, type: base.type,
+      confidence: Math.max(previous.confidence, edge.confidence),
+      weight: Number((previous.weight + edge.weight).toFixed(4)),
+      evidenceIds,
+      count: (previous.count ?? 1) + (edge.count ?? 1),
+      types,
+    });
+  }
+  return [...bundles.values()].sort((x, y) =>
+    x.source < y.source ? -1 : x.source > y.source ? 1 :
+    x.target < y.target ? -1 : x.target > y.target ? 1 :
+    x.id < y.id ? -1 : x.id > y.id ? 1 : 0);
+}
+
+export const VULNERABILITY_NODE_LIMIT = 50_000;
+
+/** Wave 9: structural vulnerability of the visible slice — articulation points
+ * (removing them splits the network), bridges (edges whose loss disconnects it)
+ * and the k-core decomposition (the densest well-connected nucleus). Iterative
+ * Tarjan plus bucket peeling keeps 20k-node slices fast and stack-safe; parallel
+ * edges count as one relationship (simple-graph semantics) and LoD display
+ * groups are ignored. Above the node limit this returns null instead of
+ * pretending to know. */
+export function structuralVulnerability(nodes: GraphNode[], edges: GraphEdge[], limit = 12, maxNodes = VULNERABILITY_NODE_LIMIT): Vulnerability | null {
+  const singles = nodes.filter(n => !n.group).sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  const n = singles.length;
+  if (n > maxNodes) return null;
+  const index = new Map<string, number>();
+  singles.forEach((node, i) => index.set(node.id, i));
+  const adjacency: number[][] = singles.map(() => []);
+  const seen = new Set<string>();
+  for (const edge of edges) {
+    const a = index.get(edge.source), b = index.get(edge.target);
+    if (a === undefined || b === undefined || a === b) continue;
+    const key = a < b ? `${a}|${b}` : `${b}|${a}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    adjacency[a].push(b); adjacency[b].push(a);
+  }
+  for (const list of adjacency) list.sort((x, y) => x - y);
+  const discovery = new Int32Array(n).fill(-1), low = new Int32Array(n), parent = new Int32Array(n).fill(-1), cut = new Uint8Array(n);
+  let cutEdges = 0, time = 0;
+  for (let root = 0; root < n; root++) {
+    if (discovery[root] !== -1) continue;
+    discovery[root] = low[root] = time++;
+    let rootChildren = 0;
+    const stack: { v: number; next: number }[] = [{ v: root, next: 0 }];
+    while (stack.length) {
+      const frame = stack[stack.length - 1], v = frame.v;
+      if (frame.next < adjacency[v].length) {
+        const w = adjacency[v][frame.next++];
+        if (w === parent[v]) continue;
+        if (discovery[w] === -1) {
+          parent[w] = v; discovery[w] = low[w] = time++;
+          if (v === root) rootChildren++;
+          stack.push({ v: w, next: 0 });
+        } else if (discovery[w] < low[v]) low[v] = discovery[w];
+      } else {
+        stack.pop();
+        const p = parent[v];
+        if (p === -1) continue;
+        if (low[v] < low[p]) low[p] = low[v];
+        if (parent[p] !== -1 && low[v] >= discovery[p]) cut[p] = 1;
+        if (low[v] > discovery[p]) cutEdges++;
+      }
+    }
+    if (rootChildren > 1) cut[root] = 1;
+  }
+  // k-core by binary search over k (monotone: a non-empty k-core implies a
+  // non-empty (k-1)-core) — O((n+m) log n), far easier to trust than an
+  // incremental peeling index, and the slice sizes here are bounded.
+  const strength = adjacency.map(list => list.length);
+  const maxDegree = strength.reduce((max, d) => Math.max(max, d), 0);
+  const survivors = (k: number) => {
+    const degree = strength.slice(), removed = new Uint8Array(n), queue: number[] = [];
+    for (let v = 0; v < n; v++) if (degree[v] < k) { removed[v] = 1; queue.push(v); }
+    let remaining = n;
+    for (let qi = 0; qi < queue.length; qi++) {
+      const v = queue[qi];
+      remaining--;
+      for (const u of adjacency[v]) if (!removed[u] && --degree[u] < k) { removed[u] = 1; queue.push(u); }
+    }
+    return remaining;
+  };
+  let maxCore = 0, coreLow = 1, coreHigh = maxDegree;
+  while (coreLow <= coreHigh) {
+    const mid = (coreLow + coreHigh) >> 1;
+    if (survivors(mid) > 0) { maxCore = mid; coreLow = mid + 1; } else coreHigh = mid - 1;
+  }
+  const maxCoreSize = n === 0 ? 0 : survivors(maxCore);
+  const cutVertices: { id: string; label: string; degree: number }[] = [];
+  for (let v = 0; v < n; v++) if (cut[v]) cutVertices.push({ id: singles[v].id, label: singles[v].label, degree: strength[v] });
+  cutVertices.sort((a, b) => b.degree - a.degree || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  return { cutVertices: cutVertices.slice(0, Math.max(1, limit)), cutEdges, maxCore, maxCoreSize };
 }
 
 export function fuzzyScore(query: string, value: string): number {

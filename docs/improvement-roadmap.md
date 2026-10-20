@@ -230,6 +230,27 @@ Dubletten-Block + klickbare Monate im Analytik-Panel (DE/EN), token-only CSS
 (pin-konform, keine Hex-Werte), 2 neue Datenlagen-Tests + 1 neuer Release-Pin —
 `ci:pages` grün, 0 zusätzliche Actions-Minuten.
 
+### Welle 9 — Struktur-Klarheit (Kantenbündelung + Verwundbarkeit) — ✅ umgesetzt (2026-10-20)
+
+- **Kantenbündelung** (optional zuschaltbar): Parallele Beziehungen desselben
+  Knotenpaars werden zu einer Kante zusammengefasst — mit **Typ-Liste**, **Anzahl**,
+  **vereinigter Provenienz** und der **stärksten belegten Konfidenz**. Genau das, was
+  Link-Charts bei mehreren Beziehungstypen zwischen zwei Entitäten unlesbar macht;
+  nichts wird verworfen, die Bündelung ist jederzeit abschaltbar, Reihenfolge und
+  Ausgabe sind deterministisch, und die Eingabe wird nie verändert.
+- **Strukturelle Verwundbarkeit**: Artikulationspunkte (Knoten, deren Entfernung den
+  Ausschnitt zerlegt), Schnittkanten (Brücken zwischen Teilnetzen) und der k-Kern
+  (dichtester zusammenhängender Kern). Iteratives Tarjan + k-Core per Binärsuche —
+  stapelsicher, deterministisch, auf 50.000 Knoten begrenzt; darüber liefert die
+  Analyse ehrlich `null` statt einer Schätzung. Doppelte Kanten zählen als eine
+  Beziehung, LoD-Gruppen sind ausgenommen.
+
+**Geliefert (Welle 9)**: `bundleEdges()` + `structuralVulnerability()` (reine,
+getestete Funktionen), `Filters.bundle`, `View.vulnerability`, Worker-Verdrahtung,
+Bündelungs-Schalter + Verwundbarkeits-Panel im Analytik-Bereich (DE/EN, Sprungpunkte
+direkt fokussierbar), token-only CSS, 2 neue Datenlagen-Tests (dashboard 27) +
+1 neuer Release-Pin — `ci:pages` grün, 0 zusätzliche Actions-Minuten.
+
 ## 4. Budget-Zusammenfassung
 
 | Welle | Ort | Zusätzliche Actions-Minuten | Status |
@@ -242,6 +263,7 @@ Dubletten-Block + klickbare Monate im Analytik-Panel (DE/EN), token-only CSS
 | 6 i18n/PWA | Pages-Build/Browser | **0** | ✅ umgesetzt |
 | 7 Ego/Zeitachse | Browser/Web Worker | **0** | ✅ umgesetzt |
 | 8 Entitätsauflösung/Zeitachse | Browser/Web Worker | **0** | ✅ umgesetzt |
+| 9 Bündelung/Verwundbarkeit | Browser/Web Worker | **0** | ✅ umgesetzt |
 
 Kein Schritt erzeugt neue Workflows, neue Cron-Jobs, längere Jobs oder bezahlte
 Dienste. Die einzigen verbrauchsrelevanten Grenzen sind die bestehenden: 3
@@ -478,6 +500,26 @@ block + clickable months inside the analytics panel (DE/EN), token-only CSS
 (pin-conform, no hex values), 2 new data-layer tests + 1 new release pin —
 `ci:pages` green, 0 extra Actions minutes.
 
+### Wave 9 — structural clarity (edge bundling + vulnerability) — ✅ implemented (2026-10-20)
+
+- **Edge bundling** (opt-in): parallel relationships of the same node pair collapse into
+  one edge carrying its **type list**, **count**, **united provenance** and the
+  **strongest documented confidence**. This is exactly what makes link charts unreadable
+  when two entities share several relationship types; nothing is discarded, the toggle
+  can be switched off at any time, order and output are deterministic, and the input is
+  never mutated.
+- **Structural vulnerability**: articulation points (nodes whose removal splits the
+  slice), cut edges (bridges between sub-networks) and the k-core (densest cohesive
+  nucleus). Iterative Tarjan plus k-core by binary search — stack-safe, deterministic,
+  capped at 50,000 nodes; above that the analysis honestly returns `null` instead of an
+  estimate. Parallel edges count as one relationship, LoD groups are excluded.
+
+**Delivered (Wave 9)**: `bundleEdges()` + `structuralVulnerability()` (pure, tested
+functions), `Filters.bundle`, `View.vulnerability`, worker wiring, bundle toggle +
+vulnerability panel in the analytics area (DE/EN, jump-off points focusable directly),
+token-only CSS, 2 new data-layer tests (dashboard 27) + 1 new release pin —
+`ci:pages` green, 0 extra Actions minutes.
+
 ## 4. Budget summary
 
 | Wave | Location | Additional Actions minutes | Status |
@@ -490,6 +532,7 @@ block + clickable months inside the analytics panel (DE/EN), token-only CSS
 | 6 i18n/PWA | Pages build/browser | **0** | ✅ implemented |
 | 7 Ego/timeline | browser/web worker | **0** | ✅ implemented |
 | 8 entity resolution/timeline | browser/web worker | **0** | ✅ implemented |
+| 9 bundling/vulnerability | browser/web worker | **0** | ✅ implemented |
 
 No step creates new workflows, new cron jobs, longer jobs or paid services. The only
 consumption-relevant limits remain the existing ones: 3 reservations/UTC day, 5-minute

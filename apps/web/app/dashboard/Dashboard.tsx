@@ -283,6 +283,7 @@ export default function Dashboard() {
           {(filters.from || filters.to) && <button type="button" className="text-button" onClick={() => setFilters(f => ({ ...f, from: undefined, to: undefined }))}>{t('dash.clearTimeFilter')}</button>}
           <p>{t('dash.timeNote')}</p></div>
         <div className="lod-setting"><label><input type="checkbox" disabled={busy} checked={filters.lod} onChange={e => { if (!e.target.checked && (view?.stats.filteredNodes ?? 0) > 20_000 && !window.confirm(tRef.current('dash.lodConfirm'))) return; setFilters(f => ({ ...f, lod: e.target.checked })); }} /> {t('dash.lodLabel')}</label><p>{t('dash.lodNote')}</p></div>
+        <div className="lod-setting"><label><input type="checkbox" disabled={busy} checked={!!filters.bundle} onChange={e => setFilters(f => ({ ...f, bundle: e.target.checked }))} /> {t('dash.bundleLabel')}</label><p>{t('dash.bundleNote')}</p>{filters.bundle && view && view.edges.length !== view.stats.filteredEdges && <p className="muted">{t('dash.bundleStats', { shown: number(view.edges.length), total: number(view.stats.filteredEdges) })}</p>}</div>
         {view?.analytics && <div className="analytics-panel"><div className="section-heading"><h3>{t('dash.analyticsTitle')}</h3></div>
           <dl className="analytics-facts"><div><dt>Communities</dt><dd>{number(view.analytics.communities)}</dd></div><div><dt>{t('dash.density')}</dt><dd>{(view.analytics.density * 100).toFixed(2)} %</dd></div>{view.analytics.temporalRange && <div><dt>{t('dash.rangeLabel')}</dt><dd>{view.analytics.temporalRange.first} → {view.analytics.temporalRange.last}</dd></div>}</dl>
           {view.timeline && view.timeline.length > 0 && <>
@@ -309,6 +310,14 @@ export default function Dashboard() {
             <p className="muted">{t('dash.dupeText')}</p>
           </>}
           {view.analytics.hubs.length > 0 && <><h4 className="hub-heading">{t('dash.topHubs')}</h4><ol className="hub-list">{view.analytics.hubs.map(hub => <li key={hub.id}><button type="button" className="text-button" onClick={() => { if (mode !== 'network') changeMode('network'); select(hub.id); requestAnimationFrame(() => network.current?.focus(hub.id)); }}>{hub.name}</button><span className="hub-rank">{(hub.rank * 100).toFixed(1)} %</span></li>)}</ol></>}
+          {view.vulnerability && <div className="vuln-panel">
+            <h4 className="hub-heading">{t('dash.vulnTitle')}</h4>
+            <dl className="analytics-facts"><div><dt>{t('dash.vulnCutEdges')}</dt><dd>{number(view.vulnerability.cutEdges)}</dd></div><div><dt>k-Core</dt><dd>{t('dash.vulnCore', { core: view.vulnerability.maxCore, size: number(view.vulnerability.maxCoreSize) })}</dd></div></dl>
+            {view.vulnerability.cutVertices.length > 0
+              ? <ol className="hub-list">{view.vulnerability.cutVertices.map(node => <li key={node.id}><button type="button" className="text-button" aria-label={t('dash.vulnAria', { label: node.label })} onClick={() => { if (mode !== 'network') changeMode('network'); select(node.id); requestAnimationFrame(() => network.current?.focus(node.id)); }}>{node.label}</button><span className="hub-rank">{number(node.degree)}</span></li>)}</ol>
+              : <p className="muted">{t('dash.vulnNone')}</p>}
+            <p className="muted">{t('dash.vulnText')}</p>
+          </div>}
           {view.insights && view.insights.length > 0 && <>
             <h4 className="hub-heading">{t('dash.insightsTitle')}</h4>
             <ul className="insight-list">{view.insights.map((insight, index) => (

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
-import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, monthWindow, EGO_DEPTH_LIMIT, normalizeInsights, ANALYSIS_LIMITS, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
+import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, monthWindow, bundleEdges, structuralVulnerability, EGO_DEPTH_LIMIT, VULNERABILITY_NODE_LIMIT, normalizeInsights, ANALYSIS_LIMITS, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
 import { apiBase, readResponse } from '../apps/web/app/dashboard/api';
 const filters: Filters = { confidence: 0, weight: 0, types: [...TYPES], lod: true, ratio: 1 };
 test('normalizes Worker and Graphology nodes without inventing coordinates', () => {
@@ -341,4 +341,62 @@ test('wave 8 month windows come from the real calendar or not at all', () => {
   assert.equal(monthWindow('2026-00'), null);
   assert.equal(monthWindow('2026-1'), null);
   assert.equal(monthWindow(''), null);
+});
+
+test('wave 9 edge bundles keep the strongest evidence and the full type story', () => {
+  const data = normalizeDataset({
+    nodes: [{ key: 'a', name: 'A' }, { key: 'b', name: 'B' }, { key: 'c', name: 'C' }, { key: 'd', name: 'D' }],
+    edges: [
+      { source: 'a', target: 'b', type: 'OWNS', confidence: 0.6, weight: 1, evidenceIds: ['e1'] },
+      { source: 'b', target: 'a', type: 'ACQUIRED', confidence: 0.9, weight: 1, evidenceIds: ['e2'] },
+      { source: 'a', target: 'c', type: 'MET_WITH', confidence: 0.5, weight: 1, evidenceIds: ['e3'] },
+      { source: 'd', target: 'd', type: 'SELF', confidence: 0.4, weight: 1, evidenceIds: ['e4'] },
+    ],
+    evidence: [],
+  });
+  const bundled = bundleEdges(data.edges);
+  assert.equal(bundled.length, 3, 'parallel pair merges, self-loops stay separate');
+  const pair = bundled[0];
+  assert.equal(pair.source, 'a');
+  assert.equal(pair.target, 'b', 'endpoints are normalized for stable rendering');
+  assert.equal(pair.count, 2);
+  assert.deepEqual(pair.types, ['ACQUIRED', 'OWNS'], 'every relationship type stays visible');
+  assert.equal(pair.type, 'ACQUIRED', 'the strongest documented relationship names the bundle');
+  assert.equal(pair.confidence, 0.9);
+  assert.deepEqual(pair.evidenceIds, ['e1', 'e2'], 'provenance unions instead of dropping');
+  assert.equal(pair.weight, 2, 'weights add up');
+  assert.deepEqual(bundleEdges(data.edges), bundled, 'deterministic');
+  assert.equal(data.edges.length, 4, 'the input is never mutated');
+  assert.deepEqual(bundleEdges([]), []);
+});
+
+test('wave 9 vulnerability: bridges, articulation points and the k-core nucleus', () => {
+  const build = (pairs: [string, string][], count = 3) => normalizeDataset({
+    nodes: Array.from({ length: count }, (_, i) => ({ key: String.fromCharCode(97 + i), name: String.fromCharCode(65 + i) })),
+    edges: pairs.map(([source, target]) => ({ source, target })), evidence: [],
+  });
+  const path = build([['a', 'b'], ['b', 'c'], ['c', 'd']], 4);
+  assert.deepEqual(structuralVulnerability(path.nodes, path.edges)?.cutVertices.map(v => v.id), ['b', 'c']);
+  assert.equal(structuralVulnerability(path.nodes, path.edges)?.cutEdges, 3);
+  assert.deepEqual([structuralVulnerability(path.nodes, path.edges)?.maxCore, structuralVulnerability(path.nodes, path.edges)?.maxCoreSize], [1, 4], 'a path is one 1-core');
+  const tail = build([['a', 'b'], ['b', 'c'], ['c', 'a'], ['c', 'd'], ['d', 'e']], 5);
+  assert.deepEqual(structuralVulnerability(tail.nodes, tail.edges)?.cutVertices.map(v => v.id), ['c', 'd'], 'the triangle is cohesive, the tail is fragile');
+  assert.equal(structuralVulnerability(tail.nodes, tail.edges)?.cutEdges, 2);
+  assert.deepEqual([structuralVulnerability(tail.nodes, tail.edges)?.maxCore, structuralVulnerability(tail.nodes, tail.edges)?.maxCoreSize], [2, 3]);
+  const cycle = build([['a', 'b'], ['b', 'c'], ['c', 'a']]);
+  assert.deepEqual(structuralVulnerability(cycle.nodes, cycle.edges)?.cutVertices, [], 'a cycle has no single point of failure');
+  assert.equal(structuralVulnerability(cycle.nodes, cycle.edges)?.cutEdges, 0);
+  const parallel = build([['a', 'b'], ['b', 'a'], ['b', 'c']], 3);
+  assert.deepEqual(structuralVulnerability(parallel.nodes, parallel.edges)?.cutVertices.map(v => v.id), ['b'], 'parallel edges count as one relationship');
+  assert.equal(structuralVulnerability(parallel.nodes, parallel.edges)?.cutEdges, 2);
+  const split = build([['a', 'b'], ['c', 'd']], 4);
+  assert.deepEqual(structuralVulnerability(split.nodes, split.edges)?.cutVertices, [], 'disconnected parts have no cut vertices here');
+  assert.equal(structuralVulnerability(split.nodes, split.edges)?.cutEdges, 2);
+  assert.equal(structuralVulnerability(path.nodes, path.edges, 12, 2), null, 'above the node limit the answer is null, not a guess');
+  assert.deepEqual(structuralVulnerability([], []), { cutVertices: [], cutEdges: 0, maxCore: 0, maxCoreSize: 0 });
+  const withGroup = [...path.nodes, { ...path.nodes[0], id: 'group:x', group: true }];
+  assert.deepEqual(structuralVulnerability(withGroup, path.edges)?.cutVertices.map(v => v.id), ['b', 'c'], 'LoD display groups are not entities');
+  const bounded = structuralVulnerability(tail.nodes, tail.edges, 1);
+  assert.equal(bounded?.cutVertices.length, 1, 'the list is bounded');
+  assert.equal(bounded?.cutVertices[0].degree, 3, 'highest degree first');
 });
