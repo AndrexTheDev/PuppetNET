@@ -3,7 +3,7 @@ import { MultiDirectedGraph, UndirectedGraph } from 'graphology';
 import forceAtlas2 from 'graphology-layout-forceatlas2';
 import betweenness from 'graphology-metrics/centrality/betweenness';
 import louvain from 'graphology-communities-louvain';
-import { demoDataset, normalizeDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, levelFor, shortestPath, namePartition, brokerShares, ANALYSIS_LIMITS, LIMITS, TYPES, type Dataset, type Filters, type View } from './graph-data';
+import { demoDataset, normalizeDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, levelFor, shortestPath, namePartition, brokerShares, egoNetwork, mentionTimeline, EGO_DEPTH_LIMIT, ANALYSIS_LIMITS, LIMITS, TYPES, type Dataset, type Filters, type View } from './graph-data';
 import type { WorkerRequest, WorkerResponse } from './protocol';
 const scope = self as unknown as { onmessage: ((event: MessageEvent<WorkerRequest>) => void) | null; postMessage: (value: WorkerResponse, transfer?: Transferable[]) => void };
 let dataset: Dataset = { nodes: [], edges: [], evidence: [] };
@@ -65,7 +65,10 @@ function build(filters: Filters) {
   const filtered = currentFiltered(filters);
   const grouped = groupDataset(filtered, filters), geo = geographicPoints(filtered.nodes);
   members = grouped.members;
-  view = { version, nodes: grouped.nodes, edges: grouped.edges, mapPoints: geo.points, stats: { totalNodes: dataset.nodes.length, totalEdges: dataset.edges.length, filteredNodes: filtered.nodes.length, filteredEdges: filtered.edges.length, locatedNodes: geo.count, grouped: !!members.size, level: levelFor(filtered.nodes.length, filters), focused: !!focus, truncated: dataset.truncated === true }, ...(dataset.analytics ? { analytics: dataset.analytics } : {}), ...(dataset.insights?.length ? { insights: dataset.insights } : {}) };
+  // Wave 7: temporal analytics ride along with every view — computed on the
+  // filtered single nodes (before LoD grouping), empty slices stay empty.
+  const timeline = mentionTimeline(filtered.nodes);
+  view = { version, nodes: grouped.nodes, edges: grouped.edges, mapPoints: geo.points, stats: { totalNodes: dataset.nodes.length, totalEdges: dataset.edges.length, filteredNodes: filtered.nodes.length, filteredEdges: filtered.edges.length, locatedNodes: geo.count, grouped: !!members.size, level: levelFor(filtered.nodes.length, filters), focused: !!focus, truncated: dataset.truncated === true }, ...(dataset.analytics ? { analytics: dataset.analytics } : {}), ...(dataset.insights?.length ? { insights: dataset.insights } : {}), ...(timeline.length ? { timeline } : {}) };
   graph = new MultiDirectedGraph();
   for (const n of view.nodes) graph.addNode(n.id, { x: n.x, y: n.y, size: 2 });
   for (const e of view.edges) graph.addDirectedEdgeWithKey(e.id, e.source, e.target, { weight: Math.max(.001, e.weight) });
@@ -131,6 +134,16 @@ scope.onmessage = async ({ data }) => {
   version = data.version;
   stop();
   try {
+    if (data.kind === 'ego') {
+      // Wave 7 ego expansion: absolute neighborhood within the filtered slice.
+      // An older drill/ego focus is deliberately ignored so every expansion
+      // starts from the published state, never from a stale sub-selection.
+      const neighborhood = egoNetwork(filterDataset(effectiveDataset(), data.filters), data.id, data.depth);
+      if (neighborhood) focus = new Set(neighborhood);
+      build(data.filters);
+      send({ kind: 'ego', id: data.id, depth: Math.max(1, Math.min(EGO_DEPTH_LIMIT, Math.trunc(data.depth) || 1)), size: neighborhood ? neighborhood.length : null });
+      return;
+    }
     if (data.kind === 'demo') { dataset = demoDataset(data.count); focus = null; louvainPartition = null; }
     if (data.kind === 'import') {
       if (data.file && data.file.size > LIMITS.bytes) throw new Error('JSON ist größer als 64 MiB.');

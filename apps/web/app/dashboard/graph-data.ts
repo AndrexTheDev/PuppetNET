@@ -33,6 +33,8 @@ export interface View {
   stats: { totalNodes: number; totalEdges: number; filteredNodes: number; filteredEdges: number; locatedNodes: number; grouped: boolean; level: string; focused: boolean; truncated: boolean };
   analytics?: GraphAnalytics;
   insights?: GraphInsight[];
+  /** Wave 7: first mentions per month in the filtered slice (deterministic buckets). */
+  timeline?: { month: string; count: number }[];
 }
 export const LIMITS = { nodes: 200_000, edges: 500_000, bytes: 64 * 1024 * 1024 };
 const record = (v: unknown): Record<string, unknown> => v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {};
@@ -299,6 +301,60 @@ export function shortestPath(data: Dataset, source: string, target: string, maxH
 }
 
 /** Fuzzy relevance: exact substring beats subsequence; earlier and denser wins. */
+/** Wave 7 ego expansion: deterministic breadth-first neighborhood around one
+ * entity inside the given (already filtered) slice. Depth is clamped to 1–3 —
+ * Maltego-style multi-hop expansion, bounded so a hub node cannot swallow the
+ * whole graph by accident. Direction is ignored (a connection is a connection);
+ * adjacency lists are sorted, so the same slice always yields the same order.
+ * Returns the member ids (center first) or null when the center is not in the
+ * slice — an honest "not found", never a fabricated neighborhood. */
+export const EGO_DEPTH_LIMIT = 3;
+export function egoNetwork(data: Dataset, id: string, depth = 2): string[] | null {
+  const present = new Set(data.nodes.map(n => n.id));
+  if (!present.has(id)) return null;
+  const hops = Math.max(1, Math.min(EGO_DEPTH_LIMIT, Math.trunc(Number(depth)) || 1));
+  const adjacency = new Map<string, string[]>();
+  for (const edge of data.edges) {
+    if (!present.has(edge.source) || !present.has(edge.target)) continue;
+    for (const [from, to] of [[edge.source, edge.target], [edge.target, edge.source]] as const) {
+      const list = adjacency.get(from);
+      if (list) list.push(to); else adjacency.set(from, [to]);
+    }
+  }
+  for (const list of adjacency.values()) list.sort();
+  const seen = new Set<string>([id]);
+  let frontier = [id];
+  for (let hop = 0; hop < hops && frontier.length; hop++) {
+    const next: string[] = [];
+    for (const node of frontier) {
+      for (const peer of adjacency.get(node) ?? []) {
+        if (seen.has(peer)) continue;
+        seen.add(peer);
+        next.push(peer);
+      }
+    }
+    frontier = next;
+  }
+  return [...seen];
+}
+
+/** Wave 7 temporal analytics: first mentions per calendar month (UTC bucket of
+ * `firstSeen`), ascending, bounded to the most recent `limit` months. Undated
+ * entities are honestly absent — no guessing, no smoothing. */
+export function mentionTimeline(nodes: GraphNode[], limit = 24): { month: string; count: number }[] {
+  const buckets = new Map<string, number>();
+  for (const node of nodes) {
+    const first = isoDate(node.firstSeen);
+    if (!first) continue;
+    const month = first.slice(0, 7);
+    buckets.set(month, (buckets.get(month) ?? 0) + 1);
+  }
+  return [...buckets.entries()]
+    .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+    .slice(-Math.max(1, limit))
+    .map(([month, count]) => ({ month, count }));
+}
+
 export function fuzzyScore(query: string, value: string): number {
   const q = query.trim().toLowerCase(), t = value.toLowerCase();
   if (!q || !t) return 0;

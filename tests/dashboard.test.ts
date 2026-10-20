@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
-import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, namePartition, brokerShares, normalizeInsights, ANALYSIS_LIMITS, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
+import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, namePartition, brokerShares, egoNetwork, mentionTimeline, EGO_DEPTH_LIMIT, normalizeInsights, ANALYSIS_LIMITS, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
 import { apiBase, readResponse } from '../apps/web/app/dashboard/api';
 const filters: Filters = { confidence: 0, weight: 0, types: [...TYPES], lod: true, ratio: 1 };
 test('normalizes Worker and Graphology nodes without inventing coordinates', () => {
@@ -260,4 +260,49 @@ test('edge evidence resolves publication documents with honest fallbacks', () =>
   assert.equal(evidence[1].title, 'Referenced Node Doc', 'a document referenced by node id resolves to its label');
   assert.equal(evidence[2].title, 'doc:missing', 'unknown references stay honest placeholders');
   assert.deepEqual(evidenceForEdge(data, 'no-such-edge'), []);
+});
+
+test('wave 7 ego expansion is deterministic, direction-agnostic and depth-capped', () => {
+  const data = normalizeDataset({
+    nodes: [{ key: 'a', name: 'A' }, { key: 'b', name: 'B' }, { key: 'c', name: 'C' },
+      { key: 'd', name: 'D' }, { key: 'x', name: 'X' }],
+    edges: [{ source: 'a', target: 'b' }, { source: 'b', target: 'c' }, { source: 'c', target: 'd' }],
+    evidence: [],
+  });
+  assert.deepEqual(egoNetwork(data, 'c', 1)?.sort(), ['b', 'c', 'd']);
+  assert.deepEqual(egoNetwork(data, 'a', 2), ['a', 'b', 'c'], 'BFS order: center first');
+  assert.deepEqual(egoNetwork(data, 'a', 3), ['a', 'b', 'c', 'd']);
+  assert.deepEqual(egoNetwork(data, 'a', 99), egoNetwork(data, 'a', EGO_DEPTH_LIMIT), 'depth clamps at the limit');
+  assert.deepEqual(egoNetwork(data, 'a', 0), egoNetwork(data, 'a', 1), 'junk depth falls back to one hop');
+  assert.deepEqual(egoNetwork(data, 'd', 1), ['d', 'c'], 'edge direction is ignored');
+  assert.deepEqual(egoNetwork(data, 'x', 2), ['x'], 'isolated node: honest self-only neighborhood');
+  assert.equal(egoNetwork(data, 'missing', 1), null, 'unknown center is null, never fabricated');
+  assert.deepEqual(egoNetwork(data, 'a', 2), egoNetwork(data, 'a', 2), 'same input, same neighborhood');
+  // Ego runs on the filtered slice: dangling edges to filtered-out nodes never leak in.
+  const slice = filterDataset(data, { confidence: 0, weight: 0, types: ['Person', 'Organization', 'Location', 'Craft', 'Document', 'Other'], lod: true, ratio: 1 });
+  assert.deepEqual(egoNetwork(slice, 'b', 1)?.sort(), ['a', 'b', 'c']);
+});
+
+test('wave 7 mention timeline buckets first mentions, drops undated and bounds the window', () => {
+  const nodes = normalizeDataset({
+    nodes: [
+      { key: 'n1', name: 'N1', firstSeen: '2026-01-15' },
+      { key: 'n2', name: 'N2', firstSeen: '2026-01-20T10:00:00Z' },
+      { key: 'n3', name: 'N3', firstSeen: '2026-03-01' },
+      { key: 'n4', name: 'N4' },
+      { key: 'n5', name: 'N5', firstSeen: '15.01.2026' },
+    ],
+    edges: [], evidence: [],
+  }).nodes;
+  assert.deepEqual(mentionTimeline(nodes), [
+    { month: '2026-01', count: 2 },
+    { month: '2026-03', count: 1 },
+  ], 'undated and non-ISO entities are honestly absent');
+  assert.deepEqual(mentionTimeline([]), [], 'empty slice stays empty');
+  const wide = Array.from({ length: 30 }, (_, i) => ({
+    key: `w${i}`, name: `W${i}`, firstSeen: `202${4 + Math.floor(i / 12)}-${String((i % 12) + 1).padStart(2, '0')}-05`,
+  }));
+  const bounded = mentionTimeline(normalizeDataset({ nodes: wide, edges: [], evidence: [] }).nodes, 12);
+  assert.equal(bounded.length, 12, 'the window is bounded');
+  assert.ok(bounded.every((bucket, i) => i === 0 || bucket.month > bounded[i - 1].month), 'ascending, most recent kept');
 });

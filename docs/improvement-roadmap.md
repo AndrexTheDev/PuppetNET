@@ -187,6 +187,28 @@ Umschalter im Workspace-Header, `/en/`-Landing, hreflang-Metadaten auf beiden La
 Tastaturmodell) + 2 neue Release-Pins (PWA-Sicherheit, EN-Publikation) — `ci:pages` grün,
 0 zusätzliche Actions-Minuten (statischer Build + Browser-Code).
 
+### Welle 7 — Untersuchungstiefe (Ego-Netze + Zeitachse) — ✅ umgesetzt (2026-10-20)
+
+- **Ego-Netz-Expansion** (Maltegos Killer-Feature neben kürzesten Pfaden):
+  deterministische BFS-Nachbarschaft (1–3 Hops, richtungsunabhängig) um eine Entität im
+  gefilterten Ausschnitt — als eigenes Panel (Zentrum per Name/ID, fuzzy wie der
+  Pfadfinder; LoD-Gruppen expandieren um ihr erstes Mitglied) und als Button
+  „Umgebung aufspannen" im Inspector. Ergebnis als Status-Ansage; ein unbekanntes
+  Zentrum wird ehrlich als „nicht gefunden" gemeldet, niemals erfunden.
+  Zurücksetzen über „Gesamten Ausschnitt anzeigen".
+- **Zeitliche Analytik**: Histogramm „Erwähnungen pro Monat" (erste Erwähnung pro
+  Entität, UTC-Monatsbuckets, aufsteigend, höchstens die letzten 24 Monate, undatierte
+  Entitäten fehlen ehrlich) als zugängliche Balkenliste im Analytik-Panel — bei jedem
+  View-Build im Worker berechnet, Token-only-CSS.
+- Beides läuft vollständig im Web Worker auf dem geladenen Ausschnitt — freie
+  Browser-Rechenzeit, keine Cloud, keine neuen Daten.
+
+**Geliefert (Welle 7)**: `egoNetwork()` + `mentionTimeline()` (reine, getestete
+Funktionen in `graph-data.ts`), Protokoll-Request/Response `ego`, Worker-Zweig +
+`View.timeline`, Ego-Panel + Timeline-UI (DE/EN über das Wörterbuch), optionales
+`onEgo`-Prop im Inspector, 2 neue Datenlagen-Tests + 1 neuer Release-Pin —
+`ci:pages` grün, 0 zusätzliche Actions-Minuten.
+
 ## 4. Budget-Zusammenfassung
 
 | Welle | Ort | Zusätzliche Actions-Minuten | Status |
@@ -197,6 +219,7 @@ Tastaturmodell) + 2 neue Release-Pins (PWA-Sicherheit, EN-Publikation) — `ci:p
 | 4 Ingestion-Qualität | bestehende ≤5-min-Jobs | **0** | ✅ umgesetzt |
 | 5 Compliance/Trust | statische Seiten + Doku | **0** | ✅ umgesetzt |
 | 6 i18n/PWA | Pages-Build/Browser | **0** | ✅ umgesetzt |
+| 7 Ego/Zeitachse | Browser/Web Worker | **0** | ✅ umgesetzt |
 
 Kein Schritt erzeugt neue Workflows, neue Cron-Jobs, längere Jobs oder bezahlte
 Dienste. Die einzigen verbrauchsrelevanten Grenzen sind die bestehenden: 3
@@ -393,6 +416,27 @@ i18n tests (key/placeholder parity, pinned German strings, EN render smoke, bili
 keyboard model) + 2 new release pins (PWA safety, EN publication) — `ci:pages` green,
 0 extra Actions minutes (static build + browser code).
 
+### Wave 7 — investigation depth (ego networks + timeline) — ✅ implemented (2026-10-20)
+
+- **Ego-network expansion** (Maltego's killer feature beside shortest paths):
+  deterministic BFS neighborhood (1–3 hops, direction-agnostic) around an entity within
+  the filtered slice — as its own panel (center by name/ID, fuzzy like the pathfinder;
+  LoD groups expand around their first member) and as an "Expand neighborhood" button in
+  the inspector. The result is announced as a status; an unknown center is honestly
+  reported as "not found", never fabricated. Reset via "Show the full slice".
+- **Temporal analytics**: "Mentions per month" histogram (first mention per entity, UTC
+  month buckets, ascending, at most the last 24 months, undated entities honestly
+  absent) as an accessible bar list inside the analytics panel — computed in the worker
+  on every view build, token-only CSS.
+- Both run entirely inside the web worker on the loaded slice — free browser compute,
+  no cloud, no new data collection.
+
+**Delivered (Wave 7)**: `egoNetwork()` + `mentionTimeline()` (pure, tested functions in
+`graph-data.ts`), `ego` protocol request/response, worker branch + `View.timeline`,
+ego panel + timeline UI (DE/EN via the dictionary), optional `onEgo` prop in the
+inspector, 2 new data-layer tests + 1 new release pin — `ci:pages` green, 0 extra
+Actions minutes.
+
 ## 4. Budget summary
 
 | Wave | Location | Additional Actions minutes | Status |
@@ -403,6 +447,7 @@ keyboard model) + 2 new release pins (PWA safety, EN publication) — `ci:pages`
 | 4 Ingestion quality | existing ≤5-min jobs | **0** | ✅ implemented |
 | 5 Compliance/trust | static pages + docs | **0** | ✅ implemented |
 | 6 i18n/PWA | Pages build/browser | **0** | ✅ implemented |
+| 7 Ego/timeline | browser/web worker | **0** | ✅ implemented |
 
 No step creates new workflows, new cron jobs, longer jobs or paid services. The only
 consumption-relevant limits remain the existing ones: 3 reservations/UTC day, 5-minute

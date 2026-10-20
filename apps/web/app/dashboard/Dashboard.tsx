@@ -36,6 +36,7 @@ export default function Dashboard() {
   const [researchQuery, setResearchQuery] = useState(''), [researchBusy, setResearchBusy] = useState(false);
   const [pathSource, setPathSource] = useState(''), [pathTarget, setPathTarget] = useState('');
   const [pathResult, setPathResult] = useState<PathResult | null>(null), [pathError, setPathError] = useState('');
+  const [egoQuery, setEgoQuery] = useState(''), [egoDepth, setEgoDepth] = useState(2), [egoStatus, setEgoStatus] = useState('');
   const [brokers, setBrokers] = useState<{ id: string; label: string; share: number }[] | null>(null);
   const [analysisNotice, setAnalysisNotice] = useState('');
   const [louvainActive, setLouvainActive] = useState(false), [louvainCount, setLouvainCount] = useState(0);
@@ -60,7 +61,7 @@ export default function Dashboard() {
   }, []);
   const clearSelected = useCallback(() => { selectedId.current = null; setSelected(null); setEvidence([]); selectedEdgeId.current = null; setSelectedEdge(null); setEdgeEvidence([]); loadingDetail.current?.abort(); setDetailError(''); }, []);
   const send = useCallback((request: WorkerRequest) => worker.current?.postMessage(request), []);
-  const requestView = useCallback((kind: 'filter' | 'reset' = 'filter') => { setBusy(true); setError(''); clearSelected(); setPathResult(null); setPathError(''); setBrokers(null); setAnalysisNotice(''); send({ kind, version: ++version.current, filters: filtersRef.current }); }, [send, clearSelected]);
+  const requestView = useCallback((kind: 'filter' | 'reset' = 'filter') => { setBusy(true); setError(''); clearSelected(); setPathResult(null); setPathError(''); setBrokers(null); setAnalysisNotice(''); if (kind === 'reset') setEgoStatus(''); send({ kind, version: ++version.current, filters: filtersRef.current }); }, [send, clearSelected]);
   useEffect(() => {
     const instance = new Worker(new URL('./graph.worker.ts', import.meta.url)); worker.current = instance;
     instance.onmessage = ({ data }: MessageEvent<WorkerResponse>) => {
@@ -92,6 +93,16 @@ export default function Dashboard() {
         setLouvainActive(data.active); setLouvainCount(data.communities);
         if (data.notice) setAnalysisNotice(data.notice);
         setAnnouncement(data.active ? tRef.current('dash.annLouvainOn', { count: data.communities }) : tRef.current('dash.annLouvainOff'));
+        return;
+      }
+      if (data.kind === 'ego') {
+        // Wave 7: the worker answers after the rebuilt view — size null means
+        // the center is not part of the filtered slice (honest absence).
+        const label = viewLatest.current?.nodes.find(n => n.id === data.id)?.label ?? data.id;
+        const message = data.size === null
+          ? tRef.current('dash.egoMissing')
+          : tRef.current('dash.egoActive', { size: data.size, depth: data.depth, s: data.depth === 1 ? '' : 's', label });
+        setEgoStatus(message); setAnnouncement(message);
         return;
       }
       if (data.kind === 'error' && data.version === version.current) { setError(data.message); setBusy(false); pendingSource.current = committedSource.current; }
@@ -197,6 +208,21 @@ export default function Dashboard() {
     if (source.id === target.id) { setPathError(tRef.current('dash.pathSame')); return; }
     send({ kind: 'path', source: source.id, target: target.id });
   }, [pathSource, pathTarget, send]);
+  // Wave 7 ego expansion: resolve the center against the visible slice (name or
+  // id, fuzzy like the pathfinder); an LoD group expands around its first
+  // member, because the group itself has no identity in the published dataset.
+  const requestEgo = useCallback((raw?: string) => {
+    const nodes = viewLatest.current?.nodes ?? [];
+    const ref = resolveNodeRef(nodes, (raw ?? egoQuery).trim());
+    if (!ref) {
+      const message = tRef.current('dash.egoMissing');
+      setEgoStatus(message); setAnnouncement(message);
+      return;
+    }
+    const center = ref.group && ref.examples?.length ? ref.examples[0] : ref.id;
+    setEgoStatus('');
+    send({ kind: 'ego', version: ++version.current, id: center, depth: egoDepth, filters: filtersRef.current });
+  }, [egoQuery, egoDepth, send]);
   const pageSize = 50;
   const shown = list.slice(listPage * pageSize, (listPage + 1) * pageSize);
   const degrees = useMemo(() => {
@@ -208,6 +234,7 @@ export default function Dashboard() {
     return map;
   }, [view]);
   const tableRows: TableRow[] = shown.map(n => ({ ...n, degree: degrees.get(n.id) ?? 0 }));
+  const timelineMax = useMemo(() => (view?.timeline ?? []).reduce((max, bucket) => Math.max(max, bucket.count), 0), [view]);
   useEffect(() => {
     const wanted = initialFocus.current;
     if (!wanted || !view) return;
@@ -258,6 +285,11 @@ export default function Dashboard() {
         <div className="lod-setting"><label><input type="checkbox" disabled={busy} checked={filters.lod} onChange={e => { if (!e.target.checked && (view?.stats.filteredNodes ?? 0) > 20_000 && !window.confirm(tRef.current('dash.lodConfirm'))) return; setFilters(f => ({ ...f, lod: e.target.checked })); }} /> {t('dash.lodLabel')}</label><p>{t('dash.lodNote')}</p></div>
         {view?.analytics && <div className="analytics-panel"><div className="section-heading"><h3>{t('dash.analyticsTitle')}</h3></div>
           <dl className="analytics-facts"><div><dt>Communities</dt><dd>{number(view.analytics.communities)}</dd></div><div><dt>{t('dash.density')}</dt><dd>{(view.analytics.density * 100).toFixed(2)} %</dd></div>{view.analytics.temporalRange && <div><dt>{t('dash.rangeLabel')}</dt><dd>{view.analytics.temporalRange.first} → {view.analytics.temporalRange.last}</dd></div>}</dl>
+          {view.timeline && view.timeline.length > 0 && <>
+            <h4 className="hub-heading">{t('dash.timelineTitle')}</h4>
+            <ol className="timeline-bars">{view.timeline.map(bucket => <li key={bucket.month}><span className="timeline-month">{bucket.month}</span><span className="timeline-bar" aria-hidden="true" style={{ width: `${timelineMax ? Math.max(2, Math.round((bucket.count / timelineMax) * 100)) : 0}%` }} /><strong>{number(bucket.count)}</strong></li>)}</ol>
+            <p className="muted">{t('dash.timelineNote')}</p>
+          </>}
           {view.analytics.hubs.length > 0 && <><h4 className="hub-heading">{t('dash.topHubs')}</h4><ol className="hub-list">{view.analytics.hubs.map(hub => <li key={hub.id}><button type="button" className="text-button" onClick={() => { if (mode !== 'network') changeMode('network'); select(hub.id); requestAnimationFrame(() => network.current?.focus(hub.id)); }}>{hub.name}</button><span className="hub-rank">{(hub.rank * 100).toFixed(1)} %</span></li>)}</ol></>}
           {view.insights && view.insights.length > 0 && <>
             <h4 className="hub-heading">{t('dash.insightsTitle')}</h4>
@@ -302,6 +334,16 @@ export default function Dashboard() {
             <button type="button" className="text-button" onClick={() => { setPathResult(null); setPathError(''); }}>{t('dash.pathClear')}</button>
           </div>}
         </div>
+        <div className="ego-panel"><div className="section-heading"><h3>{t('dash.egoTitle')}</h3></div>
+          <p className="muted">{t('dash.egoText')}</p>
+          <label htmlFor="ego-center">{t('dash.egoCenter')}<input id="ego-center" list="pathfinder-options" autoComplete="off" value={egoQuery} onChange={e => setEgoQuery(e.target.value)} placeholder={t('dash.pathPlaceholder')} /></label>
+          <label htmlFor="ego-depth">{t('dash.egoDepth')}<select id="ego-depth" value={egoDepth} onChange={e => setEgoDepth(Number(e.target.value))}><option value={1}>1</option><option value={2}>2</option><option value={3}>3</option></select></label>
+          <div className="algorithm-actions">
+            <button type="button" className="primary-button" disabled={busy} onClick={() => requestEgo()}>{t('dash.egoRun')}</button>
+            {view?.stats.focused && <button type="button" className="text-button" onClick={() => requestView('reset')}>{t('dash.showAll')}</button>}
+          </div>
+          {egoStatus && <p className="muted" role="status">{egoStatus}</p>}
+        </div>
         <div className="filter-foot"><span>○</span><p>{t('dash.footNote')}</p></div>
       </aside>
       <section className="visualization-panel" aria-label={t('dash.vizAria')}><div className="visualization-toolbar"><div className="view-tabs" role="group" aria-label={t('dash.tabsAria')}><button aria-pressed={mode === 'network'} aria-controls="visualization-stage" onClick={() => changeMode('network')}>◈ {t('dash.tabNetwork')}</button><button aria-pressed={mode === 'map'} aria-controls="visualization-stage" onClick={() => changeMode('map')}>◎ {t('dash.tabMap')}</button><button aria-pressed={mode === 'list'} aria-controls="visualization-stage" onClick={() => changeMode('list')}>☷ {t('dash.tabList')}</button></div><button type="button" className="outline-button color-toggle" aria-pressed={colorMode === 'community'} disabled={mode !== 'network'} onClick={() => setColorMode(c => c === 'type' ? 'community' : 'type')}>{t('dash.colorLabel', { mode: colorMode === 'community' ? 'Community' : t('dash.colorType') })}</button><span className="live-indicator" role="status">{busy ? t('dash.liveProcessing') : layoutRunning ? t('dash.liveLayout') : t('dash.liveReady')}</span></div>
@@ -321,7 +363,7 @@ export default function Dashboard() {
       <SidePanel node={selected} evidence={evidence} edge={selectedEdge} edgeEvidence={edgeEvidence} edgeLabels={{
         source: selectedEdge ? view?.nodes.find(n => n.id === selectedEdge.source)?.label ?? selectedEdge.source : '',
         target: selectedEdge ? view?.nodes.find(n => n.id === selectedEdge.target)?.label ?? selectedEdge.target : '',
-      }} detailError={detailError} onClose={() => { clearSelected(); setAnnouncement(t('dash.detailsClosed')); }} onDrill={group => { clearSelected(); setBusy(true); send({ kind: 'drill', group, version: ++version.current, filters: filtersRef.current }); }} />
+      }} detailError={detailError} onEgo={id => requestEgo(id)} onClose={() => { clearSelected(); setAnnouncement(t('dash.detailsClosed')); }} onDrill={group => { clearSelected(); setBusy(true); send({ kind: 'drill', group, version: ++version.current, filters: filtersRef.current }); }} />
     </div>}
     <footer className="dashboard-footer"><span>PUPPETNET / OPEN-SOURCE INTELLIGENCE</span><span>Sigma.js 4 · Graphology · Leaflet · OpenStreetMap</span><a className="footer-legal" href="/legal/">{t('dash.legalLink')}</a></footer>
   </main>;

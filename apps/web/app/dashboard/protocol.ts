@@ -4,6 +4,7 @@ export type WorkerRequest =
   | { kind: 'import'; version: number; text?: string; file?: File; filters: Filters }
   | { kind: 'filter'; version: number; filters: Filters }
   | { kind: 'drill'; version: number; group: string; filters: Filters }
+  | { kind: 'ego'; version: number; id: string; depth: number; filters: Filters }
   | { kind: 'reset'; version: number; filters: Filters }
   | { kind: 'detail'; id: string }
   | { kind: 'edgeDetail'; id: string }
@@ -21,5 +22,6 @@ export type WorkerResponse =
       edges: { id: string; source: string; target: string; type: string }[] | null; hops: number }
   | { kind: 'broker'; version: number; brokers: { id: string; label: string; share: number }[]; notice?: string }
   | { kind: 'louvain'; active: boolean; communities: number; notice?: string }
+  | { kind: 'ego'; id: string; depth: number; size: number | null }
   | { kind: 'error'; version: number; message: string };
 export type SourceData = Dataset;

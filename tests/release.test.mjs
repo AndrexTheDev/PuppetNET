@@ -169,3 +169,18 @@ test('the English landing is a real, linked, hreflang-annotated publication', ()
     assert.ok(read(file).includes('/en/'), `${file} lists the English landing`);
   }
 });
+
+test('wave 7: ego expansion and temporal analytics stay inside the worker contract', () => {
+  assert.match(read('apps/web/app/dashboard/protocol.ts'), /kind: 'ego'; version: number; id: string; depth: number; filters: Filters/);
+  const worker = read('apps/web/app/dashboard/graph.worker.ts');
+  assert.match(worker, /egoNetwork\(filterDataset\(effectiveDataset\(\), data\.filters\), data\.id, data\.depth\)/, 'ego runs on the filtered slice in the worker');
+  assert.match(worker, /mentionTimeline\(filtered\.nodes\)/, 'the timeline is computed pre-grouping');
+  const data = read('apps/web/app/dashboard/graph-data.ts');
+  assert.match(data, /export const EGO_DEPTH_LIMIT = 3/);
+  assert.match(data, /export function egoNetwork/);
+  assert.match(data, /export function mentionTimeline/);
+  const dashboard = read('apps/web/app/dashboard/Dashboard.tsx');
+  assert.ok(dashboard.includes("t('dash.egoTitle')"), 'the ego panel is dictionary-driven');
+  assert.ok(dashboard.includes("t('dash.timelineTitle')"), 'the timeline block is dictionary-driven');
+  assert.ok(read('apps/web/app/dashboard/SidePanel.tsx').includes("t('inspector.egoButton')"), 'the inspector offers expansion');
+});

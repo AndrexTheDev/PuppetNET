@@ -4,7 +4,7 @@ import { COLORS, communityColor, cypherExport, safeUrl, type Evidence, type Grap
 import { downloadText as download } from './download';
 import { useLanguage, useT } from './i18n';
 import { NUMBER_LOCALE } from '../../lib/i18n-strings';
-export default function SidePanel({ node, evidence, edge, edgeEvidence, edgeLabels, onDrill, onClose, detailError }: { node: GraphNode | null; evidence: Evidence[]; edge: GraphEdge | null; edgeEvidence: Evidence[]; edgeLabels: { source: string; target: string }; onDrill: (id: string) => void; onClose: () => void; detailError: string }) {
+export default function SidePanel({ node, evidence, edge, edgeEvidence, edgeLabels, onDrill, onEgo, onClose, detailError }: { node: GraphNode | null; evidence: Evidence[]; edge: GraphEdge | null; edgeEvidence: Evidence[]; edgeLabels: { source: string; target: string }; onDrill: (id: string) => void; onEgo?: (id: string) => void; onClose: () => void; detailError: string }) {
   const [copied, setCopied] = useState('');
   const { lang } = useLanguage();
   const t = useT();
@@ -40,6 +40,7 @@ export default function SidePanel({ node, evidence, edge, edgeEvidence, edgeLabe
       {!node.group && node.firstSeen && <div><dt>{t('inspector.firstSeen')}</dt><dd><time dateTime={node.firstSeen}>{node.firstSeen}</time></dd></div>}
       {!node.group && node.lastSeen && node.lastSeen !== node.firstSeen && <div><dt>{t('inspector.lastSeen')}</dt><dd><time dateTime={node.lastSeen}>{node.lastSeen}</time></dd></div>}
       {node.lat !== undefined && <div><dt>{t('inspector.coords')}</dt><dd>{node.lat.toFixed(4)}, {node.lon?.toFixed(4)}</dd></div>}</dl>
+    {onEgo && <button type="button" className="outline-button ego-expand" onClick={() => onEgo(node.id)}>{t('inspector.egoButton')}</button>}
     {node.group ? <><p className="muted">{t('inspector.groupText')}</p><button className="primary-button" onClick={() => onDrill(node.id)}>{t('inspector.drill')}</button><h3>{t('inspector.examples')}</h3><ul className="example-ids">{node.examples?.map(id => <li key={id}>{id}</li>)}</ul></> : <>
       <div className="section-heading"><h3>{t('inspector.nodeSources')}</h3><span>{evidence.length}</span></div><p className="muted small-text">{t('inspector.nodeSourcesSub')}</p>
       {detailError && <p className="inline-warning" role="status">{detailError}</p>}
