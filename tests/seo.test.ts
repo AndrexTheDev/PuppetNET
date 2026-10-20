@@ -7,6 +7,7 @@ import {
   MAX_RELATED_ENTITIES,
   buildEntityJsonLd,
   buildEntityMetadata,
+  buildWebsiteJsonLd,
   entityPath,
   entitySlug,
   normalizeEntityDataset,
@@ -111,6 +112,15 @@ test('a shared canonical key is published once', () => {
   assert.equal(dataset.entities.length, 3);
   const slugs = dataset.entities.map((entity) => entity.slug);
   assert.equal(new Set(slugs).size, slugs.length, 'two non-Latin names must not share a URL');
+});
+
+test('the landing-page WebSite JSON-LD has Schema.org type and an absolute canonical URL', () => {
+  const website = buildWebsiteJsonLd(ORIGIN);
+  assert.equal(website['@type'], 'WebSite');
+  assert.equal(website['@id'], `${ORIGIN}/#website`);
+  assert.equal(website.url, `${ORIGIN}/`);
+  assert.equal(website.name, 'PuppetNET');
+  assert.equal(website.inLanguage, 'de');
 });
 
 test('JSON-LD uses Schema.org Person and Organization and absolute URLs', () => {

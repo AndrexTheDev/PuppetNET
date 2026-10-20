@@ -1,6 +1,6 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
-import { ENTITY_TYPE_LABELS, entityPath } from '../lib/entity-seo';
+import { ENTITY_TYPE_LABELS, buildWebsiteJsonLd, entityPath, serializeJsonLd, siteOrigin } from '../lib/entity-seo';
 import { listPublicEntities, loadEntityDataset } from '../lib/entity-store';
 
 export const metadata: Metadata = {
@@ -13,7 +13,12 @@ export const metadata: Metadata = {
 export default function Home() {
   const { dataset } = loadEntityDataset();
   const entities = listPublicEntities().slice(0, 6);
+  const websiteJsonLd = serializeJsonLd({
+    '@context': 'https://schema.org',
+    ...buildWebsiteJsonLd(siteOrigin()),
+  });
   return <main id="main-content" className="landing" tabIndex={-1}>
+    <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: websiteJsonLd }} />
     <nav className="landing-nav" aria-label="Hauptnavigation"><Link className="landing-brand" href="/"><img className="brand-art" src="/media/logo.webp" width="56" height="56" alt="" /><strong>PUPPETNET</strong></Link><div><a href="#entdecken">Entdecken</a><a href="#so-gehts">So funktioniert’s</a><Link className="nav-launch" href="/dashboard/">Workspace öffnen ↗</Link></div></nav>
     <section className="hero" aria-labelledby="hero-title">
       <div className="hero-copy"><span className="eyebrow">FÜR ALLE, DIE WEITERFRAGEN.</span><h1 id="hero-title">Ein Name ist<br />erst der <em>Anfang.</em></h1><p>Die spannende Geschichte liegt oft dazwischen. Mach Verbindungen sichtbar, folge neuen Spuren und sieh das Netzwerk hinter den Namen.</p><div className="hero-actions"><Link className="cta-primary" href="/dashboard/">Netzwerk entdecken <span>↗</span></Link><a className="cta-secondary" href="#entdecken">Erst umsehen ↓</a></div><span className="hero-note">Direkt im Browser. Keine Anmeldung für die Demo.</span></div>

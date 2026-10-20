@@ -65,6 +65,19 @@ for (const chunk of workerChunks) {
 }
 
 /* ------------------------------------------------------------------------- */
+/* Landing page: static, crawlable and described as a Schema.org WebSite      */
+/* ------------------------------------------------------------------------- */
+const homeHtml = readFileSync(path.join(OUT, 'index.html'), 'utf8');
+const homeJsonLd = homeHtml.match(/<script type="application\/ld\+json">(.*?)<\/script>/s);
+assert.ok(homeJsonLd, 'index.html enthält kein JSON-LD.');
+const homeStructured = JSON.parse(homeJsonLd[1]);
+assert.equal(homeStructured['@context'], 'https://schema.org');
+assert.equal(homeStructured['@type'], 'WebSite');
+assert.equal(homeStructured.name, 'PuppetNET');
+assert.equal(new URL(homeStructured.url).protocol, 'https:');
+assert.equal(homeStructured['@id'], `${new URL(homeStructured.url).origin}/#website`);
+
+/* ------------------------------------------------------------------------- */
 /* Entity profiles: static, crawlable and self-contained                     */
 /* ------------------------------------------------------------------------- */
 const entityDir = path.join(OUT, 'entity');

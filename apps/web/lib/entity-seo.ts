@@ -469,10 +469,9 @@ export function serializeJsonLd(value: unknown): string {
     .replace(/\u2029/g, '\\u2029');
 }
 
-export function buildEntityJsonLd(entity: PublicEntity, origin: string): Record<string, unknown> {
+export function buildWebsiteJsonLd(origin: string): Record<string, unknown> {
   const base = origin.replace(/\/+$/, '');
-  const url = `${base}${canonicalEntityPath(entity)}`;
-  const website = {
+  return {
     '@type': 'WebSite',
     '@id': `${base}/#website`,
     name: 'PuppetNET',
@@ -480,6 +479,12 @@ export function buildEntityJsonLd(entity: PublicEntity, origin: string): Record<
     inLanguage: 'de',
     description: 'Open-Source-OSINT-Netzwerkanalyse mit nachvollziehbaren Quellen.',
   };
+}
+
+export function buildEntityJsonLd(entity: PublicEntity, origin: string): Record<string, unknown> {
+  const base = origin.replace(/\/+$/, '');
+  const url = `${base}${canonicalEntityPath(entity)}`;
+  const website = buildWebsiteJsonLd(base);
   const identifier = entity.identifiers.map((item) => ({
     '@type': 'PropertyValue',
     propertyID: item.property,
