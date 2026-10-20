@@ -3,7 +3,7 @@ import { MultiDirectedGraph, UndirectedGraph } from 'graphology';
 import forceAtlas2 from 'graphology-layout-forceatlas2';
 import betweenness from 'graphology-metrics/centrality/betweenness';
 import louvain from 'graphology-communities-louvain';
-import { demoDataset, normalizeDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, levelFor, shortestPath, namePartition, brokerShares, ANALYSIS_LIMITS, LIMITS, TYPES, type Dataset, type Filters, type View } from './graph-data';
+import { demoDataset, normalizeDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, levelFor, shortestPath, namePartition, brokerShares, ANALYSIS_LIMITS, LIMITS, TYPES, type Dataset, type Filters, type View } from './graph-data';
 import type { WorkerRequest, WorkerResponse } from './protocol';
 const scope = self as unknown as { onmessage: ((event: MessageEvent<WorkerRequest>) => void) | null; postMessage: (value: WorkerResponse, transfer?: Transferable[]) => void };
 let dataset: Dataset = { nodes: [], edges: [], evidence: [] };
@@ -76,6 +76,10 @@ function build(filters: Filters) {
 scope.onmessage = async ({ data }) => {
   if (data.kind === 'detail') {
     send({ kind: 'detail', node: dataset.nodes.find(n => n.id === data.id), evidence: evidenceFor(dataset, data.id) }); return;
+  }
+  if (data.kind === 'edgeDetail') {
+    // Wave 5 edge provenance: every published edge carries its own source list.
+    send({ kind: 'edgeDetail', id: data.id, evidence: evidenceForEdge(dataset, data.id) }); return;
   }
   if (data.kind === 'path') {
     // Pathfinder runs on the visible slice (filters + drill focus) — an honest

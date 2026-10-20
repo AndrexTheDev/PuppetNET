@@ -220,6 +220,13 @@ export function evidenceFor(data: Dataset, id: string): Evidence[] {
   }
   return [...docs].map(doc => data.evidence.find(e => e.id === doc) ?? { id: doc, title: data.nodes.find(n => n.id === doc)?.label ?? doc });
 }
+/** Wave 5 edge provenance: the documents behind ONE edge, in publication order.
+ *  Unknown references degrade to honest placeholders, never invented titles. */
+export function evidenceForEdge(data: Dataset, edgeId: string): Evidence[] {
+  const edge = data.edges.find(e => e.id === edgeId);
+  if (!edge) return [];
+  return edge.evidenceIds.map(doc => data.evidence.find(e => e.id === doc) ?? { id: doc, title: data.nodes.find(n => n.id === doc)?.label ?? doc });
+}
 export const CYPHER = 'MATCH (n:Entity {canonical_key: $key})\nOPTIONAL MATCH (n)-[:EVIDENCED_BY]->(d:Document)\nOPTIONAL MATCH (m:Document)-[:MENTIONS]->(n)\nRETURN n, collect(DISTINCT d) + collect(DISTINCT m) AS evidence';
 export function cypherExport(key: string) { return { query: CYPHER, parameters: { key } }; }
 export function demoDataset(count = 900): Dataset {

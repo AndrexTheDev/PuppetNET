@@ -1,0 +1,17 @@
+/* Legal page — token-only colours, reuses the landing shell (.landing, .landing-nav,
+   .landing-footer, .eyebrow). Dense, append-only like the other stylesheets. */
+.legal-doc{padding-bottom:60px}
+.legal-doc>h1{font-size:clamp(30px,4.4vw,56px);letter-spacing:-2px;line-height:1.08;margin:18px 0 16px}
+.legal-doc>p{font-size:15px;line-height:1.8;color:var(--color-muted);max-width:78ch}
+.legal-doc section{margin-top:44px}
+.legal-doc h2{font-size:clamp(19px,2.2vw,25px);letter-spacing:-.4px;margin:0 0 12px;color:var(--color-white)}
+.legal-doc h3{font-size:14px;margin:22px 0 8px;color:var(--color-gold)}
+.legal-doc section p,.legal-doc li{font-size:14px;line-height:1.75;color:var(--color-muted);max-width:78ch}
+.legal-doc ul{padding-left:22px;margin:10px 0}
+.legal-doc li{margin:8px 0}
+.legal-doc a{color:var(--color-green);overflow-wrap:anywhere}
+.legal-doc code{font:12px monospace;color:var(--color-white);border:1px solid var(--color-forest-600);border-radius:4px;padding:1px 5px;background:var(--color-forest-850)}
+.legal-note{border-left:2px solid var(--color-gold);background:color-mix(in srgb, var(--color-gold) 4%, transparent);padding:12px 16px;font-size:13px;margin:20px 0;border-radius:0 6px 6px 0}
+.legal-lang{border-top:1px solid var(--color-forest-700);padding-top:30px}
+.legal-meta{display:flex;gap:20px;flex-wrap:wrap;font-size:11px;color:var(--color-muted-dark);margin:34px 0 0}
+.legal-doc .landing-footer{margin-top:52px}

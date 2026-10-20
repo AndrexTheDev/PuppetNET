@@ -12,12 +12,12 @@ export interface NetworkHandle {
   focus: (id: string) => void;
 }
 export interface PathHighlight { nodes: string[]; edges: string[] }
-interface Props { view: View | null; onSelect: (id: string, group: boolean) => void; onRatio: (ratio: number) => void; onClear: () => void;
+interface Props { view: View | null; onSelect: (id: string, group: boolean) => void; onSelectEdge: (id: string) => void; onRatio: (ratio: number) => void; onClear: () => void;
   colorMode?: 'type' | 'community'; path?: PathHighlight | null }
 const nextFrame = () => new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
-const NetworkGraph = forwardRef<NetworkHandle, Props>(function NetworkGraph({ view, onSelect, onRatio, onClear, colorMode = 'type', path = null }, ref) {
+const NetworkGraph = forwardRef<NetworkHandle, Props>(function NetworkGraph({ view, onSelect, onSelectEdge, onRatio, onClear, colorMode = 'type', path = null }, ref) {
   const host = useRef<HTMLDivElement>(null), sigma = useRef<Sigma | null>(null), current = useRef<{ version: number; graph: MultiDirectedGraph; keys: string[] } | null>(null);
-  const callbacks = useRef({ onSelect, onRatio, onClear }); callbacks.current = { onSelect, onRatio, onClear };
+  const callbacks = useRef({ onSelect, onSelectEdge, onRatio, onClear }); callbacks.current = { onSelect, onSelectEdge, onRatio, onClear };
   const viewRef = useRef<View | null>(view); viewRef.current = view;
   const focusRef = useRef('');
   const pendingFocus = useRef<string | null>(null);
@@ -104,6 +104,7 @@ const NetworkGraph = forwardRef<NetworkHandle, Props>(function NetworkGraph({ vi
         setFocused(node);
         callbacks.current.onSelect(node, Boolean(current.current?.graph.getNodeAttribute(node, 'group')));
       });
+      renderer.on('clickEdge', ({ edge }) => callbacks.current.onSelectEdge(edge));
       renderer.getCamera().on('updated', ({ ratio }) => callbacks.current.onRatio(ratio));
       const canvas = host.current.querySelector('canvas');
       const lost = (event: Event) => { event.preventDefault(); setError('WebGL-Kontext verloren. Seite neu laden oder weniger Daten anzeigen.'); };

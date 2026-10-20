@@ -92,3 +92,32 @@ test('empty entity publication has a reserved 404 route and postbuild cleanup', 
   const scripts = JSON.parse(read('apps/web/package.json')).scripts;
   assert.match(scripts.postbuild, /finalize-static-export/);
 });
+
+test('the legal page documents the erasure chain and the source policy', () => {
+  const page = read('apps/web/app/legal/page.tsx');
+  assert.ok(page.includes('public_released: false'), 'the technical erasure chain must be named');
+  assert.match(page, /Art\. 17/);
+  assert.match(page, /C-37\/20/);
+  assert.match(page, /C-601\/20/);
+  assert.match(page, /5\/2019/);
+  assert.ok(page.includes('lang="en"'), 'the page is bilingual DE+EN');
+  // Discoverability: both footers link it, and the sitemap lists it.
+  assert.ok(read('apps/web/app/page.tsx').includes('href="/legal/"'));
+  assert.ok(read('apps/web/app/dashboard/Dashboard.tsx').includes('href="/legal/"'));
+  const result = spawnSync(process.execPath, ['scripts/generate-seo.js'], { encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  const origin = JSON.parse(read('apps/web/public/data/seo-metadata.json')).origin;
+  assert.ok(read('apps/web/public/sitemap.xml').includes(`${origin}/legal/`));
+  const policy = read('docs/source-policy.md');
+  assert.match(policy, /C-37\/20/);
+  assert.ok(policy.includes('public_released'));
+});
+
+test('edge provenance reaches the worker contract and the inspector', () => {
+  assert.match(read('apps/web/app/dashboard/protocol.ts'), /kind: 'edgeDetail'; id: string/);
+  assert.match(read('apps/web/app/dashboard/graph.worker.ts'), /evidenceForEdge\(dataset, data\.id\)/);
+  assert.match(read('apps/web/app/dashboard/NetworkGraph.tsx'), /renderer\.on\('clickEdge'/);
+  const panel = read('apps/web/app/dashboard/SidePanel.tsx');
+  assert.ok(panel.includes('Quellen dieser Kante'));
+  assert.ok(panel.includes('AGGREGATED'), 'grouped edges explain the LoD limitation instead of inventing sources');
+});

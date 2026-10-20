@@ -140,7 +140,7 @@ Kanten-Evidenz), sichtbar als klickbare „Korrelations-Insights" im Dashboard �
 insight-freie Graphen exportieren byte-identisch weiter. 1312 Python-Tests,
 `ci:pages` grün, 0 zusätzliche Actions-Minuten.
 
-### Welle 5 — Vertrauen & Compliance (Differenzierung in der Nische)
+### Welle 5 — Vertrauen & Compliance (Differenzierung in der Nische) — ✅ umgesetzt (2026-10-20)
 
 - Öffentliche **Widerrufs-/Löschseite** mit dokumentiertem Ablauf: Die technische Kette
   existiert bereits (`public_released:false` → nächster Export entfernt Slices via
@@ -149,6 +149,19 @@ insight-freie Graphen exportieren byte-identisch weiter. 1312 Python-Tests,
   mehr frei öffentlich) → betrifft Wikidata-/Register-Quellen der Ingestion.
 - **Kanten-Provenienz in der UI**: Evidenz pro Kante sichtbar machen (Daten vorhanden) —
   „jede Kante trägt ihre Quelle" ist das Audit-Kriterium der Nische.
+
+**Geliefert (Welle 5)**: öffentliche Rechtsseite `/legal/` (voll zweisprachig DE+EN,
+im Sitemap, aus beiden Footern verlinkt) mit dem dokumentierten Lösch-/Widerspruchs-
+ablauf (DSGVO Art. 17 & 21: `public_released:false` → `approved()`-Veto →
+Manifest-Pruning im nächsten der zwei täglichen Läufe → Löschung regelmäßig ≤ 24 h,
+inkl. EDPB-5/2019-Delisting-Hinweis und ehrlicher Dritt-Cache-Grenze) und der
+Quellen-Policy nach EuGH C-37/20 + C-601/20 (kein Scraping zugangsbeschränkter
+Register, nur frei zugängliche Quellen mit dokumentierter Gewichtung);
+Operator-Vertiefung in `docs/source-policy.md`. Kanten-Provenienz im Workspace:
+ein Klick auf eine Kante öffnet den Inspector mit genau den Dokumenten dieser
+Verbindung (`clickEdge` → Worker-`edgeDetail` → `evidenceForEdge`), LoD-Gruppenkanten
+erklären ehrlich ihre Grenze statt Quellen zu erfinden; der Dashboard-Footer verlinkt
+die Rechtsseite. 0 zusätzliche Actions-Minuten (statische Seite + Browser-Code).
 
 ### Welle 6 — Reichweite (optional, Operator-Entscheidung)
 
@@ -164,7 +177,7 @@ Actions-Kosten, aber größerer Testaufwand → bewusst ans Ende priorisiert.
 | 2 Analyse-UI | Browser/Web Worker | **0** | ✅ umgesetzt (inkl. 2b) |
 | 3 Entitätsseiten | Pages-Build | **0** | ✅ umgesetzt |
 | 4 Ingestion-Qualität | bestehende ≤5-min-Jobs | **0** | ✅ umgesetzt |
-| 5 Compliance/Trust | statische Seiten + Doku | **0** | geplant |
+| 5 Compliance/Trust | statische Seiten + Doku | **0** | ✅ umgesetzt |
 | 6 i18n/PWA | Pages-Build/Browser | **0** | optional |
 
 Kein Schritt erzeugt neue Workflows, neue Cron-Jobs, längere Jobs oder bezahlte
@@ -314,7 +327,7 @@ evidence), rendered as clickable "correlation insights" in the dashboard —
 insight-free graphs keep exporting byte-identically. 1312 Python tests,
 `ci:pages` green, 0 extra Actions minutes.
 
-### Wave 5 — trust & compliance (differentiation in the niche)
+### Wave 5 — trust & compliance (differentiation in the niche) — ✅ implemented (2026-10-20)
 
 - Public **withdrawal/erasure page** with a documented flow: the technical chain already
   exists (`public_released:false` → next export removes slices via manifest pruning) —
@@ -323,6 +336,19 @@ insight-free graphs keep exporting byte-identically. 1312 Python tests,
   freely public) → affects the Wikidata/register sources of the ingestion.
 - **Edge provenance in the UI**: make per-edge evidence visible (the data exists) —
   "every edge carries its source" is the niche's audit criterion.
+
+**Shipped (Wave 5)**: a public legal page at `/legal/` (fully bilingual DE+EN, in the
+sitemap, linked from both footers) documenting the erasure/objection workflow
+(GDPR Art. 17 & 21: `public_released:false` → `approved()` veto → manifest pruning in
+the next of the two daily runs → erasure normally effective within ≤ 24 h, including
+the EDPB 5/2019 delisting note and the honest third-party-cache limitation) and the
+source policy following CJEU C-37/20 + C-601/20 (no scraping of access-restricted
+registers, freely accessible sources only, documented weighting ladder); operator
+deep-dive in `docs/source-policy.md`. Edge provenance in the workspace: clicking an
+edge opens the inspector with exactly the documents behind that one connection
+(`clickEdge` → worker `edgeDetail` → `evidenceForEdge`); LoD group edges honestly
+explain their limitation instead of inventing sources; the dashboard footer links the
+legal page. 0 extra Actions minutes (static page + browser code).
 
 ### Wave 6 — reach (optional, operator decision)
 
@@ -338,7 +364,7 @@ minutes but carry a larger testing burden → deliberately prioritized last.
 | 2 Analysis UI | browser/web worker | **0** | ✅ implemented (incl. 2b) |
 | 3 Entity pages | Pages build | **0** | ✅ implemented |
 | 4 Ingestion quality | existing ≤5-min jobs | **0** | ✅ implemented |
-| 5 Compliance/trust | static pages + docs | **0** | planned |
+| 5 Compliance/trust | static pages + docs | **0** | ✅ implemented |
 | 6 i18n/PWA | Pages build/browser | **0** | optional |
 
 No step creates new workflows, new cron jobs, longer jobs or paid services. The only

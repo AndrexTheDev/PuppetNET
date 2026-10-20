@@ -2,7 +2,7 @@
 import dynamic from 'next/dynamic';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import EntityTable, { type TableRow } from './EntityTable';
-import { COLORS, TYPES, LIMITS, decodeViewState, edgesToCSV, encodeViewState, nodesToCSV, rankSearch, resolveNodeRef, viewToJSON, type Evidence, type Filters, type GraphNode, type View, type ViewUrlState } from './graph-data';
+import { COLORS, TYPES, LIMITS, decodeViewState, edgesToCSV, encodeViewState, nodesToCSV, rankSearch, resolveNodeRef, viewToJSON, type Evidence, type Filters, type GraphEdge, type GraphNode, type View, type ViewUrlState } from './graph-data';
 import type { NetworkHandle, PathHighlight } from './NetworkGraph';
 import type { WorkerRequest, WorkerResponse } from './protocol';
 import { loadStaticGraph, requestResearch, type Standby } from '../../src/lib/dataFetcher';
@@ -15,7 +15,7 @@ const initialFilters: Filters = { confidence: 0, weight: 0, types: [...TYPES], l
 const number = (n = 0) => n.toLocaleString('de-DE');
 interface PathResult { ids: string[]; labels: string[]; types: string[]; edgeIds: string[]; hops: number }
 export default function Dashboard() {
-  const worker = useRef<Worker | null>(null), network = useRef<NetworkHandle>(null), version = useRef(0), selectedId = useRef<string | null>(null);
+  const worker = useRef<Worker | null>(null), network = useRef<NetworkHandle>(null), version = useRef(0), selectedId = useRef<string | null>(null), selectedEdgeId = useRef<string | null>(null);
   // Shareable permalink state: mode, query, focus, community, time window, color mode.
   const initialUrl = useRef<ViewUrlState>(typeof window === 'undefined' ? {} : decodeViewState(window.location.search));
   const [view, setView] = useState<View | null>(null), [busy, setBusy] = useState(true);
@@ -27,6 +27,7 @@ export default function Dashboard() {
   const [colorMode, setColorMode] = useState<'type' | 'community'>(initialUrl.current.color ?? 'type');
   const [announcement, setAnnouncement] = useState('');
   const [selected, setSelected] = useState<GraphNode | null>(null), [evidence, setEvidence] = useState<Evidence[]>([]);
+  const [selectedEdge, setSelectedEdge] = useState<GraphEdge | null>(null), [edgeEvidence, setEdgeEvidence] = useState<Evidence[]>([]);
   const [error, setError] = useState(''), [detailError, setDetailError] = useState(''), [layoutRunning, setLayoutRunning] = useState(false);
   const [sourceLabel, setSourceLabel] = useState('Bereitschaftsmodus'), [sourceForm, setSourceForm] = useState(false), [base, setBase] = useState(''), [token, setToken] = useState('');
   const [search, setSearch] = useState(initialUrl.current.q ?? ''), [listPage, setListPage] = useState(0);
@@ -49,7 +50,7 @@ export default function Dashboard() {
       ? 'Tabellenansicht geöffnet. Jeder Knoten ist als Zeile mit Aktionen verfügbar.'
       : next === 'map' ? 'Kartenansicht geöffnet.' : 'Netzwerkansicht geöffnet. Pfeiltasten bewegen den Fokus.');
   }, []);
-  const clearSelected = useCallback(() => { selectedId.current = null; setSelected(null); setEvidence([]); loadingDetail.current?.abort(); setDetailError(''); }, []);
+  const clearSelected = useCallback(() => { selectedId.current = null; setSelected(null); setEvidence([]); selectedEdgeId.current = null; setSelectedEdge(null); setEdgeEvidence([]); loadingDetail.current?.abort(); setDetailError(''); }, []);
   const send = useCallback((request: WorkerRequest) => worker.current?.postMessage(request), []);
   const requestView = useCallback((kind: 'filter' | 'reset' = 'filter') => { setBusy(true); setError(''); clearSelected(); setPathResult(null); setPathError(''); setBrokers(null); setAnalysisNotice(''); send({ kind, version: ++version.current, filters: filtersRef.current }); }, [send, clearSelected]);
   useEffect(() => {
@@ -59,6 +60,7 @@ export default function Dashboard() {
       if (data.kind === 'positions') network.current?.positions(data.version, data.positions);
       if (data.kind === 'layout') setLayoutRunning(data.running);
       if (data.kind === 'detail' && data.node?.id === selectedId.current) { setSelected(data.node); setEvidence(old => [...new Map([...old, ...data.evidence].map(d => [d.id, d])).values()]); }
+      if (data.kind === 'edgeDetail' && data.id === selectedEdgeId.current) setEdgeEvidence(data.evidence);
       if (data.kind === 'path') {
         if (!data.nodes || !data.edges) {
           setPathResult(null);
@@ -126,12 +128,29 @@ export default function Dashboard() {
   const onRatio = useCallback((ratio: number) => { if (busyRef.current) return; const bucket = ratio >= .55 ? 1 : ratio >= .18 ? .35 : .1; setFilters(f => f.ratio === bucket ? f : { ...f, ratio: bucket }); }, []);
   const select = useCallback((id: string, group = false) => {
     loadingDetail.current?.abort(); setDetailError(''); setEvidence([]); selectedId.current = id;
+    selectedEdgeId.current = null; setSelectedEdge(null); setEdgeEvidence([]);
     const node = view?.nodes.find(n => n.id === id);
     setSelected(node ?? null);
     setAnnouncement(node ? `Details geöffnet: ${node.label}.` : 'Details geöffnet.');
     if (group) return;
     send({ kind: 'detail', id });
 
+  }, [view, send]);
+  // Wave 5 edge provenance: clicking an edge shows exactly the documents that
+  // carry this one connection — the audit criterion of the niche.
+  const selectEdge = useCallback((id: string) => {
+    loadingDetail.current?.abort(); setDetailError(''); setEvidence([]);
+    selectedId.current = null; setSelected(null);
+    const edge = view?.edges.find(e => e.id === id);
+    if (!edge) return;
+    selectedEdgeId.current = id; setSelectedEdge(edge); setEdgeEvidence([]);
+    const labelOf = (key: string) => view?.nodes.find(n => n.id === key)?.label ?? key;
+    if (edge.type === 'AGGREGATED') {
+      setAnnouncement(`Aggregierte Gruppenkante geöffnet: ${edge.count?.toLocaleString('de-DE') ?? 0} gebündelte Verbindungen ohne eigene Quellenliste.`);
+      return;
+    }
+    setAnnouncement(`Kantendetails geöffnet: ${edge.type} von ${labelOf(edge.source)} nach ${labelOf(edge.target)}. Escape schließt die Details.`);
+    send({ kind: 'edgeDetail', id });
   }, [view, send]);
   function demo(count: number) {
     staticRequest.current?.abort(); pendingSource.current = count > 900 ? `Fiktiver Lasttest · ${number(count * 4)} Elemente` : 'Fiktive Demo';
@@ -280,13 +299,16 @@ export default function Dashboard() {
       <section className="visualization-panel" aria-label="Visualisierung"><div className="visualization-toolbar"><div className="view-tabs" role="group" aria-label="Darstellung"><button aria-pressed={mode === 'network'} aria-controls="visualization-stage" onClick={() => changeMode('network')}>◈ Netzwerk</button><button aria-pressed={mode === 'map'} aria-controls="visualization-stage" onClick={() => changeMode('map')}>◎ Karte</button><button aria-pressed={mode === 'list'} aria-controls="visualization-stage" onClick={() => changeMode('list')}>☷ Tabelle</button></div><button type="button" className="outline-button color-toggle" aria-pressed={colorMode === 'community'} disabled={mode !== 'network'} onClick={() => setColorMode(c => c === 'type' ? 'community' : 'type')}>Farbe: {colorMode === 'community' ? 'Community' : 'Typ'}</button><span className="live-indicator" role="status">{busy ? 'Verarbeitung …' : layoutRunning ? 'Layout aktiv' : 'Bereit'}</span></div>
         <div className="stats-bar"><div><strong>{number(view?.stats.filteredNodes)}</strong><span>Knoten im Filter</span></div><div><strong>{number(view?.stats.filteredEdges)}</strong><span>Beziehungen</span></div><div><strong>{number(view?.nodes.length)}</strong><span>GPU-Knoten / Gruppen</span></div><span className="lod-pill">{view?.stats.level ?? 'Laden'}</span></div>
         <details className="keyboard-help"><summary>Tastaturbedienung</summary><ul><li><kbd>Tab</kbd> springt in den Graphen, die Tabelle und den Inspector.</li><li><kbd>Pfeiltasten</kbd> bewegen den Fokus zwischen Knoten; <kbd>Pos1</kbd>/<kbd>Ende</kbd> springen an den Anfang oder das Ende.</li><li><kbd>Eingabe</kbd> oder <kbd>Leertaste</kbd> öffnet die Details, <kbd>Escape</kbd> schließt sie.</li><li><kbd>+</kbd>/<kbd>−</kbd> zoomen, <kbd>0</kbd> setzt die Ansicht zurück.</li><li>Die Registerkarte <strong>Tabelle</strong> ist die vollständige Textalternative zum WebGL-Canvas.</li></ul></details>
-        <div id="visualization-stage" className={mode === 'network' ? 'graph-pane' : 'graph-pane hidden-pane'}>{mode === 'network' && <NetworkGraph ref={network} view={view} onSelect={select} onRatio={onRatio} onClear={clearSelected} colorMode={colorMode} path={pathHighlight} />}<div className="graph-tools"><button aria-label="Vergrößern" onClick={() => network.current?.zoom(.65)}>+</button><button aria-label="Verkleinern" onClick={() => network.current?.zoom(1.5)}>−</button><button aria-label="Ansicht einpassen" onClick={() => network.current?.reset()}>⌖</button><button onClick={() => send({ kind: 'layout', running: !layoutRunning })}>{layoutRunning ? 'Pause' : 'Layout'}</button></div></div>
+        <div id="visualization-stage" className={mode === 'network' ? 'graph-pane' : 'graph-pane hidden-pane'}>{mode === 'network' && <NetworkGraph ref={network} view={view} onSelect={select} onSelectEdge={selectEdge} onRatio={onRatio} onClear={clearSelected} colorMode={colorMode} path={pathHighlight} />}<div className="graph-tools"><button aria-label="Vergrößern" onClick={() => network.current?.zoom(.65)}>+</button><button aria-label="Verkleinern" onClick={() => network.current?.zoom(1.5)}>−</button><button aria-label="Ansicht einpassen" onClick={() => network.current?.reset()}>⌖</button><button onClick={() => send({ kind: 'layout', running: !layoutRunning })}>{layoutRunning ? 'Pause' : 'Layout'}</button></div></div>
         {mode === 'map' && <><MapModule points={view?.mapPoints ?? []} onSelect={id => select(id)} /><div className="data-footnote">{number(view?.stats.locatedNodes)} Knoten mit gültigen Koordinaten. Räumlich aggregiert, maximal 1.000 Marker.</div></>}
         {mode === 'list' && <EntityTable rows={tableRows} total={list.length} page={listPage} pageSize={pageSize} query={search} onQuery={value => { setSearch(value); setListPage(0); }} onPage={setListPage} onSelect={select} onFocusGraph={id => { changeMode('network'); select(id); requestAnimationFrame(() => network.current?.focus(id)); }} />}
         <div className="visualization-footer"><span><span className="status-dot" /> {number(view?.stats.totalNodes)} Knoten geladen</span><span className="view-export"><button type="button" onClick={() => downloadText('puppetnet-knoten.csv', nodesToCSV(view?.nodes ?? []), 'text/csv;charset=utf-8')}>Knoten CSV ↓</button><button type="button" onClick={() => downloadText('puppetnet-kanten.csv', edgesToCSV(view?.edges ?? []), 'text/csv;charset=utf-8')}>Kanten CSV ↓</button><button type="button" onClick={() => downloadText('puppetnet-ansicht.json', viewToJSON({ nodes: view?.nodes ?? [], edges: view?.edges ?? [], analytics: view?.analytics, insights: view?.insights }), 'application/json')}>JSON ↓</button></span><span>{view?.stats.focused ? <button onClick={() => requestView('reset')}>← Gesamten Ausschnitt anzeigen</button> : 'Klick: untersuchen · Scroll: zoomen'}</span></div>
       </section>
-      <SidePanel node={selected} evidence={evidence} detailError={detailError} onClose={() => { clearSelected(); setAnnouncement('Details geschlossen.'); }} onDrill={group => { clearSelected(); setBusy(true); send({ kind: 'drill', group, version: ++version.current, filters: filtersRef.current }); }} />
+      <SidePanel node={selected} evidence={evidence} edge={selectedEdge} edgeEvidence={edgeEvidence} edgeLabels={{
+        source: selectedEdge ? view?.nodes.find(n => n.id === selectedEdge.source)?.label ?? selectedEdge.source : '',
+        target: selectedEdge ? view?.nodes.find(n => n.id === selectedEdge.target)?.label ?? selectedEdge.target : '',
+      }} detailError={detailError} onClose={() => { clearSelected(); setAnnouncement('Details geschlossen.'); }} onDrill={group => { clearSelected(); setBusy(true); send({ kind: 'drill', group, version: ++version.current, filters: filtersRef.current }); }} />
     </div>}
-    <footer className="dashboard-footer"><span>PUPPETNET / OPEN-SOURCE INTELLIGENCE</span><span>Sigma.js 4 · Graphology · Leaflet · OpenStreetMap</span></footer>
+    <footer className="dashboard-footer"><span>PUPPETNET / OPEN-SOURCE INTELLIGENCE</span><span>Sigma.js 4 · Graphology · Leaflet · OpenStreetMap</span><a className="footer-legal" href="/legal/">Recht, Löschung &amp; Quellen-Policy</a></footer>
   </main>;
 }

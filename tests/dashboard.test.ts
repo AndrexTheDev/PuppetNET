@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
-import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, namePartition, brokerShares, normalizeInsights, ANALYSIS_LIMITS, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
+import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, namePartition, brokerShares, normalizeInsights, ANALYSIS_LIMITS, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
 import { apiBase, readResponse } from '../apps/web/app/dashboard/api';
 const filters: Filters = { confidence: 0, weight: 0, types: [...TYPES], lod: true, ratio: 1 };
 test('normalizes Worker and Graphology nodes without inventing coordinates', () => {
@@ -245,4 +245,19 @@ test('carries, validates and bounds export insights', () => {
   assert.deepEqual(direct[0].evidence, ['1', 'e']);
   const capped = normalizeInsights(Array.from({ length: 40 }, (_, i) => ({ rule: 'r', title: `t${i}`, description: 'd', support: .5, entities: [], evidence: [] })));
   assert.equal(capped.length, 24, 'the UI never renders more than the export cap');
+});
+
+test('edge evidence resolves publication documents with honest fallbacks', () => {
+  const data = normalizeDataset({
+    nodes: [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }, { id: 'doc:x', name: 'Referenced Node Doc' }],
+    edges: [{ source: 'a', target: 'b', id: 'e1', doc_ids: ['doc:1', 'doc:x', 'doc:missing'] }],
+    evidence: [{ id: 'doc:1', title: 'Registerauszug', url: 'https://example.org/1' }],
+  });
+  const evidence = evidenceForEdge(data, data.edges[0].id);
+  assert.equal(evidence.length, 3);
+  assert.equal(evidence[0].title, 'Registerauszug');
+  assert.equal(evidence[0].url, 'https://example.org/1');
+  assert.equal(evidence[1].title, 'Referenced Node Doc', 'a document referenced by node id resolves to its label');
+  assert.equal(evidence[2].title, 'doc:missing', 'unknown references stay honest placeholders');
+  assert.deepEqual(evidenceForEdge(data, 'no-such-edge'), []);
 });

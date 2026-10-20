@@ -6,6 +6,7 @@ export type WorkerRequest =
   | { kind: 'drill'; version: number; group: string; filters: Filters }
   | { kind: 'reset'; version: number; filters: Filters }
   | { kind: 'detail'; id: string }
+  | { kind: 'edgeDetail'; id: string }
   | { kind: 'path'; source: string; target: string }
   | { kind: 'broker' }
   | { kind: 'louvain'; active: boolean }
@@ -15,6 +16,7 @@ export type WorkerResponse =
   | { kind: 'positions'; version: number; positions: Float32Array }
   | { kind: 'layout'; running: boolean }
   | { kind: 'detail'; node?: GraphNode; evidence: Evidence[] }
+  | { kind: 'edgeDetail'; id: string; evidence: Evidence[] }
   | { kind: 'path'; source: string; target: string; nodes: string[] | null;
       edges: { id: string; source: string; target: string; type: string }[] | null; hops: number }
   | { kind: 'broker'; version: number; brokers: { id: string; label: string; share: number }[]; notice?: string }

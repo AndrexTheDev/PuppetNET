@@ -98,3 +98,8 @@
 .insight-description{margin:4px 0 6px;font-size:11px;color:var(--color-muted);line-height:1.5}
 .insight-entities{display:flex;flex-wrap:wrap;gap:4px}
 .insight-entities .text-button{font-size:11px;padding:2px 7px}
+
+/* Wave 5: edge provenance inspector (token-only colours). */
+.edge-badge{color:var(--color-gold)}
+.dashboard-footer .footer-legal{font-size:11px;color:var(--color-muted);text-decoration:none;border-bottom:1px solid var(--color-forest-600)}
+.dashboard-footer .footer-legal:hover{color:var(--color-gold)}
