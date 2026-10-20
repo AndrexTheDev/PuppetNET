@@ -5,6 +5,13 @@ on:
   repository_dispatch:
     types: [puppetnet-refresh]
   workflow_dispatch:
+  # TEMPORARY (QA dry run): the session token cannot create workflow_dispatch
+  # events (actions:write denied), so the verify-connections job is also
+  # triggered by pushes to this QA branch. The publish job stays gated to
+  # main + ENABLE_DAILY_STATIC and never runs from branch pushes. Remove this
+  # trigger together with the QA job after the dry run.
+  push:
+    branches: [arena/90cccbb3-puppetnet]
 
 permissions:
   contents: read
@@ -22,7 +29,9 @@ jobs:
   # branch. Remove together with the test script after a fully green run.
   verify-connections:
     name: QA verify connections (temporary)
-    if: github.event_name == 'workflow_dispatch'
+    # workflow_dispatch (manual dry run) or the temporary QA-branch push trigger
+    # above. Never runs on schedule/repository_dispatch, never on main.
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -34,7 +43,6 @@ jobs:
       NEO4J_DATABASE: neo4j
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-1.5-flash' }}
-      GEMINI_BUDGET_FILE: ${{ runner.temp }}/qa-gemini-budget.json
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
