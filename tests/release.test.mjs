@@ -228,3 +228,17 @@ test('wave 10: path chronology and failure simulation stay honest', () => {
   assert.ok(dashboard.includes("t('dash.vulnImpact',"), 'the failure simulation is shown next to each articulation point');
   assert.ok(!/Math\.random/.test(data.match(/export function pathTimeline[\s\S]*?\n}/)?.[0] ?? ''), 'no randomness in chronology');
 });
+
+test('wave 11: research notes stay local and the case report stays reproducible', () => {
+  const data = read('apps/web/app/dashboard/graph-data.ts');
+  assert.match(data, /export const NOTE_STORAGE_KEY = 'puppetnet\.notes\.v1'/, 'notes use a versioned local key');
+  assert.match(data, /export const NOTE_LIMIT = 2_000/);
+  assert.match(data, /export function readNotes\(raw: unknown\): Record<string, string>/, 'stored notes are sanitized, never trusted');
+  assert.match(data, /export function caseReport\(input: CaseReportInput, generated: string, lang: 'de' \| 'en' = 'de'\)/, 'the report takes its timestamp as an argument');
+  assert.doesNotMatch(data.match(/export function caseReport[\s\S]*?\n}/)?.[0] ?? '', /Date\.now|Math\.random/, 'no hidden nondeterminism in the report');
+  const dashboard = read('apps/web/app/dashboard/Dashboard.tsx');
+  assert.ok(dashboard.includes('window.localStorage.getItem(NOTE_STORAGE_KEY)'), 'notes load from this browser only');
+  assert.ok(!/fetch\([^)]*notes/i.test(dashboard), 'notes are never uploaded');
+  assert.ok(dashboard.includes("t('dash.reportButton')"), 'the report export is dictionary-driven');
+  assert.ok(read('apps/web/app/dashboard/SidePanel.tsx').includes("t('inspector.noteHint')"), 'the local-only promise is stated in the inspector');
+});

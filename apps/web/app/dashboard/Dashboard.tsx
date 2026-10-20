@@ -2,7 +2,7 @@
 import dynamic from 'next/dynamic';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import EntityTable, { type TableRow } from './EntityTable';
-import { COLORS, TYPES, LIMITS, decodeViewState, edgesToCSV, encodeViewState, monthWindow, nodesToCSV, rankSearch, resolveNodeRef, viewToJSON, type Evidence, type Filters, type GraphEdge, type GraphNode, type PathTimeline, type View, type ViewUrlState } from './graph-data';
+import { COLORS, TYPES, LIMITS, NOTE_STORAGE_KEY, caseReport, decodeViewState, edgesToCSV, encodeViewState, monthWindow, nodesToCSV, normalizeNote, rankSearch, readNotes, resolveNodeRef, viewToJSON, type Evidence, type Filters, type GraphEdge, type GraphNode, type PathTimeline, type View, type ViewUrlState } from './graph-data';
 import type { NetworkHandle, PathHighlight } from './NetworkGraph';
 import type { WorkerRequest, WorkerResponse } from './protocol';
 import { loadStaticGraph, requestResearch, type Standby } from '../../src/lib/dataFetcher';
@@ -45,6 +45,10 @@ export default function Dashboard() {
   const staticRequest = useRef<AbortController | null>(null), reloadStatic = useRef<(() => void) | null>(null);
   const pendingSource = useRef('Bereitschaftsmodus'), committedSource = useRef('Bereitschaftsmodus');
   const [notice, setNotice] = useState('');
+  // Wave 11: research notes live in localStorage only — loaded once, persisted
+  // after every change, never sent to a server.
+  const [notes, setNotes] = useState<Record<string, string>>({});
+  const notesReady = useRef(false);
   const initialFocus = useRef(initialUrl.current.focus ?? null);
   // Wave 6 i18n: refs keep the mount-effect and worker-handler closures stable
   // while the visible strings follow the active language.
@@ -137,6 +141,17 @@ export default function Dashboard() {
   }, []);
   const boot = useRef(true);
   useEffect(() => { if (boot.current) { boot.current = false; return; } const timeout = setTimeout(() => requestView(), 180); return () => clearTimeout(timeout); }, [filters, requestView]);
+  useEffect(() => {
+    try { setNotes(readNotes(window.localStorage.getItem(NOTE_STORAGE_KEY))); } catch { /* storage blocked: notes stay in memory */ }
+    notesReady.current = true;
+  }, []);
+  useEffect(() => {
+    if (!notesReady.current) return;
+    try {
+      if (Object.keys(notes).length) window.localStorage.setItem(NOTE_STORAGE_KEY, JSON.stringify(notes));
+      else window.localStorage.removeItem(NOTE_STORAGE_KEY);
+    } catch { /* private mode / quota: the session keeps working, nothing is lost silently in the UI */ }
+  }, [notes]);
   // Shareable permalinks: replaceState mirrors the investigation state into the
   // URL without adding history entries (bound values only, no free text blobs).
   useEffect(() => {
@@ -382,6 +397,7 @@ export default function Dashboard() {
           </div>
           {egoStatus && <p className="muted" role="status">{egoStatus}</p>}
         </div>
+        {Object.keys(notes).length > 0 && <p className="muted" role="status">{t('dash.notesCount', { count: number(Object.keys(notes).length) })}</p>}
         <div className="filter-foot"><span>○</span><p>{t('dash.footNote')}</p></div>
       </aside>
       <section className="visualization-panel" aria-label={t('dash.vizAria')}><div className="visualization-toolbar"><div className="view-tabs" role="group" aria-label={t('dash.tabsAria')}><button aria-pressed={mode === 'network'} aria-controls="visualization-stage" onClick={() => changeMode('network')}>◈ {t('dash.tabNetwork')}</button><button aria-pressed={mode === 'map'} aria-controls="visualization-stage" onClick={() => changeMode('map')}>◎ {t('dash.tabMap')}</button><button aria-pressed={mode === 'list'} aria-controls="visualization-stage" onClick={() => changeMode('list')}>☷ {t('dash.tabList')}</button></div><button type="button" className="outline-button color-toggle" aria-pressed={colorMode === 'community'} disabled={mode !== 'network'} onClick={() => setColorMode(c => c === 'type' ? 'community' : 'type')}>{t('dash.colorLabel', { mode: colorMode === 'community' ? 'Community' : t('dash.colorType') })}</button><span className="live-indicator" role="status">{busy ? t('dash.liveProcessing') : layoutRunning ? t('dash.liveLayout') : t('dash.liveReady')}</span></div>
@@ -396,12 +412,13 @@ export default function Dashboard() {
         <div id="visualization-stage" className={mode === 'network' ? 'graph-pane' : 'graph-pane hidden-pane'}>{mode === 'network' && <NetworkGraph ref={network} view={view} onSelect={select} onSelectEdge={selectEdge} onRatio={onRatio} onClear={clearSelected} colorMode={colorMode} path={pathHighlight} />}<div className="graph-tools"><button aria-label={t('dash.zoomInAria')} onClick={() => network.current?.zoom(.65)}>+</button><button aria-label={t('dash.zoomOutAria')} onClick={() => network.current?.zoom(1.5)}>−</button><button aria-label={t('dash.fitAria')} onClick={() => network.current?.reset()}>⌖</button><button onClick={() => send({ kind: 'layout', running: !layoutRunning })}>{layoutRunning ? 'Pause' : 'Layout'}</button></div></div>
         {mode === 'map' && <><MapModule points={view?.mapPoints ?? []} onSelect={id => select(id)} /><div className="data-footnote">{t('dash.mapFootnote', { count: number(view?.stats.locatedNodes) })}</div></>}
         {mode === 'list' && <EntityTable rows={tableRows} total={list.length} page={listPage} pageSize={pageSize} query={search} onQuery={value => { setSearch(value); setListPage(0); }} onPage={setListPage} onSelect={select} onFocusGraph={id => { changeMode('network'); select(id); requestAnimationFrame(() => network.current?.focus(id)); }} />}
-        <div className="visualization-footer"><span><span className="status-dot" /> {t('dash.nodesLoaded', { count: number(view?.stats.totalNodes) })}</span><span className="view-export"><button type="button" onClick={() => downloadText('puppetnet-knoten.csv', nodesToCSV(view?.nodes ?? []), 'text/csv;charset=utf-8')}>{t('dash.nodesCsv')}</button><button type="button" onClick={() => downloadText('puppetnet-kanten.csv', edgesToCSV(view?.edges ?? []), 'text/csv;charset=utf-8')}>{t('dash.edgesCsv')}</button><button type="button" onClick={() => downloadText('puppetnet-ansicht.json', viewToJSON({ nodes: view?.nodes ?? [], edges: view?.edges ?? [], analytics: view?.analytics, insights: view?.insights }), 'application/json')}>JSON ↓</button></span><span>{view?.stats.focused ? <button onClick={() => requestView('reset')}>{t('dash.showAll')}</button> : t('dash.clickHintFoot')}</span></div>
+        <div className="visualization-footer"><span><span className="status-dot" /> {t('dash.nodesLoaded', { count: number(view?.stats.totalNodes) })}</span><span className="view-export"><button type="button" onClick={() => downloadText('puppetnet-knoten.csv', nodesToCSV(view?.nodes ?? []), 'text/csv;charset=utf-8')}>{t('dash.nodesCsv')}</button><button type="button" onClick={() => downloadText('puppetnet-kanten.csv', edgesToCSV(view?.edges ?? []), 'text/csv;charset=utf-8')}>{t('dash.edgesCsv')}</button><button type="button" onClick={() => downloadText('puppetnet-ansicht.json', viewToJSON({ nodes: view?.nodes ?? [], edges: view?.edges ?? [], analytics: view?.analytics, insights: view?.insights }), 'application/json')}>JSON ↓</button><button type="button" aria-label={t('dash.reportAria')} onClick={() => { if (!view) return; downloadText('puppetnet-fallbericht.md', caseReport({ stats: view.stats, nodes: view.nodes, edges: view.edges, analytics: view.analytics, insights: view.insights, timeline: view.timeline, duplicates: view.duplicates, vulnerability: view.vulnerability, notes }, new Date().toISOString(), lang), 'text/markdown;charset=utf-8'); }}>{t('dash.reportButton')}</button></span><span>{view?.stats.focused ? <button onClick={() => requestView('reset')}>{t('dash.showAll')}</button> : t('dash.clickHintFoot')}</span></div>
       </section>
       <SidePanel node={selected} evidence={evidence} edge={selectedEdge} edgeEvidence={edgeEvidence} edgeLabels={{
         source: selectedEdge ? view?.nodes.find(n => n.id === selectedEdge.source)?.label ?? selectedEdge.source : '',
         target: selectedEdge ? view?.nodes.find(n => n.id === selectedEdge.target)?.label ?? selectedEdge.target : '',
-      }} detailError={detailError} onEgo={id => requestEgo(id)} onClose={() => { clearSelected(); setAnnouncement(t('dash.detailsClosed')); }} onDrill={group => { clearSelected(); setBusy(true); send({ kind: 'drill', group, version: ++version.current, filters: filtersRef.current }); }} />
+      }} detailError={detailError} note={selected && !selected.group ? notes[selected.id] ?? '' : ''} onEgo={id => requestEgo(id)}
+      onNote={text => { if (!selected || selected.group) return; const clean = normalizeNote(text); setNotes(current => { const next = { ...current }; if (clean) next[selected.id] = clean; else delete next[selected.id]; return next; }); }} onClose={() => { clearSelected(); setAnnouncement(t('dash.detailsClosed')); }} onDrill={group => { clearSelected(); setBusy(true); send({ kind: 'drill', group, version: ++version.current, filters: filtersRef.current }); }} />
     </div>}
     <footer className="dashboard-footer"><span>PUPPETNET / OPEN-SOURCE INTELLIGENCE</span><span>Sigma.js 4 · Graphology · Leaflet · OpenStreetMap</span><a className="footer-legal" href="/legal/">{t('dash.legalLink')}</a></footer>
   </main>;

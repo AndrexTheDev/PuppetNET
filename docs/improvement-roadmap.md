@@ -273,6 +273,27 @@ plausibler Kette) und Ausfall-Hinweis in der Verwundbarkeitsliste (DE/EN), token
 CSS, 2 neue Datenlagen-Tests (dashboard 29) + 1 neuer Release-Pin (release 16) —
 `ci:pages` grün, 0 zusätzliche Actions-Minuten.
 
+### Welle 11 — Fallarbeit (Notizen + Fallbericht) — ✅ umgesetzt (2026-10-20)
+
+- **Ermittlungsnotizen pro Entität**: Beobachtungen, Hypothesen und offene Fragen direkt
+  im Inspector — gespeichert **nur im Browser** (localStorage, versionierter Schlüssel),
+  nie an einen Server gesendet, hart auf 2.000 Zeichen begrenzt, beim Lesen aus dem
+  Speicher erneut bereinigt (kaputte/leere/fremde Einträge werden verworfen statt
+  vertraut). Ein Hinweis im Panel macht diese Zusage sichtbar; die Anzahl annotierter
+  Entitäten steht im Filter-Panel.
+- **Fallbericht (Markdown)**: ein deterministischer Bericht für die Fallakte —
+  Ausschnitt, Notizen (alphabetisch, mehrzeilig, ohne leere Einträge), Analytik,
+  Regelhinweise, strukturelle Befunde inklusive Ausfall-Simulation, Dubletten und
+  monatliche Erwähnungen. Der Zeitstempel wird von außen übergeben (kein verstecktes
+  `Date.now()`), der Bericht ist zweisprachig (DE/EN) und schließt mit der klaren
+  Trennung: **„Hinweise, keine Beweise"**.
+
+**Geliefert (Welle 11)**: `normalizeNote()` / `readNotes()` / `caseReport()` (reine,
+getestete Funktionen), Notizblock im Inspector (DE/EN, Statusansagen, Zeichenzähler),
+Fallbericht-Button im Export-Footer, token-only CSS, 2 neue Datenlagen-Tests
+(dashboard 31) + 1 neuer Release-Pin (release 17) — `ci:pages` grün, 0 zusätzliche
+Actions-Minuten.
+
 ## 4. Budget-Zusammenfassung
 
 | Welle | Ort | Zusätzliche Actions-Minuten | Status |
@@ -287,6 +308,7 @@ CSS, 2 neue Datenlagen-Tests (dashboard 29) + 1 neuer Release-Pin (release 16) �
 | 8 Entitätsauflösung/Zeitachse | Browser/Web Worker | **0** | ✅ umgesetzt |
 | 9 Bündelung/Verwundbarkeit | Browser/Web Worker | **0** | ✅ umgesetzt |
 | 10 Zeitplausibilität/Ausfall | Browser/Web Worker | **0** | ✅ umgesetzt |
+| 11 Notizen/Fallbericht | Browser (localStorage) | **0** | ✅ umgesetzt |
 
 Kein Schritt erzeugt neue Workflows, neue Cron-Jobs, längere Jobs oder bezahlte
 Dienste. Die einzigen verbrauchsrelevanten Grenzen sind die bestehenden: 3
@@ -564,6 +586,25 @@ plausible chain) and the failure hint in the vulnerability list (DE/EN), token-o
 2 new data-layer tests (dashboard 29) + 1 new release pin (release 16) — `ci:pages`
 green, 0 extra Actions minutes.
 
+### Wave 11 — case work (notes + case report) — ✅ implemented (2026-10-20)
+
+- **Research notes per entity**: observations, hypotheses and open questions straight in
+  the inspector — stored **only in this browser** (localStorage, versioned key), never
+  sent to a server, hard-capped at 2,000 characters, re-sanitized on every read
+  (broken, empty or foreign entries are dropped instead of trusted). The panel states
+  that promise explicitly; the number of annotated entities shows in the filter panel.
+- **Case report (Markdown)**: a deterministic report for the case folder — scope, notes
+  (alphabetical, multi-line, empty ones excluded), analytics, rule hits, structural
+  findings including the failure simulation, duplicates and the monthly mention
+  envelope. The timestamp is passed in (no hidden `Date.now()`), the report is
+  bilingual (DE/EN) and closes with the clear split: **"hints, not proof"**.
+
+**Delivered (Wave 11)**: `normalizeNote()` / `readNotes()` / `caseReport()` (pure, tested
+functions), note block in the inspector (DE/EN, status announcements, character
+counter), case-report button in the export footer, token-only CSS, 2 new data-layer
+tests (dashboard 31) + 1 new release pin (release 17) — `ci:pages` green, 0 extra
+Actions minutes.
+
 ## 4. Budget summary
 
 | Wave | Location | Additional Actions minutes | Status |
@@ -578,6 +619,7 @@ green, 0 extra Actions minutes.
 | 8 entity resolution/timeline | browser/web worker | **0** | ✅ implemented |
 | 9 bundling/vulnerability | browser/web worker | **0** | ✅ implemented |
 | 10 chronology/failure | browser/web worker | **0** | ✅ implemented |
+| 11 notes/case report | browser (localStorage) | **0** | ✅ implemented |
 
 No step creates new workflows, new cron jobs, longer jobs or paid services. The only
 consumption-relevant limits remain the existing ones: 3 reservations/UTC day, 5-minute

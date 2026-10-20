@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
-import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, monthWindow, bundleEdges, structuralVulnerability, pathTimeline, EGO_DEPTH_LIMIT, VULNERABILITY_NODE_LIMIT, normalizeInsights, ANALYSIS_LIMITS, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
+import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, monthWindow, bundleEdges, structuralVulnerability, pathTimeline, normalizeNote, readNotes, caseReport, NOTE_LIMIT, EGO_DEPTH_LIMIT, VULNERABILITY_NODE_LIMIT, normalizeInsights, ANALYSIS_LIMITS, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
 import { apiBase, readResponse } from '../apps/web/app/dashboard/api';
 const filters: Filters = { confidence: 0, weight: 0, types: [...TYPES], lod: true, ratio: 1 };
 test('normalizes Worker and Graphology nodes without inventing coordinates', () => {
@@ -452,4 +452,46 @@ test('wave 10 failure simulation counts the parts left behind', () => {
     edges: [{ source: 'a', target: 'b' }, { source: 'b', target: 'c' }],
   });
   assert.deepEqual(structuralVulnerability(path.nodes, path.edges)?.cutVertices.find(v => v.id === 'b')?.impact, { components: 2, largest: 1 });
+});
+
+test('wave 11 research notes normalize, cap and drop junk instead of trusting storage', () => {
+  assert.equal(normalizeNote('  line1\r\nline2  '), 'line1\nline2', 'newlines normalize, edges trim');
+  assert.equal(normalizeNote('x'.repeat(2500)).length, NOTE_LIMIT, 'notes are capped');
+  assert.equal(normalizeNote(42), '', 'non-strings never become notes');
+  assert.equal(normalizeNote(null), '');
+  assert.deepEqual(readNotes(JSON.stringify({ a: '  keep  ', b: '', c: 7 })), { a: 'keep' }, 'empty and non-string entries drop out');
+  assert.deepEqual(readNotes('not json'), {}, 'broken storage is empty, not fatal');
+  assert.deepEqual(readNotes(null), {});
+  const many = Object.fromEntries(Array.from({ length: 600 }, (_, i) => [`n${i}`, `note ${i}`]));
+  assert.equal(Object.keys(readNotes(JSON.stringify(many))).length, 500, 'the store stays bounded');
+  assert.equal(readNotes({ a: 'x'.repeat(5000) }).a.length, NOTE_LIMIT, 'stored notes are re-capped on read');
+});
+
+test('wave 11 case report is deterministic, bilingual and keeps hints and proof apart', () => {
+  const data = normalizeDataset({
+    nodes: [{ key: 'z', name: 'Zeta GmbH' }, { key: 'm', name: 'Alpha Meier' }],
+    edges: [{ source: 'm', target: 'z', type: 'OWNS' }], evidence: [],
+    analytics: { communities: 1, density: 0.5, hubs: [{ id: 'z', name: 'Zeta GmbH', rank: 0.42, degree: 3 }] },
+  });
+  const stats = { totalNodes: 2, totalEdges: 1, filteredNodes: 2, filteredEdges: 1, locatedNodes: 0, grouped: false, level: 'Einzelknoten', focused: false, truncated: false };
+  const input = {
+    stats, nodes: data.nodes, edges: data.edges, analytics: data.analytics,
+    timeline: [{ month: '2026-01', count: 4 }],
+    duplicates: [{ label: 'Zeta GmbH', ids: ['z', 'z2'], sameType: true }],
+    vulnerability: { cutVertices: [{ id: 'm', label: 'Alpha Meier', degree: 1, impact: { components: 2, largest: 1 } }], cutEdges: 1, maxCore: 1, maxCoreSize: 2 },
+    notes: { z: 'Geschäftsführerin prüfen\nzweite Quelle fehlt', m: '   ' },
+  };
+  const report = caseReport(input, '2026-10-20T12:00:00.000Z');
+  assert.ok(report.startsWith('# PuppetNET — Fallbericht'), 'German by default');
+  assert.ok(report.includes('Erzeugt: 2026-10-20T12:00:00.000Z'), 'timestamps are passed in, not invented');
+  assert.ok(report.includes('## Ermittlungsnotizen (1)'), 'empty notes never inflate the count');
+  assert.ok(report.includes('- **Zeta GmbH** (`z`)\n  Geschäftsführerin prüfen\n  zweite Quelle fehlt'), 'multi-line notes keep their structure');
+  assert.ok(report.includes('zerfällt in 2 Teile, größter 1'), 'the failure simulation travels into the report');
+  assert.ok(report.includes('Hinweise, keine Beweise'), 'the closing line keeps hints and proof apart');
+  assert.equal(caseReport(input, '2026-10-20T12:00:00.000Z'), report, 'deterministic');
+  const english = caseReport(input, '2026-10-20T12:00:00.000Z', 'en');
+  assert.ok(english.startsWith('# PuppetNET — case report'));
+  assert.ok(english.includes('View level: single nodes'), 'the view level is translated, not leaked');
+  assert.ok(english.includes('Hints, not proof'), 'the disclaimer travels');
+  assert.equal(caseReport({ stats, nodes: data.nodes, edges: data.edges }, '2026-10-20'), caseReport({ stats, nodes: data.nodes, edges: data.edges }, '2026-10-20'), 'sparse input stays deterministic');
 });

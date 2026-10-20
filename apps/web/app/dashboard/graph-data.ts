@@ -625,6 +625,123 @@ const csvCell = (value: string | number | undefined): string => {
 };
 
 /** RFC-4180 CSV of the visible view — client-side reporting without a server. */
+/** Wave 11 research notes are case work, not data: they live only in this
+ * browser (localStorage), are capped per note and never leave the device unless
+ * the investigator exports them on purpose. */
+export const NOTE_LIMIT = 2_000;
+export const NOTE_STORAGE_KEY = 'puppetnet.notes.v1';
+export function normalizeNote(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  return value.replace(/\r\n?/g, '\n').trim().slice(0, NOTE_LIMIT);
+}
+/** Sanitizes whatever localStorage handed back: junk, empty values and
+ * non-string notes are dropped instead of trusted; the store stays bounded. */
+export function readNotes(raw: unknown): Record<string, string> {
+  let parsed: unknown = raw;
+  if (typeof raw === 'string') {
+    try { parsed = JSON.parse(raw); } catch { return {}; }
+  }
+  const out: Record<string, string> = {};
+  let count = 0;
+  for (const [key, value] of Object.entries(record(parsed))) {
+    if (count >= 500) break;
+    const id = text(key, 200), note = normalizeNote(value);
+    if (!id || !note) continue;
+    out[id] = note; count++;
+  }
+  return out;
+}
+export interface CaseReportInput {
+  stats: View['stats'];
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  analytics?: GraphAnalytics;
+  insights?: GraphInsight[];
+  timeline?: { month: string; count: number }[];
+  duplicates?: { label: string; ids: string[]; sameType: boolean }[];
+  vulnerability?: Vulnerability;
+  notes?: Record<string, string>;
+}
+/** Wave 11 case report: a deterministic Markdown file for the case folder —
+ * scope, research notes, analytics, rule hits, structural findings, duplicates
+ * and the temporal envelope, in the UI language. `generated` is passed in so the
+ * report stays reproducible in tests; the closing line keeps hints and proof
+ * apart. */
+const CASE_REPORT_TEXT = {
+  de: {
+    title: '# PuppetNET — Fallbericht', generated: 'Erzeugt', scope: 'Ausschnitt', of: 'von',
+    level: 'Ansichtsebene', focus: 'Fokus', lod: 'LoD-Gruppen', yes: 'ja', no: 'nein',
+    notes: 'Ermittlungsnotizen', noNotes: '_Keine Notizen erfasst._', analytics: 'Analytik',
+    communities: 'Communities', density: 'Dichte', range: 'Zeitraum', hubs: 'Hubs',
+    structure: 'Struktur', cutEdges: 'Schnittkanten', edges: 'Kanten', kcore: 'max. k-Kern', nodes: 'Knoten',
+    articulation: 'Artikulationspunkt', degree: 'Grad', splits: 'zerfällt in {parts} Teile, größter {largest}',
+    rules: 'Regelhinweise', duplicates: 'Mögliche Dubletten', mixed: 'gemischte Typen',
+    timeline: 'Erwähnungen pro Monat',
+    footer: 'Hinweise, keine Beweise: Quellen prüfen; personenbezogene Daten nur mit Rechtsgrundlage verarbeiten.',
+  },
+  en: {
+    title: '# PuppetNET — case report', generated: 'Generated', scope: 'Slice', of: 'of',
+    level: 'View level', focus: 'Focus', lod: 'LoD groups', yes: 'yes', no: 'no',
+    notes: 'Research notes', noNotes: '_No notes recorded._', analytics: 'Analytics',
+    communities: 'Communities', density: 'Density', range: 'Time range', hubs: 'Hubs',
+    structure: 'Structure', cutEdges: 'Cut edges', edges: 'edges', kcore: 'max. k-core', nodes: 'nodes',
+    articulation: 'Articulation point', degree: 'degree', splits: 'splits into {parts} parts, largest {largest}',
+    rules: 'Rule hits', duplicates: 'Possible duplicates', mixed: 'mixed types',
+    timeline: 'Mentions per month',
+    footer: 'Hints, not proof: verify the sources; process personal data only with a legal basis.',
+  },
+} as const;
+export function caseReport(input: CaseReportInput, generated: string, lang: 'de' | 'en' = 'de'): string {
+  const text = CASE_REPORT_TEXT[lang] ?? CASE_REPORT_TEXT.de;
+  const locale = lang === 'en' ? 'en-GB' : 'de-DE';
+  const fill = (template: string, values: Record<string, string | number>) => template.replace(/\{(\w+)\}/g, (_, key: string) => String(values[key] ?? ''));
+  const clean = (value: string) => value.replace(/\s+/g, ' ').trim();
+  const lines: string[] = [text.title, ''];
+  lines.push(`${text.generated}: ${clean(generated)}`);
+  const { stats } = input;
+  lines.push(`${text.scope}: ${stats.filteredNodes.toLocaleString(locale)} ${text.nodes} / ${stats.filteredEdges.toLocaleString(locale)} ${text.edges} ${text.of} ${stats.totalNodes.toLocaleString(locale)} / ${stats.totalEdges.toLocaleString(locale)}`);
+  const levelText = lang === 'en' ? ({ Einzelknoten: 'single nodes', Gruppen: 'groups', Feingruppen: 'fine groups', Übersicht: 'overview' } as Record<string, string>)[clean(stats.level)] ?? clean(stats.level) : clean(stats.level);
+  lines.push(`${text.level}: ${levelText} · ${text.focus}: ${stats.focused ? text.yes : text.no} · ${text.lod}: ${stats.grouped ? text.yes : text.no}`);
+  const labelOf = new Map(input.nodes.map(node => [node.id, node.label]));
+  const notes = Object.entries(input.notes ?? {})
+    .map(([id, note]) => ({ id, note: normalizeNote(note), label: clean(labelOf.get(id) ?? id) }))
+    .filter(entry => entry.note)
+    .sort((a, b) => (a.label.toLowerCase() < b.label.toLowerCase() ? -1 : a.label.toLowerCase() > b.label.toLowerCase() ? 1 : a.id < b.id ? -1 : 1));
+  lines.push('', `## ${text.notes} (${notes.length})`, '');
+  if (notes.length === 0) lines.push(text.noNotes);
+  for (const entry of notes) {
+    lines.push(`- **${entry.label}** (\`${entry.id}\`)`);
+    entry.note.split('\n').forEach(line => lines.push(`  ${line}`));
+  }
+  if (input.analytics) {
+    const a = input.analytics;
+    lines.push('', `## ${text.analytics}`, '');
+    lines.push(`- ${text.communities}: ${a.communities} · ${text.density}: ${(a.density * 100).toFixed(2)} %`);
+    if (a.temporalRange) lines.push(`- ${text.range}: ${a.temporalRange.first} → ${a.temporalRange.last}`);
+    if (a.hubs.length) lines.push(`- ${text.hubs}: ${a.hubs.slice(0, 5).map(hub => `${clean(hub.name)} (${(hub.rank * 100).toFixed(1)} %)`).join(', ')}`);
+  }
+  if (input.vulnerability) {
+    const v = input.vulnerability;
+    lines.push('', `## ${text.structure}`, '');
+    lines.push(`- ${text.cutEdges}: ${v.cutEdges} · ${text.kcore}: ${v.maxCore} (${v.maxCoreSize} ${text.nodes})`);
+    for (const vertex of v.cutVertices) lines.push(`- ${text.articulation} ${clean(vertex.label)} (${text.degree} ${vertex.degree}) — ${fill(text.splits, { parts: vertex.impact.components, largest: vertex.impact.largest })}`);
+  }
+  if (input.insights?.length) {
+    lines.push('', `## ${text.rules}`, '');
+    for (const insight of input.insights) lines.push(`- [${clean(insight.rule)}] ${clean(insight.title)}${insight.entities.length ? ` — ${insight.entities.map(entity => clean(entity.name)).join(', ')}` : ''}`);
+  }
+  if (input.duplicates?.length) {
+    lines.push('', `## ${text.duplicates}`, '');
+    for (const group of input.duplicates) lines.push(`- ${clean(group.label)} — ${group.ids.map(id => `\`${id}\``).join(', ')}${group.sameType ? '' : ` (${text.mixed})`}`);
+  }
+  if (input.timeline?.length) {
+    lines.push('', `## ${text.timeline}`, '');
+    lines.push(input.timeline.map(bucket => `${bucket.month}: ${bucket.count}`).join(' · '));
+  }
+  lines.push('', '---', text.footer);
+  return lines.join('\n') + '\n';
+}
+
 export function nodesToCSV(nodes: GraphNode[]): string {
   const header = 'id,label,type,confidence,degree,rank,community,firstSeen,lastSeen';
   const rows = nodes.map(n => [n.id, n.label, n.type, n.confidence.toFixed(3), n.degree, n.rank,

@@ -140,3 +140,9 @@
 .path-hop-type{opacity:.7}
 .path-dates li .inline-warning{grid-column:1/-1}
 .vuln-impact{display:block;font-size:.8em;opacity:.7;font-variant-numeric:tabular-nums}
+
+/* Wave 11: research notes (localStorage only) + case report export (token-only) */
+.note-block{margin-top:var(--space-3,1rem);border-top:1px solid var(--line);padding-top:var(--space-2,0.5rem)}
+.note-block textarea{width:100%;box-sizing:border-box;resize:vertical;min-height:5rem;background:var(--color-forest-900);color:var(--color-white);border:1px solid var(--line);border-radius:var(--radius-1,0.25rem);padding:var(--space-2,0.5rem);font:inherit}
+.note-counter{font-variant-numeric:tabular-nums;opacity:.7;font-size:.8em}
+.note-actions{display:flex;gap:var(--space-2,0.5rem);align-items:center;margin-top:var(--space-1,0.25rem)}

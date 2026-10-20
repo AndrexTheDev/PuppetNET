@@ -1,11 +1,16 @@
 'use client';
 import { useState } from 'react';
-import { COLORS, communityColor, cypherExport, safeUrl, type Evidence, type GraphEdge, type GraphNode } from './graph-data';
+import { COLORS, NOTE_LIMIT, communityColor, cypherExport, normalizeNote, safeUrl, type Evidence, type GraphEdge, type GraphNode } from './graph-data';
 import { downloadText as download } from './download';
 import { useLanguage, useT } from './i18n';
 import { NUMBER_LOCALE } from '../../lib/i18n-strings';
-export default function SidePanel({ node, evidence, edge, edgeEvidence, edgeLabels, onDrill, onEgo, onClose, detailError }: { node: GraphNode | null; evidence: Evidence[]; edge: GraphEdge | null; edgeEvidence: Evidence[]; edgeLabels: { source: string; target: string }; onDrill: (id: string) => void; onEgo?: (id: string) => void; onClose: () => void; detailError: string }) {
+export default function SidePanel({ node, evidence, edge, edgeEvidence, edgeLabels, onDrill, onEgo, onClose, detailError, note = '', onNote }: { node: GraphNode | null; evidence: Evidence[]; edge: GraphEdge | null; edgeEvidence: Evidence[]; edgeLabels: { source: string; target: string }; onDrill: (id: string) => void; onEgo?: (id: string) => void; onClose: () => void; detailError: string; note?: string; onNote?: (text: string) => void }) {
   const [copied, setCopied] = useState('');
+  // Wave 11: the note draft follows the selected entity, never leaks between nodes.
+  const [draft, setDraft] = useState('');
+  const [draftNode, setDraftNode] = useState('');
+  const [noteStatus, setNoteStatus] = useState('');
+  if (node && draftNode !== node.id) { setDraftNode(node.id); setDraft(note); setNoteStatus(''); }
   const { lang } = useLanguage();
   const t = useT();
   if (!node && !edge) return <aside className="detail-panel" role="region" aria-labelledby="inspector-heading"><span className="eyebrow">{t('inspector.eyebrow')}</span><div className="empty-inspector"><div className="inspect-icon" aria-hidden="true">◎</div><h2 id="inspector-heading">{t('inspector.emptyTitleA')}<br />{t('inspector.emptyTitleB')}</h2><p>{t('inspector.emptyText')}</p></div><div className="inspector-foot">{t('inspector.foot')}</div></aside>;
@@ -41,6 +46,13 @@ export default function SidePanel({ node, evidence, edge, edgeEvidence, edgeLabe
       {!node.group && node.lastSeen && node.lastSeen !== node.firstSeen && <div><dt>{t('inspector.lastSeen')}</dt><dd><time dateTime={node.lastSeen}>{node.lastSeen}</time></dd></div>}
       {node.lat !== undefined && <div><dt>{t('inspector.coords')}</dt><dd>{node.lat.toFixed(4)}, {node.lon?.toFixed(4)}</dd></div>}</dl>
     {onEgo && <button type="button" className="outline-button ego-expand" onClick={() => onEgo(node.id)}>{t('inspector.egoButton')}</button>}
+    {!node.group && onNote && <div className="note-block">
+      <div className="section-heading"><h3>{t('inspector.noteTitle')}</h3><span className="note-counter">{t('inspector.noteCount', { count: draft.length, max: NOTE_LIMIT })}</span></div>
+      <textarea aria-label={t('inspector.noteTitle')} value={draft} maxLength={NOTE_LIMIT} rows={4} placeholder={t('inspector.notePlaceholder')} onChange={e => setDraft(e.target.value)} />
+      <div className="note-actions"><button type="button" className="primary-button" onClick={() => { onNote(normalizeNote(draft)); setNoteStatus(t('inspector.noteSaved')); }}>{t('inspector.noteSave')}</button><button type="button" className="text-button" onClick={() => { setDraft(''); onNote(''); setNoteStatus(t('inspector.noteCleared')); }}>{t('inspector.noteClear')}</button></div>
+      <p className="muted small-text">{t('inspector.noteHint')}</p>
+      <p className="muted" role="status">{noteStatus}</p>
+    </div>}
     {node.group ? <><p className="muted">{t('inspector.groupText')}</p><button className="primary-button" onClick={() => onDrill(node.id)}>{t('inspector.drill')}</button><h3>{t('inspector.examples')}</h3><ul className="example-ids">{node.examples?.map(id => <li key={id}>{id}</li>)}</ul></> : <>
       <div className="section-heading"><h3>{t('inspector.nodeSources')}</h3><span>{evidence.length}</span></div><p className="muted small-text">{t('inspector.nodeSourcesSub')}</p>
       {detailError && <p className="inline-warning" role="status">{detailError}</p>}
