@@ -70,6 +70,11 @@ Stabile Slugs und SHA256-Dateinamen verhindern ID-Pfadmanipulation. Manifestgest
 Pruning entfernt nur zuvor vom Exporter geschriebene, inzwischen veraltete Slices.
 
 Ergebnis: `graph_latest.json`, `static-manifest.json`, `entities/<sha256-id>.json`.
+Seit dem 20.10.2026 reichert der Export jede Veröffentlichung deterministisch mit
+Link-Analytics an (Degree, PageRank, Communities, erste/letzte Erwähnung, Hubs,
+`analytics`-Block) — innerhalb des bestehenden ≤45-s-Export-Schritts, ohne
+zusätzliche Actions-Minuten. Strategie und nächste Wellen:
+[Verbesserungs-Roadmap](improvement-roadmap.md).
 Nur geänderte Inhalte werden committet; unveränderte Daten erzeugen keinen Datencommit.
 Fehlgeschlagene Datenbankabfragen löschen nie den letzten Stand. Der produktive
 Workflow setzt bewusst `--allow-empty`: ein erfolgreich gelesener Snapshot ohne
@@ -190,6 +195,10 @@ slugs and SHA256 filenames prevent ID path manipulation. Manifest-driven
 pruning removes only previously exporter-written, now outdated slices.
 
 Result: `graph_latest.json`, `static-manifest.json`, `entities/<sha256-id>.json`.
+Since 2026-10-20 the export deterministically enriches every publication with link
+analytics (degree, PageRank, communities, first/last mention, hubs, `analytics`
+block) — inside the existing ≤45 s export step, with no additional Actions minutes.
+Strategy and next waves: [improvement roadmap](improvement-roadmap.md).
 Only changed content is committed; unchanged data produces no data commit.
 Failed database queries never delete the last state. The production workflow
 deliberately passes `--allow-empty`: a successfully read snapshot without

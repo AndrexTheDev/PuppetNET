@@ -279,8 +279,97 @@ def build_public_graph(raw: dict, limit: int = MAX_NODES) -> dict:
             "evidence": sorted(evidence, key=lambda item: item["id"]), "truncated": raw.get("truncated") is True or len(by_id) > len(nodes) or len(edges) > MAX_EDGES}
 
 
+def enrich_with_analytics(graph: dict) -> None:
+    """Deterministic export-time link analysis over the published allowlist graph.
+
+    Adds per-node degree, PageRank, label-propagation community and first/last
+    mention dates, plus a bounded top-level summary — the standard OSINT analytics
+    set (centrality, communities, temporal spans) precomputed once per revision.
+    Consumers (dashboard, entity pages, third parties) get link-analysis value
+    for free: no extra CI minutes, no extra Neo4j reads, no browser crunching
+    required. Inputs are already the allowlisted public fields, so no private
+    data can leak into the analytics. Synchronous label propagation with sorted
+    iteration and smallest-label tie-breaks plus 20 damped PageRank passes keep
+    results reproducible, which the stable revision digest depends on.
+    Bounded cost: O(passes x (nodes + edges)) with passes <= 20 + 8.
+    """
+    nodes, edges = graph["nodes"], graph["edges"]
+    order = [node["id"] for node in nodes]
+    total = len(order)
+    undirected: dict[str, list[str]] = {key: [] for key in order}
+    outgoing: dict[str, list[str]] = {key: [] for key in order}
+    degree: dict[str, int] = dict.fromkeys(order, 0)
+    for edge in edges:
+        source, target = edge["source"], edge["target"]
+        degree[source] += 1
+        degree[target] += 1
+        outgoing[source].append(target)
+        undirected[source].append(target)
+        if target != source:
+            undirected[target].append(source)
+    rank: dict[str, float] = dict.fromkeys(order, 1.0 / total) if total else {}
+    for _ in range(20):
+        if not total:
+            break
+        dangling = sum(rank[key] for key in order if not outgoing[key])
+        updates = {key: (.15 + .85 * dangling) / total for key in order}
+        for key in order:
+            links = outgoing[key]
+            if not links:
+                continue
+            share = .85 * rank[key] / len(links)
+            for target in links:
+                updates[target] += share
+        rank = updates
+    labels = {key: key for key in order}
+    for _ in range(8):
+        changed = False
+        propagated: dict[str, str] = {}
+        for key in order:
+            counts: dict[str, int] = {}
+            for other in undirected[key]:
+                counts[labels[other]] = counts.get(labels[other], 0) + 1
+            best = max(sorted(counts), key=counts.get) if counts else key
+            propagated[key] = best
+            changed = changed or best != labels[key]
+        labels = propagated
+        if not changed:
+            break
+    groups: dict[str, list[str]] = {}
+    for key in order:
+        groups.setdefault(labels[key], []).append(key)
+    # Stable community names: largest first, ties by smallest member id.
+    ranked_groups = sorted(groups.values(), key=lambda members: (-len(members), members[0]))
+    community: dict[str, str] = {}
+    for index, members in enumerate(ranked_groups):
+        for key in members:
+            community[key] = f"c{index:03d}"
+    dates = {item["id"]: item["date"][:10] for item in graph["evidence"]
+             if re.match(r"\d{4}-\d{2}-\d{2}", str(item.get("date", "")))}
+    for node in nodes:
+        seen = sorted(dates[doc] for doc in node.get("evidenceIds", []) if doc in dates)
+        node["degree"] = degree[node["id"]]
+        node["rank"] = round(rank[node["id"]], 6)
+        node["community"] = community[node["id"]]
+        if seen:
+            node["firstSeen"], node["lastSeen"] = seen[0], seen[-1]
+    hubs = sorted(nodes, key=lambda node: (-node["rank"], node["id"]))[:10]
+    firsts = [node["firstSeen"] for node in nodes if "firstSeen" in node]
+    lasts = [node["lastSeen"] for node in nodes if "lastSeen" in node]
+    graph["analytics"] = {
+        "version": 1, "nodes": total, "edges": len(edges),
+        "communities": len(ranked_groups),
+        "largestCommunity": len(ranked_groups[0]) if ranked_groups else 0,
+        "density": round(len(edges) / (total * (total - 1)), 6) if total > 1 else 0.0,
+        "hubs": [{"id": node["id"], "name": node["name"], "rank": node["rank"], "degree": node["degree"]}
+                 for node in hubs],
+        **({"temporalRange": {"first": min(firsts), "last": max(lasts)}} if firsts else {}),
+    }
+
+
 def export_slices(raw: dict, output: Path = DEFAULT_OUT, *, allow_empty: bool = False) -> dict:
     graph = build_public_graph(raw)
+    enrich_with_analytics(graph)
     if not graph["nodes"] and not allow_empty:
         raise ValueError("No releasable entities: refusing to erase existing publication; use --allow-empty deliberately")
     # Stable content hash: no clock-only commits or unnecessary Pages rebuilds.

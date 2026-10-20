@@ -51,6 +51,88 @@ def test_export_is_stable_and_stale_files_removed(tmp_path):
     assert json.loads((tmp_path / "graph_latest.json").read_text())["edges"] == []
 
 
+def analytics_graph():
+    """Two disconnected triangles: deterministic communities, degrees and dates."""
+    return {"nodes": [
+        {"id": "person:a", "name": "Anna", "type": "Person", "public": True,
+         "doc_ids": ["doc:2", "doc:1"]},
+        {"id": "org:b", "name": "Beta GmbH", "type": "Organization", "public": True},
+        {"id": "org:c", "name": "Centaur AG", "type": "Organization", "public": True},
+        {"id": "loc:d", "name": "Davos", "type": "Location", "public": True},
+        {"id": "loc:e", "name": "Engadin", "type": "Location", "public": True},
+        {"id": "loc:f", "name": "Flims", "type": "Location", "public": True},
+    ], "edges": [
+        {"source": "person:a", "target": "org:b", "type": "FOUNDED", "public": True},
+        {"source": "person:a", "target": "org:c", "type": "OWNS", "public": True},
+        {"source": "org:b", "target": "org:c", "type": "ASSOCIATED_WITH", "public": True},
+        {"source": "loc:d", "target": "loc:e", "type": "ASSOCIATED_WITH", "public": True},
+        {"source": "loc:e", "target": "loc:f", "type": "ASSOCIATED_WITH", "public": True},
+        {"source": "loc:f", "target": "loc:d", "type": "ASSOCIATED_WITH", "public": True},
+    ], "evidence": [
+        {"id": "doc:1", "title": "Register", "public": True, "date": "2026-03-01T10:00:00Z"},
+        {"id": "doc:2", "title": "Bericht", "public": True, "date": "2026-01-15"},
+        {"id": "doc:bad", "title": "Ohne Datum", "public": True, "date": "unknown"},
+    ]}
+
+
+def test_export_analytics_communities_degrees_and_temporal_spans(tmp_path):
+    data = export_slices(analytics_graph(), tmp_path)
+    by_id = {node["id"]: node for node in data["nodes"]}
+    analytics = data["analytics"]
+    # Two disconnected triangles => exactly two communities, stable naming.
+    assert analytics["communities"] == 2
+    assert analytics["largestCommunity"] == 3
+    assert {by_id["person:a"]["community"], by_id["loc:d"]["community"]} == {"c000", "c001"}
+    assert by_id["org:b"]["community"] == by_id["person:a"]["community"]
+    assert by_id["loc:e"]["community"] == by_id["loc:d"]["community"]
+    # Undirected degrees over published edges only.
+    assert by_id["person:a"]["degree"] == 2
+    assert by_id["org:b"]["degree"] == 2
+    # PageRank: normalized, positive, hub list sorted by rank descending.
+    assert abs(sum(node["rank"] for node in data["nodes"]) - 1.0) < 1e-3
+    assert all(node["rank"] > 0 for node in data["nodes"])
+    ranks = [hub["rank"] for hub in analytics["hubs"]]
+    assert ranks == sorted(ranks, reverse=True) and len(analytics["hubs"]) == 6
+    assert analytics["nodes"] == 6 and analytics["edges"] == 6
+    assert analytics["density"] == round(6 / 30, 6)
+    # Temporal spans aggregate ISO dates of published evidence only.
+    assert by_id["person:a"]["firstSeen"] == "2026-01-15"
+    assert by_id["person:a"]["lastSeen"] == "2026-03-01"
+    assert "firstSeen" not in by_id["loc:d"] and "lastSeen" not in by_id["loc:d"]
+    assert analytics["temporalRange"] == {"first": "2026-01-15", "last": "2026-03-01"}
+    # Entity slices inherit the enrichment.
+    entity_files = list((tmp_path / "entities").glob("*.json"))
+    assert len(entity_files) == 6
+    assert all("rank" in json.loads(path.read_text())["entity"] for path in entity_files)
+
+
+def test_export_analytics_are_deterministic_and_handle_empty_graphs(tmp_path):
+    first = export_slices(analytics_graph(), tmp_path)
+    second_dir = tmp_path / "again"
+    second = export_slices(analytics_graph(), second_dir)
+    assert first == second  # stable revision digest requires reproducible analytics
+    assert (tmp_path / "graph_latest.json").read_bytes() == (second_dir / "graph_latest.json").read_bytes()
+    empty = export_slices({"nodes": [], "edges": []}, tmp_path / "empty", allow_empty=True)
+    assert empty["analytics"] == {"version": 1, "nodes": 0, "edges": 0, "communities": 0,
+                                  "largestCommunity": 0, "density": 0.0, "hubs": []}
+
+
+def test_export_analytics_scale_is_bounded(tmp_path):
+    import time
+    count = 1500
+    nodes = [{"id": f"org:{i}", "name": f"Org {i}", "type": "Organization", "public": True}
+             for i in range(count)]
+    edges = [{"source": f"org:{i}", "target": f"org:{(i * 7 + 1) % count}", "type": "ASSOCIATED_WITH",
+              "public": True} for i in range(count)]
+    edges += [{"source": f"org:{i}", "target": f"org:{(i + 1) % count}", "type": "ASSOCIATED_WITH",
+               "public": True} for i in range(count)]
+    started = time.monotonic()
+    data = export_slices({"nodes": nodes, "edges": edges, "evidence": []}, tmp_path)
+    assert time.monotonic() - started < 10  # export budget is 45s; analytics stay far below
+    assert data["analytics"]["nodes"] == count
+    assert all("rank" in node and "community" in node and "degree" in node for node in data["nodes"])
+
+
 def test_empty_refuses_to_erase_existing(tmp_path):
     export_slices(graph(), tmp_path)
     original = (tmp_path / "graph_latest.json").read_bytes()

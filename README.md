@@ -39,7 +39,8 @@ Aktueller Drei-Phasen-Vertrag und Betriebsgrenzen: [Ressourcenmodus](docs/resour
   nur bewusst aktivieren. Operator-Token nie als `NEXT_PUBLIC_*` veröffentlichen.
 - **Release-Checkliste:** [docs/release-checklist.md](docs/release-checklist.md).
   Architektur und Einrichtung: [Zero-KV](docs/zero-kv-worker.md),
-  [Ingestion](docs/daily-ingestion.md).
+  [Ingestion](docs/daily-ingestion.md),
+  [Verbesserungs-Roadmap](docs/improvement-roadmap.md).
 
 ### Aktuelle Secrets und harte Grenzen
 
@@ -129,7 +130,8 @@ Current three-phase contract and operational limits:
   deliberately. Never publish operator tokens as `NEXT_PUBLIC_*`.
 - **Release checklist:** [docs/release-checklist.md](docs/release-checklist.md).
   Architecture and setup: [Zero-KV](docs/zero-kv-worker.md),
-  [ingestion](docs/daily-ingestion.md).
+  [ingestion](docs/daily-ingestion.md),
+  [improvement roadmap](docs/improvement-roadmap.md).
 
 ### Current secrets and hard limits
 
