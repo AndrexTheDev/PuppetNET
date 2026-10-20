@@ -17,6 +17,9 @@ test('SEO generator matches the public entity routes, with absolute deployment U
   }
   assert.ok(read('apps/web/public/robots.txt').includes(`Sitemap: ${manifest.origin}/sitemap.xml`));
   assert.equal(read('apps/web/public/styles/globals.css'), read('apps/web/src/styles/globals.css'));
+  // Only active App Router documents are indexed; /legacy is a redirect.
+  assert.doesNotMatch(sitemap, /\/legacy/, 'sitemap must not list the archived /legacy path');
+  assert.match(sitemap, /\/dashboard\//);
 });
 test('invalid origin fails the build before overwriting SEO', () => {
   const result = spawnSync(process.execPath, ['scripts/generate-seo.js'], {
@@ -24,11 +27,14 @@ test('invalid origin fails the build before overwriting SEO', () => {
   });
   assert.notEqual(result.status, 0);
 });
-test('dashboard and legacy colors are token-only; reserved mobile space survives dismissal', () => {
-  for (const file of ['apps/web/app/dashboard/dashboard.css', 'apps/web/public/legacy/styles.css']) {
+test('dashboard and landing colors are token-only; reserved mobile space survives dismissal', () => {
+  for (const file of ['apps/web/app/dashboard/dashboard.css', 'apps/web/app/styles.css']) {
     const css = read(file).replace(/\/\*[\s\S]*?\*\//g, '');
     assert.doesNotMatch(css, /#[0-9a-f]{3,8}\b|rgba?\(/i);
   }
+  // globals.css is the one place hex values live: the palette token definitions.
+  assert.doesNotMatch(read('apps/web/app/styles.css'), /--site-/, 'no legacy palette alias layer');
+  assert.doesNotMatch(read('apps/web/src/styles/globals.css'), /--site-/);
   assert.ok(read('apps/web/app/components/AdContainers.tsx').includes('localStorage.setItem'));
   assert.doesNotMatch(read('apps/web/app/styles.css'), /body:has\(\.mobile-ad-container\)/);
 });
@@ -55,9 +61,15 @@ test('resource defaults avoid unsolicited GPU renderer and force simulation', ()
   assert.ok(dashboard.includes("useState<'network' | 'map' | 'list'>('list')"));
   assert.ok(dashboard.includes("mode === 'network' && <NetworkGraph"));
   assert.match(read('apps/web/app/dashboard/graph.worker.ts'), /layoutWanted = false/);
-  assert.match(read('apps/web/public/legacy/app.js'), /layout: "grid"/);
   const scripts = JSON.parse(read('apps/web/package.json')).scripts;
   assert.ok(scripts.prebuild.includes('generate-seo.js'));
+});
+
+test('an unusable publication becomes standby, never a silent demo swap', () => {
+  const fetcher = read('apps/web/src/lib/dataFetcher.ts');
+  assert.match(fetcher, /source: 'standby'/);
+  assert.match(read('apps/web/app/dashboard/BootState.tsx'), /System im Bereitschaftsmodus/);
+  assert.match(read('apps/web/app/dashboard/BootState.tsx'), /Demo-Datensatz laden/);
 });
 
 test('CSS primitives and canvas palette share the same source', () => {

@@ -5,7 +5,8 @@ import EntityTable, { type TableRow } from './EntityTable';
 import { COLORS, TYPES, LIMITS, type Evidence, type Filters, type GraphNode, type View } from './graph-data';
 import type { NetworkHandle } from './NetworkGraph';
 import type { WorkerRequest, WorkerResponse } from './protocol';
-import { loadStaticGraph, requestResearch } from '../../src/lib/dataFetcher';
+import { loadStaticGraph, requestResearch, type Standby } from '../../src/lib/dataFetcher';
+import StandbyPanel, { LoadingStage } from './BootState';
 import SidePanel from './SidePanel';
 const NetworkGraph = dynamic(() => import('./NetworkGraph'), { ssr: false, loading: () => <div className="stage-loading">WebGL-Modul laden …</div> });
 const MapModule = dynamic(() => import('./MapModule'), { ssr: false, loading: () => <div className="stage-loading">Kartenmodul laden …</div> });
@@ -20,12 +21,13 @@ export default function Dashboard() {
   const [announcement, setAnnouncement] = useState('');
   const [selected, setSelected] = useState<GraphNode | null>(null), [evidence, setEvidence] = useState<Evidence[]>([]);
   const [error, setError] = useState(''), [detailError, setDetailError] = useState(''), [layoutRunning, setLayoutRunning] = useState(false);
-  const [sourceLabel, setSourceLabel] = useState('Fiktive Demo'), [sourceForm, setSourceForm] = useState(false), [base, setBase] = useState(''), [token, setToken] = useState('');
+  const [sourceLabel, setSourceLabel] = useState('Bereitschaftsmodus'), [sourceForm, setSourceForm] = useState(false), [base, setBase] = useState(''), [token, setToken] = useState('');
   const [search, setSearch] = useState(''), [listPage, setListPage] = useState(0);
   const [researchQuery, setResearchQuery] = useState(''), [researchBusy, setResearchBusy] = useState(false);
+  const [standby, setStandby] = useState<Standby | null>(null);
   const loadingApi = useRef<AbortController | null>(null), loadingDetail = useRef<AbortController | null>(null);
   const staticRequest = useRef<AbortController | null>(null), reloadStatic = useRef<(() => void) | null>(null);
-  const pendingSource = useRef('Fiktive Demo'), committedSource = useRef('Fiktive Demo');
+  const pendingSource = useRef('Bereitschaftsmodus'), committedSource = useRef('Bereitschaftsmodus');
   const [notice, setNotice] = useState('');
   const initialFocus = useRef(typeof window === 'undefined' ? null : new URLSearchParams(window.location.search).get('focus'));
   const changeMode = useCallback((next: 'network' | 'map' | 'list') => {
@@ -52,15 +54,20 @@ export default function Dashboard() {
       staticRequest.current?.abort();
       const controller = new AbortController(); staticRequest.current = controller;
       const bootVersion = ++version.current;
-      setBusy(true); setError(''); clearSelected();
+      setBusy(true); setError(''); clearSelected(); setStandby(null);
       loadStaticGraph({ signal: controller.signal }).then(data => {
         if (controller.signal.aborted || version.current !== bootVersion || worker.current !== instance) return;
         if (data.source === 'static') {
           pendingSource.current = data.message; setNotice('Hochleistungs-CDN-Modus: veröffentlichter Datensatz, keine Live-Datenbankverbindung.');
           instance.postMessage({ kind: 'import', text: JSON.stringify(data.graph), version: bootVersion, filters: filtersRef.current } satisfies WorkerRequest);
         } else {
-          pendingSource.current = 'Fiktive Demo'; setNotice(data.message);
-          instance.postMessage({ kind: 'demo', count: 900, version: bootVersion, filters: filtersRef.current } satisfies WorkerRequest);
+          // No usable publication (missing/offline/invalid or an empty dataset
+          // after a full withdrawal): stay in standby instead of silently
+          // swapping in fictional demo data. The user decides explicitly.
+          setStandby({ reason: data.reason, message: data.message });
+          setBusy(false); setNotice('');
+          setSourceLabel('Bereitschaftsmodus'); pendingSource.current = committedSource.current = 'Bereitschaftsmodus';
+          setAnnouncement('Bereitschaftsmodus: kein auswertbarer Datensatz geladen. Demonstrationsdaten können explizit geladen werden.');
         }
       }).catch(() => { /* caller cancellation/unmount: no replacement of newer user data */ });
     };
@@ -83,7 +90,7 @@ export default function Dashboard() {
   }, [view, send]);
   function demo(count: number) {
     staticRequest.current?.abort(); pendingSource.current = count > 900 ? `Fiktiver Lasttest · ${number(count * 4)} Elemente` : 'Fiktive Demo';
-    clearSelected(); setBusy(true); setError(''); setNotice(''); send({ kind: 'demo', count, version: ++version.current, filters: filtersRef.current });
+    clearSelected(); setBusy(true); setError(''); setNotice(''); setStandby(null); send({ kind: 'demo', count, version: ++version.current, filters: filtersRef.current });
   }
   function importFile(file: File) {
     if (file.size > LIMITS.bytes) { setError('Importlimit: 64 MiB JSON.'); return; }
@@ -138,7 +145,10 @@ export default function Dashboard() {
     </form>}
 
     {(error || notice || view?.stats.truncated) && <div className={`dashboard-alert ${error ? 'error' : ''}`} role={error ? 'alert' : 'status'}>{error || notice || 'API-Antwort ist begrenzt; dargestellt wird nur der geladene Ausschnitt.'}</div>}
-    <div className="workspace-grid">
+    {standby
+      ? <StandbyPanel standby={standby} busy={busy} onDemo={() => demo(900)} onResearch={() => setSourceForm(true)} onReload={() => reloadStatic.current?.()} />
+      : !view ? <LoadingStage />
+      : <div className="workspace-grid">
       <aside className="filter-panel"><span className="eyebrow">ANSICHT EINGRENZEN / 01</span><div className="section-heading"><h2>Filter</h2><button className="text-button" onClick={() => { filtersRef.current = initialFilters; setFilters(initialFilters); requestView('reset'); }}>Zurücksetzen</button></div>
         <label className="slider-label" htmlFor="confidence"><span>Confidence <strong>{filters.confidence.toFixed(2)}</strong></span><input id="confidence" disabled={busy} type="range" min="0" max="1" step="0.01" value={filters.confidence} onChange={e => setFilters(f => ({ ...f, confidence: Number(e.target.value) }))} /><small>Mindestens erforderliches Vertrauen</small></label>
         <label className="slider-label" htmlFor="weight"><span>Beziehungsgewicht <strong>{filters.weight.toFixed(2)}</strong></span><input id="weight" disabled={busy} type="range" min="0" max="1" step="0.01" value={filters.weight} onChange={e => setFilters(f => ({ ...f, weight: Number(e.target.value) }))} /><small>Fachliche Stärke einer Verbindung</small></label>
@@ -155,7 +165,7 @@ export default function Dashboard() {
         <div className="visualization-footer"><span><span className="status-dot" /> {number(view?.stats.totalNodes)} Knoten geladen</span><span>{view?.stats.focused ? <button onClick={() => requestView('reset')}>← Gesamten Ausschnitt anzeigen</button> : 'Klick: untersuchen · Scroll: zoomen'}</span></div>
       </section>
       <SidePanel node={selected} evidence={evidence} detailError={detailError} onClose={() => { clearSelected(); setAnnouncement('Details geschlossen.'); }} onDrill={group => { clearSelected(); setBusy(true); send({ kind: 'drill', group, version: ++version.current, filters: filtersRef.current }); }} />
-    </div>
-    <footer className="dashboard-footer"><span>PUPPETNET / OPEN-SOURCE INTELLIGENCE</span><span>Sigma.js 4 · Graphology · Leaflet · OpenStreetMap</span><a href="/legacy/index.html">Bisherige Konsole ↗</a></footer>
+    </div>}
+    <footer className="dashboard-footer"><span>PUPPETNET / OPEN-SOURCE INTELLIGENCE</span><span>Sigma.js 4 · Graphology · Leaflet · OpenStreetMap</span></footer>
   </main>;
 }

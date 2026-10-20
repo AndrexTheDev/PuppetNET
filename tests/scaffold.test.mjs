@@ -7,11 +7,14 @@ test('Next 15 exports a static app without hosted functions', () => {
   assert.match(JSON.parse(read('apps/web/package.json')).dependencies.next, /^15\./);
   assert.equal(config.output, 'export');
   assert.equal(config.images.unoptimized, true);
-  assert.ok(fs.existsSync('apps/web/public/legacy/index.html'));
+  // The v1 console is archived: only the redirect route may exist under /legacy.
+  assert.equal(fs.existsSync('apps/web/public/legacy'), false);
+  assert.ok(fs.existsSync('apps/web/app/legacy/page.tsx'));
 });
 test('compatibility paths point to the single monorepo source', () => {
-  for (const [old, current] of [['worker.js','apps/worker/worker.js'], ['puppetnet','packages/pipeline/puppetnet'], ['web','apps/web/public/legacy']])
+  for (const [old, current] of [['worker.js','apps/worker/worker.js'], ['puppetnet','packages/pipeline/puppetnet']])
     assert.equal(fs.realpathSync(old), fs.realpathSync(current));
+  assert.equal(fs.existsSync('web'), false, 'the legacy console symlink must not come back');
 });
 test('only Python Actions remain, with no artificial consumption guard', () => {
   assert.deepEqual(fs.readdirSync('.github/workflows').sort(), ['daily_ingestion.yml', 'ingestion-pipeline.yml']);
@@ -30,11 +33,14 @@ test('Free-only deployment defaults and no client-side secrets', () => {
   for (const key of ['NEO4J_URI','CF_KV_NAMESPACE','TELEGRAM_BOT_TOKEN']) assert.match(env, new RegExp(`^${key}=`, 'm'));
   assert.doesNotMatch(env, /^NEXT_PUBLIC_.*(?:TOKEN|PASSWORD|SECRET)=/m);
 });
-test('Next headers allow its scripts and same-origin legacy iframe', () => {
+test('Next headers keep the security baseline and /legacy only redirects', () => {
   const headers = read('apps/web/public/_headers');
-  assert.match(headers, /\/legacy\/\*\n/);
   assert.match(headers, /frame-ancestors 'self'/);
-  assert.doesNotMatch(headers.split('/legacy/*')[0], /script-src|frame-src 'none'/);
+  assert.match(headers, /X-Content-Type-Options: nosniff/);
+  assert.match(headers, /\/_next\/static\/\*\n[ \t]+Cache-Control: public, max-age=31536000, immutable/);
+  // The legacy console CSP block is gone; /legacy answers with a redirect only.
+  assert.doesNotMatch(headers, /\/legacy\/vendor/);
+  assert.match(read('apps/web/public/_redirects'), /^\/legacy\s+\/dashboard\/\s+301$/m);
 });
 
 test('Cloudflare build owners and watch paths are explicitly decoupled', () => {

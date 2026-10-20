@@ -4,24 +4,27 @@
  *
  *   npm run emit:seo -- --origin https://puppetnet-web.pages.dev
  *   SITE_ORIGIN=https://console.example node scripts/emit-seo-files.mjs
- *   node scripts/emit-seo-files.mjs --build-gate      # run by scripts/pages-build.mjs
+ *   node scripts/emit-seo-files.mjs --build-gate      # deploy-time variant;
+ *                                                     # the build gate itself
+ *                                                     # runs scripts/generate-seo.js
  *
  * A `Sitemap:` line and every `<loc>` in a sitemap must be absolute, and this
  * repository is committed long before anybody knows which domain will serve it.
  * Guessing a hostname in a committed file would be worse than shipping none: a
  * sitemap that points at somebody else's domain is a sitemap that teaches
  * crawlers to go elsewhere. So the files that need an origin are generated at
- * build/deploy time from the same variable that names the project — and both
- * sitemaps are git-ignored.
+ * build/deploy time from the same variable that names the project — and the
+ * sitemap is git-ignored.
  *
- * The `robots.txt` files *are* committed, because their directives are
- * origin-free and a deployment from a USB stick should still have them. This
- * script rewrites only their `Sitemap:` line, in place and idempotently, so the
+ * The `robots.txt` is committed, because its directives are
+ * origin-free and a deployment from a USB stick should still have it. This
+ * script rewrites only its `Sitemap:` line, in place and idempotently, so the
  * committed file stays the single source of truth for everything else.
  *
- * Two targets, because v2 ships two frontends from one Pages project:
- *   apps/web/public/  — the Next.js 15 static export root (`/`, `/dashboard/`)
- *   web/ (→ apps/web/public/legacy/) — the retained v1 analyst console
+ * One target: the modern Next.js 15 static export root `apps/web/public/`
+ * (`/`, `/dashboard/` and one profile per public entity). The v1 analyst
+ * console is archived — `/legacy` is a permanent redirect to `/dashboard/`
+ * and is deliberately absent from every sitemap.
  *
  * Dependency-free on purpose: the build gate runs it without extra installs.
  */
@@ -45,22 +48,10 @@ const TARGETS = [
     // `trailingSlash: true` in next.config.mjs makes /dashboard/ the canonical
     // form; a sitemap that lists /dashboard would redirect to itself.
     urls: [{ loc: "/", priority: "1.0" }, { loc: "/dashboard/", priority: "0.9" }],
-    entities: true,
     note: "The landing page, the dashboard and one static profile per public entity.\n"
       + "     Profiles are generated from the same dataset the pages are built from,\n"
-      + "     so the sitemap cannot list a URL that does not exist.",
-  },
-  {
-    name: "legacy console",
-    robots: "web/robots.txt",
-    sitemap: "web/sitemap.xml",
-    // v1 served the console from `/`; v2 retains it under `/legacy/`, so both
-    // the Sitemap line and the `<loc>` have to name the path it lives at now.
-    servedAt: "/legacy/sitemap.xml",
-    history: "web/index.html",
-    urls: [{ loc: "/legacy/", priority: "0.6" }],
-    note: "One URL, because the console is a single-page application: every view is a\n"
-      + "     hash fragment of \"/legacy/\", and fragments are not separate documents.",
+      + "     so the sitemap cannot list a URL that does not exist. The archived\n"
+      + "     v1 console path `/legacy` is a redirect and is never listed.",
   },
 ];
 
@@ -144,30 +135,10 @@ for (const target of TARGETS) {
   }
 
   const lastmod = lastModified(target.history);
-  if (target.entities) {
-    const entries = [...target.urls, ...profiles];
-    const { files, urlCount } = renderSitemaps({ origin, entries, lastmod });
-    writeSitemaps(path.dirname(sitemapPath), files);
-    written.push(`${target.sitemap} (${urlCount} URL(s), davon ${profiles.length} Profil(e), ${files.length} Datei(en), served at ${target.servedAt})`);
-  } else {
-    const urls = target.urls
-      .map((url) => `  <url>
-    <loc>${origin}${url.loc}</loc>
-    <lastmod>${lastmod}</lastmod>
-    <changefreq>weekly</changefreq>
-    <priority>${url.priority}</priority>
-  </url>`)
-      .join("\n");
-    writeFileSync(sitemapPath, `<?xml version="1.0" encoding="UTF-8"?>
-<!-- Generated at build time by scripts/emit-seo-files.mjs from the deployment
-     origin; git-ignored, never committed. ${target.name}.
-     ${target.note} -->
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-${urls}
-</urlset>
-`, "utf8");
-    written.push(`${target.sitemap} (${target.urls.length} URL(s), served at ${target.servedAt})`);
-  }
+  const entries = [...target.urls, ...profiles];
+  const { files, urlCount } = renderSitemaps({ origin, entries, lastmod });
+  writeSitemaps(path.dirname(sitemapPath), files);
+  written.push(`${target.sitemap} (${urlCount} URL(s), davon ${profiles.length} Profil(e), ${files.length} Datei(en), served at ${target.servedAt})`);
 
   /* ---- robots.txt: replace only the Sitemap line ------------------------ */
   const committed = readFileSync(robotsPath, "utf8");

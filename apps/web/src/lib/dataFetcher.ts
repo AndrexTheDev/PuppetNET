@@ -14,9 +14,15 @@ export interface StaticGraph {
   generatedAt?: string;
   [key: string]: unknown;
 }
+/** Why the dashboard is in standby: no usable publication was loaded. */
+export type StandbyReason = 'unavailable' | 'empty';
+export interface Standby {
+  reason: StandbyReason;
+  message: string;
+}
 export type GraphLoad =
   | { source: 'static'; graph: StaticGraph; dataset: Dataset; message: string }
-  | { source: 'demo'; message: string };
+  | ({ source: 'standby' } & Standby);
 
 /** Structural/graph validation before a snapshot is accepted by the UI worker. */
 export function validateStaticGraph(value: unknown): { graph: StaticGraph; dataset: Dataset } {
@@ -26,8 +32,9 @@ export function validateStaticGraph(value: unknown): { graph: StaticGraph; datas
   return { graph, dataset: normalizeDataset(graph) };
 }
 
-/** Caller cancellation propagates; offline/HTTP/schema errors yield labelled demo.
- * Demo generation stays in graph.worker.ts rather than blocking the UI thread.
+/** Caller cancellation propagates; offline/HTTP/schema errors and an empty
+ * publication yield a labelled standby state instead of silent demo data. The
+ * demo stays an explicit, one-click user decision made in the UI.
  */
 export async function loadStaticGraph(options: { signal?: AbortSignal; fetcher?: typeof fetch; timeoutMs?: number } = {}): Promise<GraphLoad> {
   const controller = new AbortController();
@@ -43,11 +50,18 @@ export async function loadStaticGraph(options: { signal?: AbortSignal; fetcher?:
     const text = await readResponse(response);
     if (controller.signal.aborted) throw new DOMException('Abgebrochen', 'AbortError');
     const { graph, dataset } = validateStaticGraph(JSON.parse(text));
+    // An empty publication is valid (e.g. after a full data withdrawal): it must
+    // not fall back to demo data on its own — the dashboard shows standby.
+    if (dataset.nodes.length === 0) {
+      return { source: 'standby', reason: 'empty',
+        message: 'Der veröffentlichte Datensatz ist leer — zum Beispiel nach einer vollständigen Datenrücknahme.' };
+    }
     return { source: 'static', graph, dataset,
       message: graph.demo === true ? 'Fiktive veröffentlichte Demo' : 'Veröffentlichter CDN-Datensatz' };
   } catch (error) {
     if (options.signal?.aborted) throw error;
-    return { source: 'demo', message: 'CDN-Datensatz fehlt oder ist offline/ungültig. Es werden fiktive Beispieldaten angezeigt.' };
+    return { source: 'standby', reason: 'unavailable',
+      message: 'Kein gültiger CDN-Datensatz erreichbar (offline, fehlend oder ungültiges Format).' };
   } finally {
     clearTimeout(timer); options.signal?.removeEventListener('abort', abort);
   }

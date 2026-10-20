@@ -3,9 +3,9 @@
  *
  * There is no database in CI, and there must not be: what these suites assert is
  * what the Worker *sends* and what it *returns*, not whether Neo4j works. Two
- * suites share this file so they cannot drift apart — `worker_smoke.mjs` checks
- * the HTTP surface, and `web_smoke.mjs` drives the browser console against the
- * real Worker on top of it.
+ * suites share this file so they cannot drift apart — `worker_smoke.mjs` and
+ * `worker_hardening.mjs` check the HTTP surface. (The v1 console suite that
+ * drove a browser against this stub is archived with the console.)
  *
  * It does not parse Cypher. It dispatches on distinctive substrings of the
  * statement the Worker emitted, and derives response columns from that

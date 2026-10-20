@@ -2,6 +2,18 @@
   "framework": "nextjs",
   "buildCommand": "npm run build",
   "outputDirectory": "out",
+  "redirects": [
+    {
+      "source": "/legacy",
+      "destination": "/dashboard/",
+      "permanent": true
+    },
+    {
+      "source": "/legacy/:path*",
+      "destination": "/dashboard/",
+      "permanent": true
+    }
+  ],
   "headers": [
     {
       "source": "/(.*)",

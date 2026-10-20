@@ -5,16 +5,13 @@
   "description": "PuppetNET 2.0 zero-cost monorepo: static Next.js frontend, Cloudflare Worker relay and Python NLP pipeline.",
   "type": "module",
   "scripts": {
-    "vendor:libs": "node scripts/vendor-libs.mjs",
     "audit": "node scripts/audit.mjs",
     "emit:seo": "node scripts/generate-seo.js",
-    "screenshots": "node scripts/screenshots.mjs",
-    "check": "npm run check -w @puppetnet/worker && node --check web/app.js && node --check web/modals.js",
+    "check": "npm run check -w @puppetnet/worker",
     "test:worker": "node --import tsx --test tests/search_worker.test.ts",
     "test:provision": "node --test tests/provision.test.mjs tests/provision_e2e.test.mjs",
     "test:web": "node tests/web_smoke.mjs",
     "test": "npm run check && npm run test:worker && npm run test:web",
-    "serve": "python3 -m http.server 8080 --directory web --bind 0.0.0.0",
     "dev": "npm run dev -w @puppetnet/web",
     "build": "npm run build -w @puppetnet/web",
     "preview": "python3 -m http.server 8080 --directory apps/web/out --bind 0.0.0.0",
@@ -33,15 +30,7 @@
     "test:worker:legacy": "node tests/worker_smoke.mjs && node tests/worker_hardening.mjs",
     "test:data-fetcher": "node --import tsx --test tests/data_fetcher.test.ts"
   },
-  "devDependencies": {
-    "cose-base": "2.2.0",
-    "cytoscape": "3.30.4",
-    "cytoscape-fcose": "2.2.0",
-    "jsdom": "25.0.1",
-    "layout-base": "2.0.1",
-    "qrcode-generator": "2.0.4",
-    "terser": "5.36.0"
-  },
+  "devDependencies": {},
   "engines": {
     "node": ">=22"
   },

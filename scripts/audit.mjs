@@ -121,356 +121,24 @@ function jpegSize(buffer) {
 }
 
 /* ========================================================================== */
-/*  1. Browser JS — XSS surface                                                */
-/* ========================================================================== */
-
-function auditBrowserJs() {
-  const dimension = "security";
-  for (const file of ["web/app.js", "web/modals.js"]) {
-    // Direct HTML sinks. Each hit is inspected for interpolation: a template
-    // literal or a `+` concatenation means data reached the sink.
-    scan(file, /\.innerHTML\s*=\s*([^;\n]*)/g, (match, where, line) => {
-      const value = match[1];
-      const cleared = /^(""|'')/.test(value.trim());
-      const interpolated = /\$\{|"\s*\+\s*[A-Za-z_$]|'\s*\+\s*[A-Za-z_$]/.test(value);
-      if (!cleared && interpolated) {
-        finding("xss/innerHTML", dimension, "high", file, where,
-          `innerHTML receives interpolated content: ${value.trim().slice(0, 90)}`,
-          "Build nodes with the el() helper (which escapes) or prove the input is a constant.");
-      }
-    });
-    scan(file, /\.insertAdjacentHTML\(\s*"[^"]*"\s*,\s*([^;]*)/g, (match, where) => {
-      if (/\$\{|"\s*\+/.test(match[1])) {
-        finding("xss/insertAdjacentHTML", dimension, "high", file, where,
-          `insertAdjacentHTML receives interpolated content: ${match[1].trim().slice(0, 90)}`,
-          "Use insertAdjacentElement with escaped text, or a DocumentFragment.");
-      }
-    });
-    scan(file, /document\.write(ln)?\s*\(/g, (_m, where) => {
-      finding("xss/documentWrite", dimension, "high", file, where,
-        "document.write in shipped code", "Remove: it blocks parsing and is an injection sink.");
-    });
-    // Inline handlers inside generated markup strings.
-    scan(file, /["'`][^"'`]*\son(click|error|load|mouse\w+|focus|blur|change|submit)\s*=/gi,
-      (_m, where, line) => {
-        finding("xss/inlineHandler", dimension, "high", file, where,
-          `inline event handler in markup: ${line.slice(0, 90)}`,
-          "Attach listeners in JS; the deployed CSP forbids inline script anyway.");
-      });
-    for (const sink of [/\beval\s*\(/g, /new\s+Function\s*\(/g]) {
-      scan(file, sink, (_m, where, line) => {
-        if (/^\s*(\/\/|\*)/.test(line)) return;
-        finding("security/eval", dimension, "high", file, where,
-          `dynamic code execution: ${line.slice(0, 80)}`, "Remove — CSP script-src 'self' blocks it.");
-      });
-    }
-    // Leftover debugging in shipped browser code.
-    scan(file, /console\.(log|debug)\s*\(/g, (_m, where, line) => {
-      if (/^\s*(\/\/|\*)/.test(line)) return;
-      finding("hygiene/consoleLog", "bugs", "low", file, where,
-        `console.log in shipped code: ${line.slice(0, 80)}`,
-        "Use the console's own toast/log surface, or delete.");
-    });
-  }
-}
-
-/**
- * Toast bodies and the `el()` helper's `html` key are the only places the console
- * renders markup on purpose. Both are choke points, so the audit checks the choke
- * point rather than trusting 39 call sites to remember.
- */
-function auditHtmlSinks() {
-  const app = read("web/app.js") || "";
-
-  const sink = /function toastMarkup\(message\)\s*\{([\s\S]*?)\n  \}/.exec(app);
-  if (!sink) {
-    finding("toast/sink", "security", "high", "web/app.js", "toastMarkup",
-      "no escaping toast sink — toast messages would be rendered as caller-supplied HTML",
-      "Escape in the sink and allowlist the emphasis tags.");
-  } else {
-    if (!/escapeHtml\(/.test(sink[1])) {
-      finding("toast/sinkEscapes", "security", "high", "web/app.js", "toastMarkup",
-        "the toast sink does not escape its input", "Escape before re-allowing any tag.");
-    }
-    // The allowlist is the pipe-separated tag group inside the sink's regex.
-    const allowed = (/\(([a-z]+(?:\|[a-z]+)+)\)/.exec(sink[1]) || [])[1];
-    const tags = allowed ? allowed.split("|").sort() : [];
-    if (tags.join("|") !== ["b", "br", "code"].join("|")) {
-      finding("toast/markupAllowlist", "security", "medium", "web/app.js", "toastMarkup",
-        `the toast markup allowlist is [${tags.join(", ")}], expected [b, br, code]`,
-        "Widening it re-opens the sink; an <a> or <img> would carry attributes.");
-    }
-    if (/"use strict"|onerror|javascript:/i.test(sink[1])) {
-      finding("toast/sinkSuspicious", "security", "high", "web/app.js", "toastMarkup",
-        "the sink contains something that is not escaping or the allowlist", "Review it.");
-    }
-  }
-
-  // Call sites pass text. An escapeHtml inside a toast call double-escapes and
-  // shows the analyst `&lt;b&gt;` where a bold count was meant.
-  scan("web/app.js", /toast\((?:[^;]{0,400}?)escapeHtml\(/g, (_m, where, line) => {
-    finding("toast/callSiteEscaping", "bugs", "low", "web/app.js", where,
-      `toast call escapes its own argument: ${line.slice(0, 70)}`,
-      "Pass text — the sink escapes.");
-  });
-
-  // The el() helper's html key is the other deliberate sink.
-  const htmlSinks = [...app.matchAll(/html:\s*([^,\n}]+)/g)];
-  htmlSinks.forEach((match) => {
-    const value = match[1];
-    const interpolated = /\$\{|"\s*\+|\+\s*[A-Za-z_$]/.test(value);
-    const escaped = /escapeHtml\(|toastMarkup\(/.test(value);
-    if (interpolated && !escaped) {
-      const line = app.slice(0, match.index).split("\n").length;
-      finding("xss/elHtml", "security", "high", "web/app.js", `web/app.js:${line}`,
-        `el({ html: … }) receives unescaped interpolation: ${value.trim().slice(0, 70)}`,
-        "Wrap every interpolated value in escapeHtml.");
-    }
-  });
-}
-
-/* ========================================================================== */
-/*  2. index.html — integrity, a11y, hygiene                                   */
-/* ========================================================================== */
-
-function auditHtml() {
-  const file = "web/index.html";
-  const html = read(file);
-  if (!html) return;
-  const dimension = "bugs";
-
-  // Duplicate ids silently break getElementById, labels and aria wiring.
-  const ids = new Map();
-  scan(file, /\bid="([^"]+)"/g, (match, where) => {
-    const id = match[1];
-    if (ids.has(id)) {
-      finding("html/duplicateId", dimension, "high", file, where,
-        `duplicate id="${id}" (first at ${ids.get(id)})`, "Rename one; ids must be unique.");
-    } else ids.set(id, where);
-  });
-
-  // Every id reference must resolve, or the relationship it declares is a lie
-  // (a dialog without a name, a label attached to nothing).
-  const refAttrs = ["aria-labelledby", "aria-describedby", "aria-controls", "aria-owns", "for", "list"];
-  for (const attr of refAttrs) {
-    scan(file, new RegExp(`\\b${attr}="([^"]+)"`, "g"), (match, where) => {
-      for (const token of match[1].split(/\s+/).filter(Boolean)) {
-        if (!ids.has(token)) {
-          finding("html/danglingRef", dimension, "medium", file, where,
-            `${attr}="${token}" points at an element that does not exist`,
-            `Add the missing id or correct the reference.`);
-        }
-      }
-    });
-  }
-  scan(file, /href="#([^"]+)"/g, (match, where) => {
-    if (match[1] && !ids.has(match[1])) {
-      finding("html/danglingFragment", dimension, "low", file, where,
-        `href="#${match[1]}" has no target`, "Point it at a real id or remove the link.");
-    }
-  });
-
-  // `data-open-modal="#id"` is resolved by delegation in modals.js, so a typo
-  // does not throw — the click quietly opens nothing. The footer carries seven
-  // of them and they are the only path to the legal copy.
-  scan(file, /\bdata-open-modal="([^"]+)"/g, (match, where) => {
-    const target = match[1];
-    if (!target.startsWith("#") || !ids.has(target.slice(1))) {
-      finding("html/danglingDialogOpener", dimension, "medium", file, where,
-        `data-open-modal="${target}" has no dialog to open`,
-        "Point it at an existing .modal id, including the leading #.");
-    }
-  });
-
-  // Inline handlers and blank-target links.
-  scan(file, /\son[a-z]+\s*=\s*"/gi, (match, where) => {
-    finding("html/inlineHandler", "security", "high", file, where,
-      `inline event handler ${match[0].trim()}`, "The CSP forbids inline script — bind in JS.");
-  });
-  scan(file, /<a\b[^>]*target="_blank"[^>]*>/gi, (match, where) => {
-    if (!/rel="[^"]*noopener/.test(match[0])) {
-      finding("html/blankNoopener", "security", "medium", file, where,
-        `target="_blank" without rel="noopener": ${match[0].slice(0, 80)}`,
-        'Add rel="noopener" (reverse tabnabbing).');
-    }
-  });
-  scan(file, /<img\b(?![^>]*\balt=)[^>]*>/gi, (match, where) => {
-    finding("a11y/imgAlt", "bugs", "low", file, where,
-      `<img> without alt: ${match[0].slice(0, 70)}`, 'Add alt="" if decorative, else describe it.');
-  });
-
-  // Dialogs must be named and modal; the console is keyboard-driven.
-  scan(file, /<div\b[^>]*class="modal"[^>]*>/g, (match, where) => {
-    if (!/role="dialog"/.test(match[0]) || !/aria-modal="true"/.test(match[0])) {
-      finding("a11y/dialogRole", "bugs", "medium", file, where,
-        `dialog without role/aria-modal: ${match[0].slice(0, 80)}`,
-        'Add role="dialog" aria-modal="true" aria-labelledby="…".');
-    }
-    if (!/aria-labelledby=/.test(match[0])) {
-      finding("a11y/dialogName", "bugs", "medium", file, where,
-        "dialog has no accessible name", "Add aria-labelledby pointing at its heading.");
-    }
-  });
-
-  // Heading structure: one h1, no skipped levels.
-  const levels = [...html.matchAll(/<h([1-6])\b/gi)].map((match) => Number(match[1]));
-  const h1 = levels.filter((level) => level === 1).length;
-  if (h1 !== 1) {
-    finding("seo/singleH1", "seo", "medium", file, "web/index.html",
-      `expected exactly one <h1>, found ${h1}`, "One h1 per document; demote the rest.");
-  }
-  levels.forEach((level, index) => {
-    if (index > 0 && level - levels[index - 1] > 1) {
-      finding("seo/headingSkip", "seo", "low", file, `web/index.html (h${levels[index - 1]}→h${level})`,
-        `heading level jumps from h${levels[index - 1]} to h${level}`,
-        "Keep the outline contiguous for screen readers and crawlers.");
-    }
-  });
-
-  // Buttons need an accessible name.
-  scan(file, /<button\b[^>]*>\s*<\/button>/g, (match, where) => {
-    if (!/aria-label=|title=/.test(match[0])) {
-      finding("a11y/unnamedButton", "bugs", "low", file, where,
-        `empty button without a name: ${match[0].slice(0, 70)}`, "Add aria-label.");
-    }
-  });
-}
-
-/* ========================================================================== */
 /*  3. SEO completeness                                                        */
 /* ========================================================================== */
 
 function auditSeo() {
-  const file = "web/index.html";
-  const html = read(file);
-  if (!html) return;
-  const head = html.slice(0, html.indexOf("</head>"));
-  const metaContent = (name) => {
-    for (const pattern of [
-      new RegExp(`<meta[^>]+name="${name}"[^>]+content="([^"]*)"`, "i"),
-      new RegExp(`<meta[^>]+content="([^"]*)"[^>]+name="${name}"`, "i"),
-      new RegExp(`<meta[^>]+property="${name}"[^>]+content="([^"]*)"`, "i"),
-    ]) {
-      const found = pattern.exec(head);
-      if (found) return found[1];
-    }
-    return null;
-  };
-  const require = (id, condition, message, fix, severity = "medium") => {
-    if (!condition) finding(id, "seo", severity, file, "web/index.html<head>", message, fix);
-  };
-
-  const title = (/<title>([^<]*)<\/title>/.exec(head) || [])[1] || "";
-  require("seo/title", title.length > 0 && title.length <= 70,
-    `title is ${title.length} chars (target ≤ 70)`, "Shorten: crawlers truncate.");
-  const description = metaContent("description") || "";
-  require("seo/description", description.length >= 120 && description.length <= 180,
-    `description is ${description.length} chars (target 120–180)`, "Rewrite to the SERP window.");
-  require("seo/keywords", Boolean(metaContent("keywords")), "no keyword metadata", "Add keywords.");
-  require("seo/canonical", /<link[^>]+rel="canonical"/.test(head), "no canonical link", "Add one.");
-  require("seo/robots", /name="robots"[^>]+content="index/.test(head),
-    "robots is not indexable", "Flip to index,follow — or document why this deployment is private.");
-  require("seo/author", metaContent("author") === "AndrexTheDev", "author is not AndrexTheDev", "Set it.");
-  require("seo/themeColor", Boolean(metaContent("theme-color")), "no theme-color", "Add #05070d.");
-  for (const key of ["og:type", "og:title", "og:description", "og:url", "og:image", "og:image:width",
-    "og:image:height", "og:image:alt", "og:site_name", "og:locale"]) {
-    require(`seo/og:${key}`, Boolean(metaContent(key)), `missing ${key}`, `Add the ${key} tag.`);
-  }
-  for (const key of ["twitter:card", "twitter:title", "twitter:description", "twitter:image"]) {
-    require(`seo/twitter:${key}`, Boolean(metaContent(key)), `missing ${key}`, `Add the ${key} tag.`);
-  }
-  require("seo/twitterCard", metaContent("twitter:card") === "summary_large_image",
-    `twitter:card is "${metaContent("twitter:card")}"`, "Use summary_large_image.");
-
-  // The social card must exist, be a JPEG, and match the declared box.
-  const image = metaContent("og:image");
-  if (image) {
-    const local = image.replace(/^\.?\//, "");
-    if (!exists(`web/${local}`)) {
-      finding("seo/ogImageMissing", "seo", "high", file, `web/${local}`,
-        "og:image points at a file that does not exist", "Add the image or fix the path.");
-    } else {
-      const buffer = readFileSync(path.join(ROOT, "web", local));
-      const size = jpegSize(buffer);
-      const declared = { w: Number(metaContent("og:image:width")), h: Number(metaContent("og:image:height")) };
-      if (!size) {
-        finding("seo/ogImageFormat", "seo", "medium", file, `web/${local}`,
-          "og:image is not a JPEG (some crawlers only render JPEG/PNG)", "Ship JPEG or PNG.");
-      } else if (size.width !== declared.w || size.height !== declared.h) {
-        finding("seo/ogImageSize", "seo", "medium", file, `web/${local}`,
-          `image is ${size.width}×${size.height} but the tags declare ${declared.w}×${declared.h}`,
-          "Make the tags match the file.");
-      }
-      if (buffer.length > 400_000) {
-        finding("seo/ogImageWeight", "seo", "low", file, `web/${local}`,
-          `card image is ${(buffer.length / 1024).toFixed(0)} KB`, "Keep it under ~400 KB.");
-      }
-    }
-  }
-
-  // Structured data must parse and be internally consistent.
-  const blocks = [...html.matchAll(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/g)];
-  require("seo/jsonLd", blocks.length === 1, `expected 1 JSON-LD block, found ${blocks.length}`,
-    "Ship exactly one block.");
-  blocks.forEach((block) => {
-    let data;
-    try { data = JSON.parse(block[1]); } catch (error) {
-      finding("seo/jsonLdParse", "seo", "high", file, "web/index.html<ld+json>",
-        `JSON-LD does not parse: ${error.message}`, "Fix the JSON.");
-      return;
-    }
-    const nodes = Array.isArray(data["@graph"]) ? data["@graph"] : [data];
-    const ids = new Set(nodes.map((node) => node["@id"]).filter(Boolean));
-    const app = nodes.find((node) => [].concat(node["@type"] || []).includes("SoftwareApplication"));
-    const site = nodes.find((node) => node["@type"] === "WebSite");
-    if (!app) finding("seo/jsonLdApp", "seo", "high", file, "ld+json",
-      "no SoftwareApplication node", "Add one (with WebApplication).");
-    if (!site) finding("seo/jsonLdSite", "seo", "medium", file, "ld+json",
-      "no WebSite node", "Add one with a SearchAction.");
-    if (app) {
-      for (const key of ["name", "url", "description", "image", "license", "author", "offers",
-        "applicationCategory", "operatingSystem"]) {
-        if (app[key] === undefined) {
-          finding(`seo/jsonLdApp:${key}`, "seo", key === "offers" ? "high" : "medium", file, "ld+json",
-            `SoftwareApplication is missing "${key}"`, `Add ${key} (Google requires name/url/offers).`);
-        }
-      }
-      // The advertised version must be the version that is actually deployed.
-      const worker = /WORKER_VERSION = "([^"]+)"/.exec(read("worker.js") || "");
-      if (worker && app.softwareVersion && app.softwareVersion !== worker[1]) {
-        finding("seo/versionDrift", "bugs", "medium", "web/index.html + worker.js", "ld+json",
-          `JSON-LD advertises ${app.softwareVersion} but the Worker is ${worker[1]}`,
-          "Bump both, or derive one from the other.");
-      }
-    }
-    // Cross-references inside the graph must resolve.
-    nodes.forEach((node) => {
-      for (const [key, value] of Object.entries(node)) {
-        if (value && typeof value === "object" && typeof value["@id"] === "string" && !ids.has(value["@id"])) {
-          finding("seo/jsonLdRef", "seo", "medium", file, `ld+json ${key}`,
-            `${key} references ${value["@id"]}, which no node declares`,
-            "Declare the node or drop the reference.");
-        }
-      }
-    });
-    if (site && site.potentialAction) {
-      const template = site.potentialAction.target && site.potentialAction.target.urlTemplate;
-      if (!template || !template.includes("{search_term_string}")) {
-        finding("seo/searchAction", "seo", "medium", file, "ld+json",
-          "SearchAction target has no {search_term_string}", "Fix the urlTemplate.");
-      }
-    }
-  });
+  // The v1 console's per-document head/JSON-LD audit was retired with the
+  // console itself: the modern export builds every document head through the
+  // Next.js Metadata API, and tests/export_smoke.mjs asserts the rendered
+  // result on the shipped files. What still needs a static gate is the
+  // deployment contract: the files a crawler requests first.
 
   // A public, indexable deployment needs these files; their absence means
   // crawlers get a 404 on /robots.txt and no sitemap to follow. The v2 static
-  // export serves two documents (`/` and `/dashboard/`) from `apps/web/public`,
-  // and keeps the v1 console with its own directives under `/legacy/`.
-  const seoEmitterWired = /emit-seo-files\.mjs/.test(read("scripts/pages-build.mjs") || "")
-    || /emit-seo-files\.mjs/.test(read(".github/workflows/pages_deploy.yml") || "");
-  for (const [relative, why] of [["web/robots.txt", "crawl directives and the sitemap location"],
-    ["web/404.html", "what Cloudflare Pages serves for an unknown path"],
-    ["apps/web/public/robots.txt", "crawl directives at the root of the Next static export"]]) {
+  // export serves its documents (`/`, `/dashboard/`, profiles) from
+  // `apps/web/public`; the v1 console is archived and `/legacy` is a redirect.
+  const seoEmitterWired = /generate-seo\.js/.test(read("scripts/pages-build.mjs") || "");
+  for (const [relative, why] of [
+    ["apps/web/public/robots.txt", "crawl directives at the root of the Next static export"],
+    ["apps/web/public/_redirects", "the permanent /legacy → /dashboard/ rules for Cloudflare Pages"]]) {
     if (!exists(relative)) {
       finding("seo/missingFile", "seo", "medium", relative, relative,
         `${relative} is missing — it carries ${why}`, `Add ${relative}.`);
@@ -479,16 +147,13 @@ function auditSeo() {
   // A sitemap needs absolute URLs, and the deployment origin is not known at
   // commit time, so it is emitted at deploy time — but only if that is wired up.
   // A committed sitemap with a guessed hostname would be worse than none.
-  if (!exists("web/sitemap.xml") && !exists("apps/web/public/sitemap.xml")) {
-    const emitter = exists("scripts/emit-seo-files.mjs");
-    if (!emitter || !seoEmitterWired) {
-      finding("seo/missingFile", "seo", "medium", "apps/web/public/sitemap.xml", "deploy",
-        "no sitemap, and no emitter wired into the Pages build to produce one",
-        "Add scripts/emit-seo-files.mjs and run it from scripts/pages-build.mjs "
-        + "(the Pages Git Integration build gate) before `next build`.");
-    }
+  if (!exists("apps/web/public/sitemap.xml") && !seoEmitterWired) {
+    finding("seo/missingFile", "seo", "medium", "apps/web/public/sitemap.xml", "deploy",
+      "no sitemap, and no emitter wired into the Pages build to produce one",
+      "Run scripts/generate-seo.js from scripts/pages-build.mjs "
+      + "(the Pages Git Integration build gate) before `next build`.");
   }
-  for (const robotsPath of ["web/robots.txt", "apps/web/public/robots.txt"]) {
+  for (const robotsPath of ["apps/web/public/robots.txt"]) {
     if (!exists(robotsPath)) continue;
     const robots = read(robotsPath);
     if (!/^User-agent:\s*\*/m.test(robots)) {
@@ -498,107 +163,7 @@ function auditSeo() {
     if (/^Sitemap:/m.test(robots) && !seoEmitterWired) {
       finding("seo/robotsSitemap", "seo", "low", robotsPath, robotsPath,
         "a Sitemap line is committed but nothing regenerates it per deployment",
-        "Let scripts/emit-seo-files.mjs own that line.");
-    }
-  }
-}
-
-/* ========================================================================== */
-/*  3b. UI state invariants                                                    */
-/* ========================================================================== */
-
-/**
- * The console keeps three pieces of UI state that no single test can see drift:
- * which dialog is open, which elements the filter left visible, and whether an
- * animated transition respects the motion preference. Each of the three has
- * broken silently at least once, so each gets a static gate here and a runtime
- * assertion in tests/web_smoke.mjs (checks 31 and 32).
- */
-function auditUiState() {
-  const file = "web/app.js";
-  const app = read(file);
-  if (!app) return;
-  const dimension = "bugs";
-
-  // Comments are blanked (not removed) so line numbers stay truthful: the prose
-  // below the visibility helpers quotes the very selectors this section forbids.
-  const code = app
-    .replace(/\/\*[\s\S]*?\*\//g, (block) => block.replace(/[^\n]/g, " "))
-    .split("\n")
-    .map((line) => (/^\s*\/\//.test(line) ? "" : line))
-    .join("\n");
-  const lineOf = (index) => code.slice(0, index).split("\n").length;
-  const where = (index) => `${file}:${lineOf(index)}`;
-
-  /**
-   * Balanced extraction: `callText` for a call whose "(" sits at `open`,
-   * `blockText` for a body whose "{" does. Braces inside string literals would
-   * confuse blockText; none of the bodies read here contain any, and a false
-   * negative shows up as a finding rather than as silence.
-   */
-  function span(open, opening, closing) {
-    let depth = 0;
-    for (let i = open; i < code.length; i += 1) {
-      if (code[i] === opening) depth += 1;
-      else if (code[i] === closing) {
-        depth -= 1;
-        if (depth === 0) return code.slice(open, i + 1);
-      }
-    }
-    return code.slice(open);
-  }
-  const callText = (open) => span(open, "(", ")");
-  const blockText = (open) => span(open, "{", "}");
-
-  // One dialog at a time, and a page that does not scroll behind it.
-  const opener = /function openModal\(id\) \{/.exec(code);
-  const closer = /function closeModal\(\) \{/.exec(code);
-  if (!opener || !closer) {
-    finding("ui/dialogPlumbingMissing", dimension, "medium", file, "openModal/closeModal",
-      "app.js no longer exposes the openModal/closeModal pair this section reads",
-      "Keep both functions, or move these invariants to wherever the dialogs live now.");
-  } else {
-    const openBody = blockText(code.indexOf("{", opener.index));
-    const closeBody = blockText(code.indexOf("{", closer.index));
-    if (!/if \(state\.modalOpen && state\.modalOpen !== id\) closeModal\(\);/.test(openBody)) {
-      finding("ui/dialogMutualExclusion", dimension, "medium", file, where(opener.index),
-        "opening a dialog no longer closes the dialog already on screen",
-        "Call closeModal() before showing the new one: two cards stack, and because "
-        + "closeModal() only hides what state.modalOpen points at, the first becomes "
-        + "impossible to dismiss.");
-    }
-    if (!/body\.style\.overflow = "hidden"/.test(openBody)) {
-      finding("ui/dialogScrollLock", "a11y", "low", file, where(opener.index),
-        "the page behind an open dialog can still scroll",
-        'Set document.body.style.overflow = "hidden" while a dialog is open.');
-    }
-    if (!/body\.style\.overflow = ""/.test(closeBody)) {
-      finding("ui/dialogScrollLock", "a11y", "low", file, where(closer.index),
-        "closing a dialog leaves the page scroll locked",
-        'Reset document.body.style.overflow = "" in closeModal.');
-    }
-  }
-
-  // Visibility comes from the class applyFilters toggles — never from a selector.
-  // Cytoscape 3.30.4 rejects `:not(.flt-hidden)` ("The selector ... is invalid")
-  // and then matches *everything*, and `:visible` reads the computed style, which
-  // can lag the batch that set the classes. Either one made the HUD report the
-  // pre-filter count while the canvas had already narrowed.
-  for (const match of code.matchAll(/:visible|:not\(\s*\.flt-hidden/g)) {
-    finding("ui/visibilitySelector", dimension, "medium", file, where(match.index),
-      `visibility is derived from a selector again (${match[0]})`,
-      "Use isVisible()/countVisibleNodes()/countVisibleEdges(): `.flt-hidden` is the "
-      + "only display:none rule, so the class is the truth and the selector is not.");
-  }
-
-  // Every animated viewport transition honours prefers-reduced-motion.
-  for (const match of code.matchAll(/cy\.animate\(/g)) {
-    const call = callText(code.indexOf("(", match.index));
-    if (!/reduce-motion/.test(call)) {
-      finding("ui/animationMotionPreference", "a11y", "low", file, where(match.index),
-        "an animated transition ignores the user's motion preference",
-        "Pass duration: document.body.classList.contains(\"reduce-motion\") ? 0 : <ms>, "
-        + "as fitView, centerOn and zoomBy do.");
+        "Let scripts/generate-seo.js own that line.");
     }
   }
 }
@@ -626,7 +191,7 @@ function auditCypher() {
   const pattern = /LIMIT\s+(?:\$\w+|\d+)\s+(?:ORDER\s+BY|SKIP|OFFSET)\b/gi;
   const flatten = (text) => text.replace(/(`|"|')\s*(?:\+\s*)?(`|"|')/g,
     (chunk) => chunk.replace(/[^\n]/g, " "));
-  const files = ["worker.js", "web/app.js", "graph_analytics.py", "ingest.py", "telegram_bot.py"]
+  const files = ["worker.js", "graph_analytics.py", "ingest.py", "telegram_bot.py"]
     .concat(walk("puppetnet", (relative) => relative.endsWith(".py")));
   for (const file of files) {
     const text = read(file);
@@ -648,12 +213,11 @@ function auditCypher() {
 
 function auditInvariants() {
   const worker = read("worker.js") || "";
-  const app = read("web/app.js") || "";
-  const config = read("puppetnet/config.py") || "";
 
-  // The Worker publishes its ceilings; the console must clamp to the same ones.
-  // A client that asks for more than the server allows gets a silent 400, and a
-  // client that asks for less throws away data the analyst paid for.
+  // The Worker publishes its ceilings in a frozen literal; the relay is the
+  // only transport left (the v1 console that had to clamp to the same values
+  // is archived), but the literal must stay parseable — GRAPH_LIMITS is the
+  // budget the Python pipeline plans against too.
   const limits = {};
   const block = /const GRAPH_LIMITS = Object\.freeze\(\{([\s\S]*?)\}\);/.exec(worker);
   if (!block) {
@@ -661,167 +225,13 @@ function auditInvariants() {
       "GRAPH_LIMITS could not be parsed", "Keep the frozen object literal.");
   } else {
     for (const match of block[1].matchAll(/(\w+):\s*(\d+)/g)) limits[match[1]] = Number(match[2]);
-  }
-  /**
-   * Collect every clamp(…, min, max) in the console and classify it by what it
-   * clamps. One nesting level is enough — the console writes
-   * `clamp(toNumber(opts.limit, 250), 1, 1200)` and nothing deeper.
-   */
-  const clamps = [];
-  for (const match of app.matchAll(/clamp\(((?:[^()]|\([^()]*\))*)\)/g)) {
-    const args = match[1];
-    const bounds = /,\s*(\d+)\s*,\s*(\d+)\s*$/.exec(args);
-    if (!bounds) continue;
-    let kind = null;
-    if (/\.depth\b/.test(args)) kind = "depth";
-    else if (/maxHops|hopsCap/.test(args)) kind = "hops";
-    else if (/\.limit\b/.test(args)) {
-      // Two different budgets share the word "limit": the graph ceiling and the
-      // evidence-table row cap. GRAPH_LIMITS is the authority that tells them
-      // apart, so the classification follows it instead of guessing from size.
-      const max = Number(bounds[2]);
-      if (max === limits.MAX_TABLE_ROWS) kind = "tableRows";
-      else if (max > 100) kind = "nodes";
-      else kind = "searchRows";
-    }
-    if (kind) clamps.push({ kind, min: Number(bounds[1]), max: Number(bounds[2]) });
-  }
-
-  // The dangerous direction is a client that asks for more than the Worker
-  // allows: the request is refused and the analyst sees an empty canvas.
-  const invariants = [
-    { kind: "nodes", limit: "MAX_NODES", label: "graph node ceiling" },
-    { kind: "depth", limit: "MAX_DEPTH", label: "neighbourhood depth" },
-    { kind: "hops", limit: "MAX_HOPS", label: "handshake hops" },
-    { kind: "tableRows", limit: "MAX_TABLE_ROWS", label: "evidence-table row cap" },
-  ];
-  // Hops go through clampHops(), which picks the ceiling from the cost mode; its
-  // constants are compared with the Worker's below, so the scan skips them here.
-  const usesClampHops = /function clampHops\(/.test(app) && (app.match(/clampHops\(/g) || []).length >= 4;
-  for (const rule of invariants) {
-    if (rule.kind === "hops" && usesClampHops) continue;
-    const seen = clamps.filter((clamp) => clamp.kind === rule.kind);
-    if (seen.length === 0) {
-      finding(`limits/client:${rule.limit}`, "bugs", "medium", "web/app.js", rule.label,
-        `the console never clamps the ${rule.label} (the Worker allows ${limits[rule.limit]})`,
-        "Clamp client-side so an over-budget request is never sent.");
-      continue;
-    }
-    const worst = Math.max(...seen.map((clamp) => clamp.max));
-    if (limits[rule.limit] !== undefined && worst > limits[rule.limit]) {
-      finding(`limits/drift:${rule.limit}`, "bugs", "high", "web/app.js ↔ worker.js", rule.label,
-        `the console allows ${worst} but the Worker refuses anything above ${limits[rule.limit]}`,
-        "Clamp to GRAPH_LIMITS — one source of truth.");
-    }
-    if (worst < (limits[rule.limit] ?? worst)) {
-      finding(`limits/underuse:${rule.limit}`, "bugs", "info", "web/app.js", rule.label,
-        `the console caps the ${rule.label} at ${worst} although ${limits[rule.limit]} is allowed`,
-        "Deliberate? Then say so in a comment next to the clamp.");
-    }
-  }
-
-  // Weighted path searches enumerate far more of the graph per hop, so the Worker
-  // caps them lower than hop-count searches. If the console does not apply the
-  // same ceiling, a 12-hop weighted request silently comes back as a 4-hop answer
-  // — and the offline solver disagrees with the live API on identical input.
-  const clientCeilings = {
-    MAX_HOPS: /const MAX_PATH_HOPS\s*=\s*(\d+)/.exec(app),
-    MAX_HOPS_WEIGHTED: /const MAX_PATH_HOPS_WEIGHTED\s*=\s*(\d+)/.exec(app),
-  };
-  for (const [name, match] of Object.entries(clientCeilings)) {
-    if (!match) {
-      finding(`limits/weightedHops:${name}`, "bugs", "high", "web/app.js", "hop ceilings",
-        `the console has no named ${name} constant to compare with GRAPH_LIMITS.${name}`,
-        "Name the ceiling so the invariant is checkable.");
-    } else if (limits[name] !== undefined && Number(match[1]) !== limits[name]) {
-      finding(`limits/drift:${name}`, "bugs", "high", "web/app.js ↔ worker.js", "hop ceilings",
-        `the console allows ${match[1]} hops, the Worker ${limits[name]}`,
-        "Make them equal — GRAPH_LIMITS is the source of truth.");
-    }
-  }
-  if (!usesClampHops) {
-    finding("limits/weightedHops", "bugs", "medium", "web/app.js", "weighted handshake",
-      "the console does not route hop clamping through a single cost-aware helper",
-      "Clamp hops where the cost mode is known: UI, request and local solver alike.");
-  }
-  // The ceiling has to reach the analyst, not just the request.
-  if (!/syncHopsCeiling/.test(app) || !/id="path-hops-note"/.test(read("web/index.html") || "")) {
-    finding("limits/weightedHopsUi", "bugs", "medium", "web/app.js ↔ web/index.html", "weighted handshake",
-      "the hop ceiling changes with the cost mode but the UI does not say so",
-      "Move the slider's max with the cost mode and explain the cap next to it.");
-  }
-
-  // Aura Free's caps are declared in Python and mirrored in the console's HUD.
-  const auraNode = /aura_node_cap:\s*int\s*=\s*([\d_]+)/.exec(config);
-  const auraEdge = /aura_edge_cap:\s*int\s*=\s*([\d_]+)/.exec(config);
-  const hud = /node_cap:\s*(\d+),\s*edge_cap:\s*(\d+)/.exec(app);
-  if (auraNode && auraEdge && hud) {
-    const py = [Number(auraNode[1].replace(/_/g, "")), Number(auraEdge[1].replace(/_/g, ""))];
-    const js = [Number(hud[1]), Number(hud[2])];
-    if (py[0] !== js[0] || py[1] !== js[1]) {
-      finding("limits/auraDrift", "bugs", "high", "web/app.js ↔ puppetnet/config.py", "aura caps",
-        `console shows ${js.join("/")} but the pipeline budgets ${py.join("/")}`,
-        "Keep the Aura Free ceilings identical in both places.");
-    }
-  } else {
-    finding("limits/auraMissing", "bugs", "low", "web/app.js", "aura caps",
-      "could not locate the Aura cap mirrors", "Check the HUD caps object.");
-  }
-
-  // The canonical key ("TYPE:slug-8hex") is written by Python and *reproduced* in
-  // JS: the console builds keys for its demo dataset and renders every key it reads
-  // back out of the graph. The invariant is the label vocabulary — the console
-  // knows the entity types from `EntityType` plus the domain labels from
-  // `puppetnet/domain.py`. A type the console does not know renders as an
-  // unlabelled, unfilterable node; a type it invents points at nodes that never
-  // exist.
-  //
-  // This check used to read `puppetnet/resolver.py` and compare `PERSON|ORG|SHELL`
-  // prefixes. That path does not exist (the resolver is
-  // `puppetnet/graph/resolver.py`, and the key is built in `puppetnet/models.py`),
-  // `read()` returns null for a missing file, and the comparison was therefore
-  // skipped — a check that could not fail, which is decoration.
-  const models = read("puppetnet/models.py") || "";
-  const enumStart = models.indexOf("class EntityType(str, Enum):");
-  const enumEnd = enumStart < 0 ? -1 : models.indexOf("\nclass ", enumStart + 1);
-  const enumBlock = enumStart < 0 ? "" : models.slice(enumStart, enumEnd < 0 ? undefined : enumEnd);
-  const pyTypes = [...enumBlock.matchAll(/^\s{4}[A-Z_]+ = "([A-Za-z]+)"/gm)].map((m) => m[1]);
-  const domain = read("puppetnet/domain.py") || "";
-  // Anchored at the start of a line: an unanchored `[^=]*=` walked past this
-  // assignment and matched the *first* frozenset in the file — the jurisdiction
-  // list — so the comparison ran against country codes and every domain label
-  // looked JS-only.
-  const domainBlock = /^DOMAIN_LABELS[^=]*=\s*frozenset\(([\s\S]*?)\n\)/m.exec(domain);
-  const domainLabels = domainBlock
-    ? [...domainBlock[1].matchAll(/"([A-Za-z]+)"/g)].map((m) => m[1])
-    : [];
-  const entityTypes = pyTypes.filter((type) => type !== "Unknown");
-
-  // The console's vocabulary, and the rows it builds demo keys from.
-  const typesBlock = /const ENTITY_TYPES = Object\.freeze\(\{([\s\S]*?)\n\s{2}\}\)/.exec(app);
-  const jsTypes = typesBlock
-    ? [...typesBlock[1].matchAll(/^\s{4}([A-Za-z]+)\s*:/gm)].map((m) => m[1])
-    : [];
-
-  if (entityTypes.length === 0 || domainLabels.length === 0 || jsTypes.length === 0) {
-    finding("invariant/canonicalKey", "bugs", "high", "web/app.js ↔ puppetnet", "label vocabulary",
-      `could not read a vocabulary (python types: ${entityTypes.length}, domain labels: ${domainLabels.length}, console types: ${jsTypes.length})`,
-      "Keep `class EntityType`, `DOMAIN_LABELS` and `ENTITY_TYPES` parseable — this check compares them.");
-  } else {
-    const missing = entityTypes.filter((type) => !jsTypes.includes(type));
-    // `Unknown` is the console\'s fallback label, not an entity type: Python has it
-    // too, and it is excluded from the type list above only because no node is
-    // *created* as Unknown.
-    const invented = jsTypes.filter((type) => type !== "Unknown" && !entityTypes.includes(type) && !domainLabels.includes(type));
-    if (missing.length || invented.length) {
-      finding("invariant/canonicalKey", "bugs", "high", "web/app.js ↔ puppetnet/models.py", "label vocabulary",
-        `label vocabularies differ (python-only: ${missing.join(", ") || "—"}; js-only: ${invented.join(", ") || "—"})`,
-        "Align the two: a label the console does not know renders unlabelled and cannot be filtered.");
+    if (Object.keys(limits).length === 0) {
+      finding("limits/workerMissing", "bugs", "high", "worker.js", "GRAPH_LIMITS",
+        "GRAPH_LIMITS parsed to an empty budget", "Keep the name/value pairs on one literal.");
     }
   }
 }
 
-/* ========================================================================== */
 /*  4b. robots.txt parity (relay ↔ direct transport)                           */
 /* ========================================================================== */
 
@@ -1248,25 +658,6 @@ function auditCostAndSupplyChain() {
     }
   }
 
-  // 4. Supply chain: every vendored browser library ships its licence text.
-  const vendorDir = "web/vendor";
-  if (exists(vendorDir)) {
-    const libs = readdirSync(path.join(ROOT, vendorDir)).filter((name) => name.endsWith(".min.js"));
-    const licences = readdirSync(path.join(ROOT, vendorDir)).filter((name) => name.startsWith("LICENSE."));
-    if (licences.length < libs.length) {
-      finding("supply/licences", "security", "medium", vendorDir, vendorDir,
-        `${libs.length} vendored libraries but only ${licences.length} licence texts`,
-        "Every vendored file needs its upstream licence next to it.");
-    }
-    libs.forEach((lib) => {
-      const bytes = statSync(path.join(ROOT, vendorDir, lib)).size;
-      if (bytes > 1_500_000) {
-        finding("supply/size", "bugs", "low", `${vendorDir}/${lib}`, vendorDir,
-          `${lib} is ${(bytes / 1024).toFixed(0)} KB`, "Check that it is minified and needed.");
-      }
-    });
-  }
-
   // 5. No secret may be committed; .env must stay ignored.
   const gitignore = read(".gitignore") || "";
   for (const pattern of [".env", ".venv", "node_modules", "data/"]) {
@@ -1409,11 +800,7 @@ function report() {
   }
 }
 
-auditBrowserJs();
-auditHtmlSinks();
-auditHtml();
 auditSeo();
-auditUiState();
 auditCypher();
 auditInvariants();
 auditRobotsParity();

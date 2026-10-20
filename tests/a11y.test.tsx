@@ -141,3 +141,53 @@ test('the table description explains that it is the non-visual alternative', () 
   assert.match(html, /Textalternative zum WebGL-Graphen/);
   assert.match(html, /mit Tastatur und\s+Screenreader bedienbar/);
 });
+
+/* ------------------------------------------------------------------------- */
+/* Standby / onboarding state (no usable publication)                        */
+/* ------------------------------------------------------------------------- */
+
+import StandbyPanelExport, { LoadingStage } from '../apps/web/app/dashboard/BootState';
+const StandbyPanel = (StandbyPanelExport as unknown as { default?: typeof StandbyPanelExport }).default ?? StandbyPanelExport;
+
+function renderStandby(reason: 'unavailable' | 'empty' = 'unavailable') {
+  return renderToStaticMarkup(createElement(StandbyPanel, {
+    standby: reason === 'empty'
+      ? { reason: 'empty', message: 'Der veröffentlichte Datensatz ist leer — zum Beispiel nach einer vollständigen Datenrücknahme.' }
+      : { reason: 'unavailable', message: 'Kein gültiger CDN-Datensatz erreichbar (offline, fehlend oder ungültiges Format).' },
+    busy: false,
+    onDemo: () => {},
+    onResearch: () => {},
+    onReload: () => {},
+  }));
+}
+
+test('standby explains the state instead of showing an error alert', () => {
+  const html = renderStandby();
+  assert.match(html, /System im Bereitschaftsmodus\./);
+  assert.match(html, /Zeige Demonstrationsdaten oder starte eine On-Demand-Recherche\./);
+  assert.match(html, /Kein gültiger CDN-Datensatz erreichbar/);
+  assert.match(html, /Leere Veröffentlichung|Kein Datensatz gefunden/, 'the concrete reason is labelled');
+  assert.doesNotMatch(html, /role="alert"/, 'standby is a state, not an error');
+});
+
+test('standby offers a one-click demo load and labels it as fictional', () => {
+  const html = renderStandby();
+  assert.match(html, /<button type="button" class="primary-button"[^>]*>Demo-Datensatz laden<\/button>/);
+  assert.match(html, /On-Demand-Recherche/);
+  assert.match(html, /fiktiv[a-z]* Beispieldaten/, 'the demo must stay clearly fictional');
+  assert.match(html, /aria-labelledby="standby-title"/, 'the panel heading is named for screen readers');
+});
+
+test('an empty publication gets its own standby reason', () => {
+  const html = renderStandby('empty');
+  assert.match(html, /Leere Veröffentlichung/);
+  assert.match(html, /vollständigen Datenrücknahme/);
+});
+
+test('the loading stage is polite and names the file under review', () => {
+  const html = renderToStaticMarkup(createElement(LoadingStage));
+  assert.match(html, /aria-busy="true"/);
+  assert.match(html, /role="status"/);
+  assert.match(html, /graph_latest\.json/);
+  assert.doesNotMatch(html, /role="alert"/);
+});

@@ -39,7 +39,7 @@ reads the dataset and the page, sitemap and dashboard all call the same module.
 | Slug | `slugify(name)` plus a stable 7-character FNV-1a base-36 suffix |
 
 The cap keeps one deployment inside the Pages file budget while leaving room for JS
-chunks, OG cards and the legacy console. The slug suffix is derived from the canonical
+chunks and OG cards. The slug suffix is derived from the canonical
 id, so renaming an entity changes the readable prefix but not the collision space; the
 sitemap and the page set are generated from the same list, so a 404 cannot be published.
 
@@ -111,20 +111,25 @@ if any card or canonical URL is relative.
 
 ## Sitemap and robots
 
-`scripts/emit-seo-files.mjs` runs before `next build` in `npm run ci:pages` with
-`--build-gate`. For every target it emits a sitemap containing:
+`scripts/generate-seo.js` runs before `next build` (the web package's `prebuild` and the
+`build` hook in `next.config.mjs`; `scripts/emit-seo-files.mjs` is the deploy-time
+variant for a Pages build with `SITE_ORIGIN`). It emits a sitemap containing only active
+App Router documents:
 
 | URL | Priority | Change frequency |
 | --- | --- | --- |
 | `/` | 1.0 | weekly |
-| `/dashboard/` | 0.9 | weekly |
+| `/dashboard/` | 0.9 | monthly |
 | `/entity/<slug>/` | 0.7 | monthly |
 
+`/legacy` is deliberately absent: the archived v1 console is a permanent redirect to
+`/dashboard/` (`app/legacy/page.tsx`, `public/_redirects`) and a redirect is never a
+sitemap entry. `robots.txt` additionally carries `Disallow: /legacy`.
+
 The same run rewrites the `Sitemap:` line in `apps/web/public/robots.txt` and keeps the
-committed files origin-free. Without `SITE_ORIGIN` nothing is written and the build
-continues; an unusable origin only warns under `--build-gate`, because a missing sitemap
-must not take a deployment down. Generated sitemaps and `entities.json` are git-ignored:
-a committed sitemap would have to guess a hostname.
+committed files origin-free. An invalid origin fails the local run, because a sitemap
+pointing at somebody else's domain is worse than none. Generated sitemaps and
+`entities.json` are git-ignored: a committed sitemap would have to guess a hostname.
 
 `npm run emit:sitemap -- --origin https://… --out /tmp/x` is the standalone renderer used
 by `tests/seo.test.ts`. Past `limit` (default 50 000) URLs the writer switches to a

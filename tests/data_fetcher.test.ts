@@ -13,11 +13,24 @@ test('CDN loader uses same-origin static URL without token or Worker', async () 
   if (result.source === 'static') assert.equal(result.dataset.nodes[0].id, 'org:a');
 });
 
-test('offline, missing and malformed JSON give explicitly labelled example fallback', async () => {
+test('offline, missing and malformed JSON become standby — never a silent demo swap', async () => {
   for (const fetcher of [async () => { throw new Error('offline'); }, async () => new Response('not found', { status: 404 }),
     async () => new Response('bad JSON'), async () => new Response('{"nodes":[{}],"edges":[]}')]) {
     const result = await loadStaticGraph({ fetcher });
-    assert.equal(result.source, 'demo'); assert.match(result.message, /fiktive/);
+    assert.equal(result.source, 'standby');
+    if (result.source === 'standby') {
+      assert.equal(result.reason, 'unavailable');
+      assert.match(result.message, /CDN-Datensatz/);
+    }
+  }
+});
+
+test('an empty publication (full withdrawal) is valid standby, not an error', async () => {
+  const result = await loadStaticGraph({ fetcher: async () => new Response(JSON.stringify({ demo: false, nodes: [], edges: [] })) });
+  assert.equal(result.source, 'standby');
+  if (result.source === 'standby') {
+    assert.equal(result.reason, 'empty');
+    assert.match(result.message, /leer|Rücknahme/);
   }
 });
 

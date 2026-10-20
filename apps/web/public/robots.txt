@@ -3,16 +3,17 @@
 # =============================================================================
 #
 #  This file is the root of the Cloudflare Pages deployment (`/robots.txt`).
-#  The retained v1 analyst console keeps its own directives under
-#  `/legacy/robots.txt`; both are origin-free on purpose.
+#  The retained v1 analyst console has been archived: `/legacy` is a permanent
+#  redirect to `/dashboard/` (public/_redirects + app/legacy/page.tsx) and is
+#  explicitly excluded from indexing.
 #
 #  The v2 frontend is a static export with three crawlable document kinds:
 #  the landing page (`/`), the dashboard shell (`/dashboard/`) and one profile
 #  page per public entity (`/entity/<slug>/`, pre-rendered at build time). The
-#  dashboard itself is client-side state — imported JSON, the fictional demo
-#  fixture or a read-only Worker API response behind a bearer token — so only
-#  its shell is indexed; no investigation result is crawlable. Profiles carry
-#  their own `robots` meta tag, and private/noindex entities never get a page.
+#  dashboard itself is client-side state — the published static graph, the
+#  fictional demo fixture or an imported JSON — so only its shell is indexed;
+#  no investigation result is crawlable. Profiles carry their own `robots`
+#  meta tag, and private/noindex entities never get a page.
 #
 #  A `Sitemap:` line has to be absolute, and this repository is committed long
 #  before anybody knows which domain will serve it. `npm run emit:seo --
@@ -29,5 +30,6 @@
 
 User-agent: *
 Allow: /
+Disallow: /legacy
 
 Sitemap: https://puppetnet-web.pages.dev/sitemap.xml

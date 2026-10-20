@@ -132,12 +132,31 @@ for (const profile of profiles) {
 }
 
 /* ------------------------------------------------------------------------- */
+/* Archived /legacy console: a redirect, never a document                     */
+/* ------------------------------------------------------------------------- */
+const legacyRedirect = path.join(OUT, 'legacy', 'index.html');
+assert.ok(existsSync(legacyRedirect), 'out/legacy/index.html fehlt: der statische Redirect für die archivierte Konsole wurde nicht exportiert.');
+const redirectHtml = readFileSync(legacyRedirect, 'utf8');
+assert.match(redirectHtml, /<meta http-equiv="refresh" content="0; url=\/dashboard\/"\/?>/,
+  'Der Legacy-Pfad braucht einen verzögerungsfreien Meta-Refresh auf /dashboard/ (auch ohne JavaScript).');
+assert.match(redirectHtml, /rel="canonical" href="https:\/\/[^"]+\/dashboard\/"/,
+  'Der Redirect muss kanonisch auf /dashboard/ zeigen.');
+assert.match(redirectHtml, /name="robots" content="noindex/, 'Der Redirect darf nicht indexiert werden.');
+assert.match(redirectHtml, /href="\/dashboard\/"/, 'Ein sichtbarer Fallback-Link muss die Weiterleitung erhärten.');
+assert.doesNotMatch(redirectHtml, /cytoscape|PuppetNETModals/, 'In /legacy darf kein Konsolen-Code mehr liegen.');
+assert.equal(existsSync(path.join(OUT, 'legacy', 'app.js')), false, 'Legacy-Konsolen-Skripte dürfen nicht mehr exportiert werden.');
+const redirectsFile = path.join(OUT, '_redirects');
+assert.ok(existsSync(redirectsFile), 'out/_redirects fehlt: Cloudflare Pages braucht die 301-Regeln.');
+assert.match(readFileSync(redirectsFile, 'utf8'), /^\/legacy\s+\/dashboard\/\s+301$/m, 'Die 301-Regel /legacy → /dashboard/ fehlt.');
+
+/* ------------------------------------------------------------------------- */
 /* Sitemap (only when the build had an origin)                               */
 /* ------------------------------------------------------------------------- */
 const sitemapFile = path.join(OUT, 'sitemap.xml');
 if (existsSync(sitemapFile)) {
   const xml = readFileSync(sitemapFile, 'utf8');
   assert.match(xml, /<urlset|<sitemapindex/, 'sitemap.xml ist weder urlset noch sitemapindex.');
+  assert.doesNotMatch(xml, /\/legacy/, 'Die Sitemap darf den archivierten /legacy-Pfad nicht führen.');
   for (const [, loc] of xml.matchAll(/<loc>([^<]+)<\/loc>/g)) {
     assert.match(loc, /^https?:\/\//, `Sitemap-Eintrag ${loc} ist nicht absolut.`);
     const pathname = new URL(loc).pathname;
