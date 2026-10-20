@@ -471,8 +471,9 @@ class NeverCloud:
 
 
 def test_wave4_german_lexicons_stay_inside_the_closed_vocabulary():
-    from puppetnet.models import RelationType
     from src.token_saver_nlp import KINSHIP_OR_CORPORATE, REVERSED_VERBS, ROLE_NOUNS, VERBS
+
+    from puppetnet.models import RelationType
     names = set(RelationType.names())
     assert all(predicate in names for predicate in VERBS.values())
     assert all(predicate in names for predicate in REVERSED_VERBS.values())
