@@ -237,11 +237,16 @@ def check_spacy() -> dict[str, Any]:
 
 def _gemini_call(session: Any, model: str, prompt: str) -> dict[str, Any]:
     """One countTokens+generateContent round trip following the production guard rails."""
+    import requests
+
     contents = [{"role": "user", "parts": [{"text": prompt}]}]
     url = f"{GEMINI_BASE_URL}/models/{model}"
     headers = {"x-goog-api-key": os.environ["GEMINI_API_KEY"]}
-    counted = session.post(url + ":countTokens", headers=headers,
-                           json={"contents": contents}, timeout=(5, 20), allow_redirects=False)
+    try:
+        counted = session.post(url + ":countTokens", headers=headers,
+                               json={"contents": contents}, timeout=(5, 20), allow_redirects=False)
+    except requests.RequestException as exc:
+        return {"ok": False, "kind": "network", "detail": f"countTokens ({model}): {type(exc).__name__}: {str(exc)[:200]}"}
     if counted.status_code != 200:
         return {"ok": False, "kind": "http", "http_status": counted.status_code,
                 "detail": f"countTokens: {_http_error_detail(counted)}"}
@@ -253,9 +258,15 @@ def _gemini_call(session: Any, model: str, prompt: str) -> dict[str, Any]:
     config: dict[str, Any] = {"maxOutputTokens": max(1, min(50, 150 - count)), "temperature": 0}
     if model.startswith(("gemini-2.5-", "gemini-3.")):
         config["thinkingConfig"] = {"thinkingBudget": 0}  # keep thinking models inside the 150-token guard
-    result = session.post(url + ":generateContent", headers=headers,
-                          json={"contents": contents, "generationConfig": config},
-                          timeout=(5, 30), allow_redirects=False)
+    try:
+        result = session.post(url + ":generateContent", headers=headers,
+                              json={"contents": contents, "generationConfig": config},
+                              timeout=(5, 60), allow_redirects=False)
+    except requests.RequestException as exc:
+        # Thinking-class models can be slow even with thinkingBudget=0; QA gives
+        # them 60 s (production allows 15 s and would disable the fallback).
+        return {"ok": False, "kind": "network",
+                "detail": f"generateContent ({model}): {type(exc).__name__}: {str(exc)[:200]}"}
     if result.status_code != 200:
         return {"ok": False, "kind": "http", "http_status": result.status_code,
                 "detail": f"generateContent: {_http_error_detail(result)}"}
@@ -282,8 +293,14 @@ def _gemini_prompt() -> str:
 
 def _gemini_list_models(session: Any, key: str) -> list[str]:
     """Diagnostic: which models does the API currently serve for generateContent?"""
-    listed = session.get(f"{GEMINI_BASE_URL}/models", headers={"x-goog-api-key": key},
-                         params={"pageSize": 100}, timeout=(5, 20))
+    import requests
+
+    try:
+        listed = session.get(f"{GEMINI_BASE_URL}/models", headers={"x-goog-api-key": key},
+                             params={"pageSize": 100}, timeout=(5, 20))
+    except requests.RequestException as exc:
+        log("WARN", f"could not list models: {type(exc).__name__}: {str(exc)[:200]}")
+        return []
     if listed.status_code != 200:
         log("WARN", f"could not list models: {_http_error_detail(listed)}")
         return []
