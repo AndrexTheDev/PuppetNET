@@ -27,6 +27,7 @@ import {
   renderSitemaps,
   renderUrlset,
 } from '../scripts/generate-sitemap.mjs';
+import { buildEgoGraphSvg } from '../apps/web/lib/ego-graph';
 
 const DATA = mkdtempSync(path.join(tmpdir(), 'puppetnet-seo-fixture-'));
 writeFileSync(path.join(DATA, 'entities.sample.json'), readFileSync('apps/web/public/data/entities.sample.json'));
@@ -278,4 +279,113 @@ test('renderUrlset escapes a hostile query string', () => {
   const xml = renderUrlset([{ loc: '/x?a=1&b=<2>', priority: '0.5' }], ORIGIN, '2026-10-19');
   assert.match(xml, /a=1&amp;b=&lt;2&gt;/);
   assert.equal(xml.includes('&b='), false);
+});
+
+/* ---------------- Wave 3: structural analytics + ego-graph ---------------- */
+
+test('export analytics are parsed, bounded and never invented', () => {
+  const dataset = normalizeEntityDataset({
+    nodes: [
+      { id: 'a', name: 'A GmbH', type: 'Organization', degree: 3, rank: 0.1234567, community: 'c000', firstSeen: '2026-01-02', lastSeen: '2026-02-03' },
+      { id: 'b', name: 'B Ltd', type: 'Organization', degree: -1, rank: 2, community: '<script>', firstSeen: 'gestern' },
+      { id: 'c', name: 'C Person', type: 'Person' },
+    ],
+    edges: [
+      { source: 'a', target: 'b', type: 'OWNS' },
+      { source: 'c', target: 'a', type: 'DIRECTOR_OF' },
+    ],
+  });
+  const a = dataset.entities.find((entity) => entity.id === 'a')!;
+  assert.deepEqual(a.analytics, { degree: 3, rank: 0.123457, community: 'c000', firstSeen: '2026-01-02', lastSeen: '2026-02-03' });
+  const b = dataset.entities.find((entity) => entity.id === 'b')!;
+  assert.equal(b.analytics, undefined, 'invalid metrics are dropped entirely, never clamped into looking real');
+  const c = dataset.entities.find((entity) => entity.id === 'c')!;
+  assert.equal(c.analytics, undefined, 'missing metrics stay missing');
+  // neighbours carry the structural metrics for the connections list
+  const cToA = c.related.find((item) => item.id === 'a')!;
+  assert.equal(cToA.degree, 3);
+  assert.equal(cToA.rank, 0.123457);
+  assert.equal(cToA.community, 'c000');
+  assert.equal(a.related.find((item) => item.id === 'c')!.degree, undefined);
+});
+
+test('the demo dataset publishes analytics without inventing timelines', () => {
+  const { dataset } = sample();
+  const nordlicht = dataset.entities.find((entity) => entity.id === 'org:nordlicht-holdings')!;
+  assert.equal(nordlicht.analytics?.degree, 3);
+  assert.equal(nordlicht.analytics?.community, 'c000');
+  assert.equal(nordlicht.analytics?.firstSeen, '2026-09-12');
+  const hamburg = dataset.entities.find((entity) => entity.id === 'loc:hamburg')!;
+  assert.equal(hamburg.analytics?.firstSeen, undefined, 'entities without dated evidence keep no invented timeline');
+  assert.equal(hamburg.analytics?.lastSeen, undefined);
+});
+
+test('JSON-LD carries metrics, sources and person links inside the pinned @graph shape', () => {
+  const dataset = sample().dataset;
+  const anna = dataset.entities.find((entity) => entity.id === 'per:anna-berg')!;
+  const ld = buildEntityJsonLd(anna, ORIGIN);
+  assert.equal((ld['@graph'] as unknown[]).length, 3, 'graph stays website + subject + breadcrumb');
+  const subject = (ld['@graph'] as Array<Record<string, unknown>>)[1];
+  const props = subject.additionalProperty as Array<Record<string, unknown>>;
+  assert.ok(props.some((item) => item.name === 'degree' && item.value === anna.analytics!.degree));
+  assert.ok(props.some((item) => item.name === 'PageRank'));
+  assert.ok(props.some((item) => item.name === 'community' && item.value === 'c000'));
+  assert.ok(props.some((item) => item.name === 'firstMention' && item.value === '2026-09-20'));
+  const subjectOf = subject.subjectOf as Array<Record<string, unknown>>;
+  assert.ok(subjectOf.length > 0 && subjectOf.every((item) => item['@type'] === 'CreativeWork'));
+  const knows = subject.knows as Array<Record<string, string>>;
+  assert.ok(knows.some((item) => item['@id'].endsWith('#entity') && item['@id'].startsWith(ORIGIN)), 'person neighbours are absolute @id references');
+  const org = buildEntityJsonLd(dataset.entities.find((entity) => entity.id === 'org:nordlicht-holdings')!, ORIGIN);
+  assert.equal(((org['@graph'] as Array<Record<string, unknown>>)[1]).knows, undefined, 'knows is reserved for Person profiles');
+  // entities without analytics keep the old JSON-LD untouched
+  const bare = normalizeEntityDataset({ nodes: [{ id: 'n', name: 'Nur Name', type: 'Person' }] }).entities[0];
+  const bareSubject = (buildEntityJsonLd(bare, ORIGIN)['@graph'] as Array<Record<string, unknown>>)[1];
+  assert.equal(bareSubject.additionalProperty, undefined);
+  assert.equal(bareSubject.knows, undefined);
+});
+
+test('the ego-graph SVG is deterministic, escaped, bounded and linked', () => {
+  const { dataset } = sample();
+  const nordlicht = dataset.entities.find((entity) => entity.id === 'org:nordlicht-holdings')!;
+  const svg = buildEgoGraphSvg(nordlicht);
+  assert.ok(svg && svg.startsWith('<svg') && svg.endsWith('</svg>'));
+  assert.equal(svg, buildEgoGraphSvg(nordlicht), 'the same entity renders byte-identical markup');
+  assert.match(svg, /role="img"/);
+  assert.match(svg, /aria-labelledby="ego-title-nordlicht[^"]* ego-desc-nordlicht[^"]*"/);
+  assert.ok(svg.includes('<title id='), 'the SVG carries an accessible title');
+  const neighborSlugs = [...new Set(nordlicht.related.map((item) => item.slug))];
+  assert.equal((svg.match(/class="ego-node"/g) ?? []).length, neighborSlugs.length, 'one circle per unique neighbour');
+  for (const slug of neighborSlugs) assert.ok(svg.includes(entityPath(slug)), `neighbour ${slug} links to its profile`);
+  assert.equal(buildEgoGraphSvg(normalizeEntityDataset({ nodes: [{ id: 'z', name: 'Z', type: 'Person' }] }).entities[0]), null, 'no neighbours means no graph');
+  // hostile names cannot break out of text or attributes
+  const evil = normalizeEntityDataset({
+    nodes: [
+      { id: 'x', name: '"><script>alert(1)</script>', type: 'Organization' },
+      { id: 'y', name: "Y & Co <b> 'quoted'", type: 'Organization' },
+    ],
+    edges: [{ source: 'x', target: 'y', type: 'OWNS' }],
+  }).entities.find((entity) => entity.id === 'x')!;
+  const evilSvg = buildEgoGraphSvg(evil)!;
+  assert.equal(evilSvg.includes('<script'), false);
+  assert.equal(evilSvg.includes('"><script'), false);
+  assert.ok(evilSvg.includes('&lt;script&gt;'), 'angle brackets are escaped');
+  assert.ok(evilSvg.includes('&amp;'), 'ampersands are escaped');
+  // multi-relationship neighbours merge into one circle with all predicates
+  const dup = normalizeEntityDataset({
+    nodes: [{ id: 'a', name: 'A', type: 'Organization' }, { id: 'b', name: 'B', type: 'Organization' }],
+    edges: [{ source: 'a', target: 'b', type: 'OWNS' }, { source: 'a', target: 'b', type: 'DIRECTOR_OF' }],
+  }).entities.find((entity) => entity.id === 'a')!;
+  const dupSvg = buildEgoGraphSvg(dup)!;
+  assert.equal((dupSvg.match(/class="ego-node"/g) ?? []).length, 1);
+  assert.equal((dupSvg.match(/<line class="ego-edge /g) ?? []).length, 1);
+  assert.ok(dupSvg.includes('DIRECTOR_OF, OWNS'), 'merged predicates are labelled');
+  // bidirectional pairs get one solid and one dashed line
+  const both = normalizeEntityDataset({
+    nodes: [{ id: 'a', name: 'A', type: 'Organization' }, { id: 'b', name: 'B', type: 'Organization' }],
+    edges: [{ source: 'a', target: 'b', type: 'OWNS' }, { source: 'b', target: 'a', type: 'OWES' }],
+  }).entities.find((entity) => entity.id === 'a')!;
+  const bothSvg = buildEgoGraphSvg(both)!;
+  assert.equal((bothSvg.match(/class="ego-edge ego-edge-out"/g) ?? []).length, 1);
+  assert.equal((bothSvg.match(/class="ego-edge ego-edge-in"/g) ?? []).length, 1);
+  assert.ok(bothSvg.includes('stroke-dasharray="5 4"'), 'incoming lines are dashed');
 });

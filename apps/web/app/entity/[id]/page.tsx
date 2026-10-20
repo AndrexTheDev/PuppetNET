@@ -10,6 +10,7 @@ import {
   siteOrigin,
 } from '../../../lib/entity-seo';
 import { findEntityBySlug, listPublicEntities, loadEntityDataset } from '../../../lib/entity-store';
+import { buildEgoGraphSvg } from '../../../lib/ego-graph';
 import './entity.css';
 
 /** Static export: no server, no ISR. Every profile is a file in out/entity/. */
@@ -46,6 +47,11 @@ export default async function EntityPage({ params }: { params: Promise<Params> }
   const origin = siteOrigin();
   const jsonLd = serializeJsonLd(buildEntityJsonLd(entity, origin));
   const typeLabel = ENTITY_TYPE_LABELS[entity.type];
+  const egoSvg = buildEgoGraphSvg(entity);
+  const analytics = entity.analytics;
+  const communityShared = analytics?.community
+    ? entity.related.filter((item) => item.community === analytics.community).length
+    : null;
 
   return (
     <main id="main-content" tabIndex={-1} className="entity-profile">
@@ -82,10 +88,26 @@ export default async function EntityPage({ params }: { params: Promise<Params> }
             <div><dt>Typ</dt><dd>{typeLabel}</dd></div>
             <div><dt>Confidence</dt><dd>{formatConfidence(entity.confidence)}</dd></div>
             <div><dt>Aktualisiert</dt><dd><time dateTime={entity.updatedAt}>{entity.updatedAt}</time></dd></div>
+            {analytics && <div><dt>Verbindungen</dt><dd>{analytics.degree} im veröffentlichten Graphen</dd></div>}
+            {analytics && <div><dt>PageRank</dt><dd>{analytics.rank.toFixed(4)}</dd></div>}
+            {analytics?.community && (
+              <div>
+                <dt>Community</dt>
+                <dd>
+                  <code>{analytics.community}</code>
+                  {communityShared !== null && <> · {communityShared} direkte Verbindung{communityShared === 1 ? '' : 'en'} teilen sie</>}
+                </dd>
+              </div>
+            )}
+            {analytics?.firstSeen && <div><dt>Erste Erwähnung</dt><dd><time dateTime={analytics.firstSeen}>{analytics.firstSeen}</time></dd></div>}
+            {analytics?.lastSeen && <div><dt>Letzte Erwähnung</dt><dd><time dateTime={analytics.lastSeen}>{analytics.lastSeen}</time></dd></div>}
             {entity.jurisdiction && <div><dt>Zuständigkeit</dt><dd>{entity.jurisdiction}</dd></div>}
             {entity.address && <div><dt>Sitz</dt><dd>{entity.address}</dd></div>}
             <div><dt>Kanonischer Schlüssel</dt><dd><code>{entity.id}</code></dd></div>
           </dl>
+          {analytics && (
+            <p className="entity-hint">Degree, PageRank und Community sind deterministische Strukturmaße des veröffentlichten Ausschnitts — Lagehinweise für die Link-Analyse, keine Bewertungen.</p>
+          )}
           {entity.identifiers.length > 0 && (
             <>
               <h3>Identifikatoren</h3>
@@ -132,6 +154,16 @@ export default async function EntityPage({ params }: { params: Promise<Params> }
         </section>
       </div>
 
+      {egoSvg && (
+        <section className="entity-card entity-ego" aria-labelledby="ego-heading">
+          <h2 id="ego-heading">Ego-Graph</h2>
+          <p className="entity-hint">
+            Statisches SVG ohne JavaScript: {entity.name} in der Mitte, direkte Verbindungen aus dem veröffentlichten Ausschnitt gleichmäßig im Kreis — die Position trägt keine Bedeutung. Durchgezogen = ausgehend, gestrichelt = eingehend; Nachbarn sind verlinkt.
+          </p>
+          <div className="entity-ego-frame" dangerouslySetInnerHTML={{ __html: egoSvg }} />
+        </section>
+      )}
+
       <section className="entity-card entity-related" aria-labelledby="related-heading">
         <h2 id="related-heading">Beziehungen im Graphen</h2>
         <p className="entity-hint">
@@ -150,6 +182,12 @@ export default async function EntityPage({ params }: { params: Promise<Params> }
                 <span aria-hidden="true" className="entity-arrow">{related.direction === 'out' ? '→' : '←'}</span>
                 <Link href={entityPath(related.slug)}>{related.name}</Link>
                 <span className="entity-related-type">{ENTITY_TYPE_LABELS[related.type]}</span>
+                {typeof related.degree === 'number' && (
+                  <span className="entity-related-metric">
+                    {related.degree} Verbindungen{typeof related.rank === 'number' && <> · Rang {related.rank.toFixed(4)}</>}
+                    {related.community && <> · {related.community}</>}
+                  </span>
+                )}
               </li>
             ))}
           </ul>

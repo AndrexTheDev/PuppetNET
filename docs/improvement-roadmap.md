@@ -94,12 +94,23 @@ Grenzen erklärt die UI das Limit ehrlich, statt den Worker einzufrieren.
    Teststrategie: `dashboard.test.ts` (Logik), `site_browser.mjs`/`dashboard_browser.mjs`
    (Abnahme), keine neuen Produkt-Dependencies außer graphology-Standardbibliothek.
 
-### Welle 3 — Entitätsseiten (Build-Zeit = 0 Actions-Minuten)
+### Welle 3 — Entitätsseiten (Build-Zeit = 0 Actions-Minuten) — ✅ umgesetzt
 
-„Verbindungen"-Sektion (Nachbarn aus den Entity-Slices inkl. Degree/Rank), temporale
-Fakten (erste/letzte Erwähnung), Community-Kontext, Inline-SVG-Ego-Graph (kein JS),
-JSON-LD-Erweiterung. Profile werden damit eigenständige kleine Link-Analysen — gut für
-SEO und für Recherchestarts ohne Dashboard.
+**Umgesetzt am 20.10.2026:** Profile sind jetzt eigenständige kleine Link-Analysen,
+rein statisch (Build-Zeit, kein JS zur Laufzeit, 0 Actions-Minuten):
+- **Struktur-Fakten** in der Infobox: Degree, PageRank, Community-Label und — sofern
+  datiert — erste/letzte Erwähnung. Nur gültige Export-Analytics werden gezeigt;
+  ungültige Werte fallen ganz weg (nie „schön gerechnet"), fehlende bleiben leer.
+- **Community-Kontext**: wie viele direkte Verbindungen dieselbe Community teilen.
+- **Verbindungsliste mit Metriken**: jeder Nachbar zeigt Degree/Rank/Community.
+- **Inline-Ego-Graph als deterministisches SVG** (kein Canvas, kein Skript):
+  Entität in der Mitte, Nachbarn gleichmäßig im Kreis (Position = keine Bedeutung),
+  ausgehend durchgezogen / eingehend gestrichelt, jeder Nachbar verlinkt auf sein
+  Profil; `role="img"` + `<title>`/`<desc>` für Screenreader; Namen XML-escaped.
+- **JSON-LD-Erweiterung** innerhalb der bestehenden `@graph`-Form (Website + Subject
+  + Breadcrumb): `additionalProperty` für die Strukturmaße, `subjectOf` für Quellen,
+  `knows` für Personen-Nachbarn (absolute `@id`-Referenzen).
+Deutlicher Hinweis überall: Strukturmaße sind Lagehinweise, keine Bewertungen.
 
 ### Welle 4 — Ingestion-Qualität im bestehenden Budget (0 Zusatz-Minuten)
 
@@ -136,7 +147,7 @@ Actions-Kosten, aber größerer Testaufwand → bewusst ans Ende priorisiert.
 | --- | --- | --- | --- |
 | 1 Export-Analytics | bestehender Export-Schritt | **0** | ✅ umgesetzt |
 | 2 Analyse-UI | Browser/Web Worker | **0** | ✅ umgesetzt (inkl. 2b) |
-| 3 Entitätsseiten | Pages-Build | **0** | geplant |
+| 3 Entitätsseiten | Pages-Build | **0** | ✅ umgesetzt |
 | 4 Ingestion-Qualität | bestehende ≤5-min-Jobs | **0** | geplant |
 | 5 Compliance/Trust | statische Seiten + Doku | **0** | geplant |
 | 6 i18n/PWA | Pages-Build/Browser | **0** | optional |
@@ -243,12 +254,23 @@ limit instead of freezing the worker.
    Test strategy: `dashboard.test.ts` (logic), `site_browser.mjs`/`dashboard_browser.mjs`
    (acceptance); no new product dependencies beyond the graphology standard library.
 
-### Wave 3 — entity pages (build time = 0 Actions minutes)
+### Wave 3 — entity pages (build time = 0 Actions minutes) — ✅ implemented
 
-"Connections" section (neighbors from the entity slices incl. degree/rank), temporal
-facts (first/last mention), community context, inline-SVG ego graph (no JS), JSON-LD
-enrichment. Profiles become self-contained mini link analyses — good for SEO and for
-starting research without the dashboard.
+**Implemented 2026-10-20:** profiles are now self-contained mini link analyses,
+fully static (build time, no runtime JS, 0 Actions minutes):
+- **Structural facts** in the info box: degree, PageRank, community label and — when
+  dated — first/last mention. Only valid export analytics are shown; invalid values
+  are dropped entirely (never clamped into looking real), missing ones stay absent.
+- **Community context**: how many direct connections share the same community.
+- **Connections list with metrics**: each neighbor shows degree/rank/community.
+- **Inline ego graph as deterministic SVG** (no canvas, no script): the entity in the
+  center, neighbors evenly on a circle (position carries no meaning), outgoing solid /
+  incoming dashed, each neighbor links to its profile; `role="img"` + `<title>`/`<desc>`
+  for screen readers; names XML-escaped.
+- **JSON-LD enrichment** inside the existing `@graph` shape (website + subject +
+  breadcrumb): `additionalProperty` for the structural metrics, `subjectOf` for sources,
+  `knows` for person neighbors (absolute `@id` references).
+Clear note everywhere: structural metrics are position hints, not verdicts.
 
 ### Wave 4 — ingestion quality inside the existing budget (0 extra minutes)
 
@@ -285,7 +307,7 @@ minutes but carry a larger testing burden → deliberately prioritized last.
 | --- | --- | --- | --- |
 | 1 Export analytics | existing export step | **0** | ✅ implemented |
 | 2 Analysis UI | browser/web worker | **0** | ✅ implemented (incl. 2b) |
-| 3 Entity pages | Pages build | **0** | planned |
+| 3 Entity pages | Pages build | **0** | ✅ implemented |
 | 4 Ingestion quality | existing ≤5-min jobs | **0** | planned |
 | 5 Compliance/trust | static pages + docs | **0** | planned |
 | 6 i18n/PWA | Pages build/browser | **0** | optional |
