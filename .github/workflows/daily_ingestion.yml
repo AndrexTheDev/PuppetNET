@@ -40,7 +40,7 @@ jobs:
       NEO4J_USER: ${{ secrets.NEO4J_USER }}
       NEO4J_PASSWORD: ${{ secrets.NEO4J_PASSWORD }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-      GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-1.5-flash' }}
+      GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-flash-lite-latest' }}
       ENABLE_GEMINI_FALLBACK: ${{ vars.ENABLE_GEMINI_FALLBACK || 'false' }}
       GEMINI_BUDGET_FILE: .pipeline-state/gemini-budget.json
       PROXY_WORKER_URL: ${{ secrets.PROXY_WORKER_URL }}
