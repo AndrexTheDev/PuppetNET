@@ -68,3 +68,12 @@ test('CSS primitives and canvas palette share the same source', () => {
     assert.doesNotMatch(read(`apps/web/app/dashboard/${file}`), /#[0-9a-f]{6}\b/i);
   }
 });
+
+
+test('empty entity publication has a reserved 404 route and postbuild cleanup', () => {
+  const page = read('apps/web/app/entity/[id]/page.tsx');
+  assert.ok(page.includes("profiles.length ? profiles : [{ id: '__empty-publication' }]"));
+  assert.ok(page.includes('if (!entity) notFound()'));
+  const scripts = JSON.parse(read('apps/web/package.json')).scripts;
+  assert.match(scripts.postbuild, /finalize-static-export/);
+});

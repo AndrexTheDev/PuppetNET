@@ -6,7 +6,8 @@
     "dev": "next dev --hostname 0.0.0.0",
     "build": "next build",
     "start": "next start --hostname 0.0.0.0",
-    "prebuild": "node ../../scripts/generate-seo.js"
+    "prebuild": "node ../../scripts/generate-seo.js",
+    "postbuild": "node ../../scripts/finalize-static-export.mjs"
   },
   "dependencies": {
     "graphology": "^0.26.0",

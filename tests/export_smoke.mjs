@@ -68,6 +68,7 @@ for (const chunk of workerChunks) {
 /* Entity profiles: static, crawlable and self-contained                     */
 /* ------------------------------------------------------------------------- */
 const entityDir = path.join(OUT, 'entity');
+assert.equal(existsSync(path.join(entityDir, '__empty-publication')), false, 'Reserved empty-export stub was not cleaned by postbuild.');
 const publicationFile = path.join(OUT, 'data/graph_latest.json');
 const publication = existsSync(publicationFile) ? JSON.parse(readFileSync(publicationFile, 'utf8')) : null;
 assert.ok(existsSync(entityDir) || publication?.nodes.length === 0, 'out/entity fehlt: keine vorgerenderten Profilseiten.');

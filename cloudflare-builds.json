@@ -28,7 +28,8 @@
       "scripts/generate-seo-data.ts",
       "scripts/generate-sitemap.mjs",
       "scripts/emit-og-images.mjs",
-      "tests/release.test.mjs"
+      "tests/release.test.mjs",
+      "scripts/finalize-static-export.mjs"
     ]
   },
   "worker": {

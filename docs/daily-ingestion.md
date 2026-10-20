@@ -98,3 +98,12 @@ SITE_ORIGIN=https://puppetnet-web.pages.dev npm run ci:pages
 
 Beispielwerte ersetzen. Keine echten Zugangsdaten in Shell-History oder Chat speichern;
 für reale Nutzung Umgebungsvariablen über einen Secret-Manager setzen.
+
+## Next.js-Leerexport
+
+Next 15 verlangt für dynamische Routen mindestens einen Exportparameter. Bei null
+Profilen wird ein reservierter Parameter verwendet, der ausschließlich notFound()
+rendert. Der npm-postbuild-Schritt entfernt diesen verifizierten noindex-404-Stub
+aus out/. Keine erfundene Entität und kein Sitemap-Eintrag werden veröffentlicht.
+Für vollständige Release-Builds immer `npm run ci:pages` oder `npm run build` nutzen.
+Wer Next direkt aufruft, führt danach `node scripts/finalize-static-export.mjs` aus.

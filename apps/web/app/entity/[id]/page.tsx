@@ -19,7 +19,10 @@ export const dynamicParams = false;
 type Params = { id: string };
 
 export function generateStaticParams(): Params[] {
-  return listPublicEntities().map((entity) => ({ id: entity.slug }));
+  const profiles = listPublicEntities().map((entity) => ({ id: entity.slug }));
+  // Next 15 static export rejects an empty dynamic-route parameter list.
+  // The reserved non-slug hits notFound(), so no fictitious profile is published.
+  return profiles.length ? profiles : [{ id: '__empty-publication' }];
 }
 
 export async function generateMetadata({ params }: { params: Promise<Params> }): Promise<Metadata> {
