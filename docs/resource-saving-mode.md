@@ -8,12 +8,16 @@ Beziehungsrichtung erzeugt. NER läuft lokal mit dem deutschen spaCy-Modell; die
 Quote „95 %“ ist ein Ziel, kein gemessener Qualitätswert. Nur syntaktisch begründete,
 unklare Relationen dürfen optional in die Cloud. Standard: Cloud AUS.
 
-Gemini: exaktes countTokens vor Generierung, höchstens 100 Eingabe- plus 50
-Ausgabetokens, drei Reservierungen/Lauf, sechs/UTC-Tag. Meldet der Anbieter keine
+Gemini: exaktes countTokens vor Generierung, höchstens 120 Eingabe- plus 50
+Ausgabetokens (Eingabelimit 2026-10 wegen Tokenizer-Drift von 100 angehoben —
+derselbe Prompt zählt auf aktuellen Modellen ~109; Gesamtbudget 150 unverändert),
+drei Reservierungen/Lauf, sechs/UTC-Tag. Meldet der Anbieter keine
 Nutzung oder scheitert ein Generierungsaufruf, wird die Nutzung als unbekannt
 markiert, nicht als kostenlos behauptet. Logs enthalten Summen und keine Quelltexte
-oder Zugangsschlüssel. Gemini 1.5 Flash ist ein historischer Default, keine
-Verfügbarkeits-/Free-Tier-Garantie. Nicht unterstützte Modelle werden abgelehnt.
+oder Zugangsschlüssel. Default-Modell seit 2026-10 ist `gemini-flash-lite-latest`
+(QA-live-verifiziert); `gemini-1.5-flash` wurde von Google eingestellt (HTTP 404).
+Modellnamen sind keine Verfügbarkeits-/Free-Tier-Garantie. Nicht unterstützte
+Modelle werden abgelehnt.
 
 Workflow: 03:00 UTC + Dispatch + manueller Start, opt-in `ENABLE_DAILY_STATIC=true`,
 höchstens zwei reservierte Läufe/UTC-Tag. Hartes Joblimit 5 Minuten; intern 90s,

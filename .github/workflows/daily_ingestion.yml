@@ -5,6 +5,12 @@ on:
   repository_dispatch:
     types: [puppetnet-refresh]
   workflow_dispatch:
+  # TEMPORARY (QA dry run, 2026-10-20): branch pushes run the verify-connections
+  # job below (the production publish job stays gated to main + ENABLE_DAILY_STATIC
+  # and never runs from branch pushes). Remove this trigger together with the QA
+  # job once the dry run is green.
+  push:
+    branches-ignore: [main]
 
 permissions:
   contents: read
@@ -40,7 +46,7 @@ jobs:
       NEO4J_USER: ${{ secrets.NEO4J_USER }}
       NEO4J_PASSWORD: ${{ secrets.NEO4J_PASSWORD }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-      GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-1.5-flash' }}
+      GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-flash-lite-latest' }}
       ENABLE_GEMINI_FALLBACK: ${{ vars.ENABLE_GEMINI_FALLBACK || 'false' }}
       GEMINI_BUDGET_FILE: .pipeline-state/gemini-budget.json
       PROXY_WORKER_URL: ${{ secrets.PROXY_WORKER_URL }}
@@ -138,3 +144,94 @@ jobs:
         with:
           path: .state/content_hashes.json
           key: daily-dedupe-${{ github.run_id }}
+
+  # TEMPORARY QA job (pre-cron dry run, 2026-10-20). Runs only on manual
+  # workflow_dispatch, never on schedule/repository_dispatch, never writes to
+  # main and never touches the production quota ledger: it probes Neo4j,
+  # spaCy, the Gemini API and the export path with packages/pipeline/tests/
+  # test_api_connections.py, then pushes a JSON report to the dispatched
+  # branch. Remove together with the test script after a fully green run.
+  verify-connections:
+    name: QA verify connections (temporary)
+    # workflow_dispatch (manual dry run) or the temporary branches-ignore push
+    # trigger above. Never runs on schedule/repository_dispatch, never on main.
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      NEO4J_URI: ${{ secrets.NEO4J_URI }}
+      NEO4J_USER: ${{ secrets.NEO4J_USER }}
+      NEO4J_PASSWORD: ${{ secrets.NEO4J_PASSWORD }}
+      NEO4J_DATABASE: neo4j
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-flash-lite-latest' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: packages/pipeline/pyproject.toml
+      - name: Install pipeline dependencies and de_core_news_sm
+        run: |
+          pip install -e packages/pipeline
+          pip install 'https://github.com/explosion/spacy-models/releases/download/de_core_news_sm-3.8.0/de_core_news_sm-3.8.0-py3-none-any.whl'
+      - name: QA 0 - secrets presence (values never printed)
+        if: ${{ !cancelled() }}
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: python packages/pipeline/tests/test_api_connections.py --stage secrets --json-out "$RUNNER_TEMP/qa-secrets.json"
+      - name: QA 1 - Neo4j live query (RETURN 1 AS test)
+        if: ${{ !cancelled() }}
+        run: python packages/pipeline/tests/test_api_connections.py --stage neo4j --json-out "$RUNNER_TEMP/qa-neo4j.json"
+      - name: QA 2 - spaCy de_core_news_sm entity extraction
+        if: ${{ !cancelled() }}
+        run: python packages/pipeline/tests/test_api_connections.py --stage spacy --json-out "$RUNNER_TEMP/qa-spacy.json"
+      - name: QA 3 - Gemini API live classification (<=50 output tokens)
+        if: ${{ !cancelled() }}
+        run: python packages/pipeline/tests/test_api_connections.py --stage gemini --json-out "$RUNNER_TEMP/qa-gemini.json"
+      - name: QA 4 - graph_latest.json export smoke (offline)
+        if: ${{ !cancelled() }}
+        run: python packages/pipeline/tests/test_api_connections.py --stage export --json-out "$RUNNER_TEMP/qa-export.json"
+      - name: Publish QA report to the dispatched branch
+        if: ${{ always() }}
+        run: |
+          python - <<'PYCODE'
+          import json, os
+          from datetime import datetime, timezone
+          from pathlib import Path
+          runner_temp = Path(os.environ["RUNNER_TEMP"])
+          stages = {}
+          for name in ("secrets", "neo4j", "spacy", "gemini", "export"):
+              report = runner_temp / f"qa-{name}.json"
+              if report.exists():
+                  stages.update(json.loads(report.read_text(encoding="utf-8")).get("stages", {}))
+              else:
+                  stages[name] = {"status": "fail", "detail": "stage did not run (setup failed or step skipped)"}
+          verdict = {name: {"ok": "OK", "warn": "WARN", "fail": "FAIL"}[result["status"]] for name, result in stages.items()}
+          keys = {"secrets": "status_secrets", "neo4j": "status_neo4j", "spacy": "status_spacy",
+                  "gemini": "status_gemini_api", "export": "status_export"}
+          summary = {keys[name]: verdict[name] for name in stages}
+          merged = {"generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                    "github_run_id": os.environ.get("GITHUB_RUN_ID"),
+                    "github_ref": os.environ.get("GITHUB_REF_NAME"),
+                    "workflow": "daily_ingestion.yml / verify-connections (temporary QA dry run)",
+                    "stages": stages, "summary": summary}
+          Path("qa-report-api-connections.json").write_text(
+              json.dumps(merged, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          step_summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          if step_summary:
+              with open(step_summary, "a", encoding="utf-8") as handle:
+                  handle.write("## QA connection probe (temporary dry run)\n\n")
+                  for name, result in stages.items():
+                      detail = result.get("detail", "")
+                      handle.write(f"- **{keys[name]}**: {verdict[name]}" + (f" — {detail}\n" if detail else "\n"))
+          print("QA SUMMARY:", json.dumps(summary, sort_keys=True))
+          PYCODE
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- qa-report-api-connections.json
+          git commit -m "qa: api connection dry-run report (run $GITHUB_RUN_ID) [skip ci]"
+          git push origin "HEAD:$GITHUB_REF_NAME"

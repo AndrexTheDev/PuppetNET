@@ -52,8 +52,10 @@ Reservierung wird VOR Modellinstallation und Datenbankarbeit auf main gesichert.
 
 Hartes Joblimit 5 Minuten; Ingestion intern 90 Sekunden, Prozesslimit 105 Sekunden,
 Export 45 Sekunden. Kalte Installation/Aura-Wakeup kann den Job trotzdem abbrechen.
-Gemini standardmäßig aus, höchstens 100 Eingabe- + 50 Ausgabetokens pro Generierung,
-3 Reservierungen/Lauf, 6/Tag. Historischer Modellname ist keine API-Verfügbarkeitszusage.
+Gemini standardmäßig aus, höchstens 120 Eingabe- + 50 Ausgabetokens pro Generierung,
+3 Reservierungen/Lauf, 6/Tag. Default-Modell seit 2026-10: `gemini-flash-lite-latest`
+(QA-live-verifiziert; `gemini-1.5-flash` ist eingestellt). Jeder Modellname ist
+keine API-Verfügbarkeitszusage.
 
 Exporter liest einen begrenzten Snapshot: maximal 5000 Entity-Kandidaten, 20000
 Kanten, 5000 Dokumentmetadaten. `truncated` signalisiert erreichte Grenzen; keine

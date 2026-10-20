@@ -1,8 +1,11 @@
 """Local-first German extraction; optional Gemini classification, <=150 tokens total.
 
 Gemini is OFF unless ENABLE_GEMINI_FALLBACK=true and GEMINI_API_KEY is set.
-GEMINI_MODEL is configurable: the requested historical gemini-1.5-flash model
-may no longer be served. No paid-plan/free-quota assumption is made in code.
+GEMINI_MODEL is configurable. The historical gemini-1.5-flash default was
+retired by Google (HTTP 404 as of the 2026-10-20 QA live probe); the default is
+now gemini-flash-lite-latest, which the same probe verified end to end (exact
+classification answer, 109+1 tokens, well inside the production timeout).
+No paid-plan/free-quota assumption is made in code.
 Only ambiguous, syntactically grounded pairs are sent, never whole documents.
 """
 from __future__ import annotations
@@ -32,6 +35,23 @@ FILLER_LINE = re.compile(r"(?:jetzt (?:kostenlos )?(?:abonnieren|registrieren)|"
                          r"(?:hier )?klicken sie hier|mehr erfahren|alle rechte vorbehalten)[.! ]*", re.I)
 NEGATIVE = re.compile(r"\b(nicht|kein\w*|angeblich|möglicherweise|mutmaßlich|soll|könnte)\b", re.I)
 
+#: Default since the 2026-10-20 QA live probe: gemini-1.5-flash is retired
+#: (HTTP 404), gemini-2.5-flash is gated for newer accounts, and full
+#: thinking-class models (e.g. gemini-3.8-flash) exceeded even a 60 s read
+#: timeout on the legacy generateContent path. The flash-lite alias answered
+#: the exact classification prompt in seconds with 110 total tokens.
+DEFAULT_GEMINI_MODEL = "gemini-flash-lite-latest"
+
+#: Alias models verified by the QA probe to answer the classification prompt
+#: fast and inside the 150-token budget WITHOUT a thinkingConfig. Unknown or
+#: unverified models stay rejected (fail closed), as before.
+VERIFIED_NON_THINKING_MODELS = frozenset({DEFAULT_GEMINI_MODEL})
+
+#: Model-name prefixes whose thinking stage must be budgeted to zero explicitly.
+#: (gemini-3.x accepts the parameter but was observed to stay slow anyway; the
+#: production read timeout then disables the fallback for the run — bounded.)
+THINKING_MODEL_PREFIXES = ("gemini-2.5-", "gemini-3.")
+
 
 def clean_html(text: str, limit: int = 20_000) -> str:
     """Bound input BEFORE parsing; remove boilerplate, trackers and duplicate lines."""
@@ -59,13 +79,17 @@ class GeminiFallback:
 
     Budget file must be carried between runs, not a cache that can disappear.
     countTokens counts the EXACT contents later sent to generateContent.
-    100 input + up to 50 output tokens; reserve before any paid-capable call.
+    120 input + up to 50 output tokens; reserve before any paid-capable call.
+    The input ceiling was 100 until 2026-10: the unchanged, bounded prompt
+    counts ~109 tokens with current tokenizers (measured live on
+    gemini-flash-lite-latest), so drift alone silently killed stage 3. The
+    hard 150-token total budget is unchanged.
     """
     def __init__(self, ledger: Path, session: Any = None):
         self.ledger = ledger
         self.session = session or requests.Session()
         self.key = os.getenv("GEMINI_API_KEY", "")
-        self.model = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+        self.model = os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL)
         if not re.fullmatch(r"[a-zA-Z0-9._-]+", self.model):
             raise ValueError("Invalid Gemini model name")
         self.enabled = os.getenv("ENABLE_GEMINI_FALLBACK", "false").lower() == "true" and bool(self.key)
@@ -113,12 +137,13 @@ class GeminiFallback:
                                         json={"contents": contents}, timeout=(3, 10), allow_redirects=False)
             counted.raise_for_status()
             count = counted.json().get("totalTokens")
-            if type(count) is not int or not 0 < count <= 100:
+            if type(count) is not int or not 0 < count <= 120:
                 return None
             config = {"maxOutputTokens": min(50, 150 - count), "temperature": 0}
-            if self.model.startswith("gemini-2.5-flash"):
+            if self.model.startswith(THINKING_MODEL_PREFIXES):
                 config["thinkingConfig"] = {"thinkingBudget": 0}
-            elif not self.model.startswith(("gemini-1.5-", "gemini-2.0-")):
+            elif not (self.model.startswith(("gemini-1.5-", "gemini-2.0-"))
+                      or self.model in VERIFIED_NON_THINKING_MODELS):
                 return None  # do not silently budget unknown thinking models as non-thinking
             generated = True
             result = self.session.post(url + ":generateContent", headers=headers, json={

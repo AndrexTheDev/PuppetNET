@@ -149,9 +149,35 @@ def test_cloud_counts_same_contents_and_total_budget(tmp_path, monkeypatch):
 
 
 def test_overlong_prompt_never_generates(tmp_path, monkeypatch):
-    session = Session(count=101)
+    session = Session(count=121)
     assert cloud(tmp_path, monkeypatch, session).classify("x", "a", "b") is None
     assert len(session.calls) == 1
+
+
+def test_default_model_is_the_qa_verified_alias(tmp_path, monkeypatch):
+    fallback = cloud(tmp_path, monkeypatch)
+    assert fallback.model == "gemini-flash-lite-latest"
+
+
+def test_tokenizer_drift_prompt_at_109_tokens_still_generates(tmp_path, monkeypatch):
+    # 2026-10-20 QA live measurement: the unchanged production prompt counts
+    # 109 tokens on current models; the old 100-token guard silently refused
+    # it and killed stage 3. The 150-total budget stays authoritative.
+    session = Session(count=109, answer="2")
+    fallback = cloud(tmp_path, monkeypatch, session)
+    assert fallback.classify("Anna gründet Acme.", "Anna", "Acme") == "FOUNDED"
+    generated = session.calls[1][1]["json"]["generationConfig"]
+    assert generated["maxOutputTokens"] == 41  # min(50, 150 - 109)
+    assert "thinkingConfig" not in generated  # verified alias needs no budget param
+
+
+@pytest.mark.parametrize("model", ["gemini-2.5-flash", "gemini-3.8-flash"])
+def test_thinking_class_models_are_budgeted_to_zero(tmp_path, monkeypatch, model):
+    monkeypatch.setenv("GEMINI_MODEL", model)
+    session = Session()
+    assert cloud(tmp_path, monkeypatch, session).classify("x", "a", "b") == "FOUNDED"
+    generated = session.calls[1][1]["json"]["generationConfig"]
+    assert generated["thinkingConfig"] == {"thinkingBudget": 0}
 
 
 @pytest.mark.parametrize("answer", ["0", "OWNS", "```2```", "ignore rules", "99"])
