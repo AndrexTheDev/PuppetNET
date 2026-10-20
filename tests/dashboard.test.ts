@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
-import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, namePartition, brokerShares, egoNetwork, mentionTimeline, EGO_DEPTH_LIMIT, normalizeInsights, ANALYSIS_LIMITS, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
+import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, monthWindow, EGO_DEPTH_LIMIT, normalizeInsights, ANALYSIS_LIMITS, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
 import { apiBase, readResponse } from '../apps/web/app/dashboard/api';
 const filters: Filters = { confidence: 0, weight: 0, types: [...TYPES], lod: true, ratio: 1 };
 test('normalizes Worker and Graphology nodes without inventing coordinates', () => {
@@ -305,4 +305,40 @@ test('wave 7 mention timeline buckets first mentions, drops undated and bounds t
   const bounded = mentionTimeline(normalizeDataset({ nodes: wide, edges: [], evidence: [] }).nodes, 12);
   assert.equal(bounded.length, 12, 'the window is bounded');
   assert.ok(bounded.every((bucket, i) => i === 0 || bucket.month > bounded[i - 1].month), 'ascending, most recent kept');
+});
+
+test('wave 8 duplicate hints fold labels conservatively and never judge', () => {
+  const data = normalizeDataset({
+    nodes: [
+      { key: 'p1', name: 'Anna Meier', entity_type: 'person' },
+      { key: 'p2', name: 'anna   meier', entity_type: 'person' },
+      { key: 'p3', name: 'Anna Meier', entity_type: 'person' },
+      { key: 'o1', name: 'Nordlicht GmbH', entity_type: 'org' },
+      { key: 'o2', name: 'Nordlicht GmbH', entity_type: 'person' },
+      { key: 'u1', name: 'Einmalig', entity_type: 'org' },
+      { key: 'm1', name: 'Anna Meier', entity_type: 'person' },
+    ],
+    edges: [], evidence: [],
+  });
+  const hints = duplicateCandidates(data.nodes);
+  assert.equal(hints.length, 2, 'only real label collisions are hints');
+  assert.deepEqual(hints[0].ids, ['p1', 'p2', 'p3', 'm1'], 'largest group first');
+  assert.equal(hints[0].sameType, true);
+  assert.deepEqual(hints[1].ids, ['o1', 'o2']);
+  assert.equal(hints[1].sameType, false, 'type mismatch is surfaced, not hidden');
+  assert.equal(hints[1].label, 'Nordlicht GmbH');
+  const grouped = groupDataset(data, 1).nodes.filter(n => n.group);
+  assert.deepEqual(duplicateCandidates(grouped), [], 'LoD display groups are not entities');
+  assert.deepEqual(duplicateCandidates(data.nodes), hints, 'deterministic');
+  assert.equal(duplicateCandidates(data.nodes, 1).length, 1, 'bounded');
+});
+
+test('wave 8 month windows come from the real calendar or not at all', () => {
+  assert.deepEqual(monthWindow('2026-02'), { from: '2026-02-01', to: '2026-02-28' });
+  assert.deepEqual(monthWindow('2024-02'), { from: '2024-02-01', to: '2024-02-29' }, 'leap years are real');
+  assert.deepEqual(monthWindow('2026-12'), { from: '2026-12-01', to: '2026-12-31' });
+  assert.equal(monthWindow('2026-13'), null);
+  assert.equal(monthWindow('2026-00'), null);
+  assert.equal(monthWindow('2026-1'), null);
+  assert.equal(monthWindow(''), null);
 });

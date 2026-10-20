@@ -209,6 +209,27 @@ Funktionen in `graph-data.ts`), Protokoll-Request/Response `ego`, Worker-Zweig +
 `onEgo`-Prop im Inspector, 2 neue Datenlagen-Tests + 1 neuer Release-Pin —
 `ci:pages` grün, 0 zusätzliche Actions-Minuten.
 
+### Welle 8 — Entitätsauflösung + interaktive Zeitachse — ✅ umgesetzt (2026-10-20)
+
+- **Dubletten-Hinweise** (Entity Resolution, ein Nicht-Verhandelbares der
+  OSINT-Methodik): Knoten, deren normalisierte Bezeichnung kollidiert, während die
+  IDs verschieden sind — der klassische Dublette-Fall über Quellengrenzen. Bewusst
+  konservativ (nur Groß-/Kleinschreibung und Leerraum falten, keine Phonetik, kein
+  Fuzzy-Raten), Typ-Abweichungen werden sichtbar gemacht statt versteckt, LoD-Gruppen
+  sind ausgenommen (Anzeige-Artefakte, keine Entitäten). „Vergleichen" wechselt nur
+  die Tabellenansicht auf die Bezeichnung — die App entscheidet **nie** selbst über
+  eine Zusammenführung.
+- **Interaktive Zeitachse**: Jeder Monatsbalken ist ein Knopf und setzt über
+  `monthWindow()` das exakte Kalenderfenster (echte Schaltjahre, ungültige Monate →
+  niemals geraten) in die bestehenden Zeitfilter — „Zeitfilter löschen" stellt den
+  vollen Ausschnitt wieder her. Statusansage für Screenreader.
+
+**Geliefert (Welle 8)**: `duplicateCandidates()` + `monthWindow()` (reine, getestete
+Funktionen), `View.duplicates`, Worker-Berechnung auf dem gefilterten Ausschnitt,
+Dubletten-Block + klickbare Monate im Analytik-Panel (DE/EN), token-only CSS
+(pin-konform, keine Hex-Werte), 2 neue Datenlagen-Tests + 1 neuer Release-Pin —
+`ci:pages` grün, 0 zusätzliche Actions-Minuten.
+
 ## 4. Budget-Zusammenfassung
 
 | Welle | Ort | Zusätzliche Actions-Minuten | Status |
@@ -220,6 +241,7 @@ Funktionen in `graph-data.ts`), Protokoll-Request/Response `ego`, Worker-Zweig +
 | 5 Compliance/Trust | statische Seiten + Doku | **0** | ✅ umgesetzt |
 | 6 i18n/PWA | Pages-Build/Browser | **0** | ✅ umgesetzt |
 | 7 Ego/Zeitachse | Browser/Web Worker | **0** | ✅ umgesetzt |
+| 8 Entitätsauflösung/Zeitachse | Browser/Web Worker | **0** | ✅ umgesetzt |
 
 Kein Schritt erzeugt neue Workflows, neue Cron-Jobs, längere Jobs oder bezahlte
 Dienste. Die einzigen verbrauchsrelevanten Grenzen sind die bestehenden: 3
@@ -437,6 +459,25 @@ ego panel + timeline UI (DE/EN via the dictionary), optional `onEgo` prop in the
 inspector, 2 new data-layer tests + 1 new release pin — `ci:pages` green, 0 extra
 Actions minutes.
 
+### Wave 8 — entity resolution + interactive timeline — ✅ implemented (2026-10-20)
+
+- **Duplicate hints** (entity resolution, a non-negotiable of OSINT methodology):
+  nodes whose normalized label collides while their ids differ — the classic
+  cross-source duplicate. Deliberately conservative (case and whitespace folding only,
+  no phonetics, no fuzzy guessing); type mismatches are surfaced instead of hidden; LoD
+  groups are excluded (display artifacts, not entities). "Compare" only switches the
+  table view to the label — the app **never** merges anything on its own.
+- **Interactive timeline**: every month bar is a button and applies the exact calendar
+  window via `monthWindow()` (real leap years, invalid months → never guessed) to the
+  existing time filters; "Clear time filter" restores the full slice. Status
+  announcement for screen readers.
+
+**Delivered (Wave 8)**: `duplicateCandidates()` + `monthWindow()` (pure, tested
+functions), `View.duplicates`, worker computation on the filtered slice, duplicate
+block + clickable months inside the analytics panel (DE/EN), token-only CSS
+(pin-conform, no hex values), 2 new data-layer tests + 1 new release pin —
+`ci:pages` green, 0 extra Actions minutes.
+
 ## 4. Budget summary
 
 | Wave | Location | Additional Actions minutes | Status |
@@ -448,6 +489,7 @@ Actions minutes.
 | 5 Compliance/trust | static pages + docs | **0** | ✅ implemented |
 | 6 i18n/PWA | Pages build/browser | **0** | ✅ implemented |
 | 7 Ego/timeline | browser/web worker | **0** | ✅ implemented |
+| 8 entity resolution/timeline | browser/web worker | **0** | ✅ implemented |
 
 No step creates new workflows, new cron jobs, longer jobs or paid services. The only
 consumption-relevant limits remain the existing ones: 3 reservations/UTC day, 5-minute

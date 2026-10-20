@@ -2,7 +2,7 @@
 import dynamic from 'next/dynamic';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import EntityTable, { type TableRow } from './EntityTable';
-import { COLORS, TYPES, LIMITS, decodeViewState, edgesToCSV, encodeViewState, nodesToCSV, rankSearch, resolveNodeRef, viewToJSON, type Evidence, type Filters, type GraphEdge, type GraphNode, type View, type ViewUrlState } from './graph-data';
+import { COLORS, TYPES, LIMITS, decodeViewState, edgesToCSV, encodeViewState, monthWindow, nodesToCSV, rankSearch, resolveNodeRef, viewToJSON, type Evidence, type Filters, type GraphEdge, type GraphNode, type View, type ViewUrlState } from './graph-data';
 import type { NetworkHandle, PathHighlight } from './NetworkGraph';
 import type { WorkerRequest, WorkerResponse } from './protocol';
 import { loadStaticGraph, requestResearch, type Standby } from '../../src/lib/dataFetcher';
@@ -287,8 +287,26 @@ export default function Dashboard() {
           <dl className="analytics-facts"><div><dt>Communities</dt><dd>{number(view.analytics.communities)}</dd></div><div><dt>{t('dash.density')}</dt><dd>{(view.analytics.density * 100).toFixed(2)} %</dd></div>{view.analytics.temporalRange && <div><dt>{t('dash.rangeLabel')}</dt><dd>{view.analytics.temporalRange.first} → {view.analytics.temporalRange.last}</dd></div>}</dl>
           {view.timeline && view.timeline.length > 0 && <>
             <h4 className="hub-heading">{t('dash.timelineTitle')}</h4>
-            <ol className="timeline-bars">{view.timeline.map(bucket => <li key={bucket.month}><span className="timeline-month">{bucket.month}</span><span className="timeline-bar" aria-hidden="true" style={{ width: `${timelineMax ? Math.max(2, Math.round((bucket.count / timelineMax) * 100)) : 0}%` }} /><strong>{number(bucket.count)}</strong></li>)}</ol>
+            <ol className="timeline-bars">{view.timeline.map(bucket => {
+              const window = monthWindow(bucket.month);
+              return <li key={bucket.month}>
+                <button type="button" className="timeline-month" disabled={busy || !window} aria-label={t('dash.timelineSelect', { month: bucket.month })} onClick={() => { if (!window) return; setFilters(f => ({ ...f, from: window.from, to: window.to })); setAnalysisNotice(t('dash.annTimeline', { month: bucket.month })); }}>{bucket.month}</button>
+                <span className="timeline-bar" aria-hidden="true" style={{ width: `${timelineMax ? Math.max(2, Math.round((bucket.count / timelineMax) * 100)) : 0}%` }} />
+                <strong>{number(bucket.count)}</strong>
+              </li>;
+            })}</ol>
             <p className="muted">{t('dash.timelineNote')}</p>
+          </>}
+          {view.duplicates && view.duplicates.length > 0 && <>
+            <h4 className="hub-heading">{t('dash.dupeTitle')}</h4>
+            <ul className="dupe-list">{view.duplicates.map(group => (
+              <li key={group.ids.join('|')}>
+                <span className="dupe-label">{group.label}</span>
+                <span className="dupe-count">{number(group.ids.length)}{group.sameType ? '' : ` · ${t('dash.dupeMixed')}`}</span>
+                <button type="button" className="text-button dupe-compare" aria-label={t('dash.dupeCompareAria', { label: group.label })} onClick={() => { if (mode !== 'list') changeMode('list'); setSearch(group.label); setListPage(0); setAnalysisNotice(t('dash.annDupe', { count: number(group.ids.length), label: group.label })); }}>{t('dash.dupeCompare')}</button>
+              </li>
+            ))}</ul>
+            <p className="muted">{t('dash.dupeText')}</p>
           </>}
           {view.analytics.hubs.length > 0 && <><h4 className="hub-heading">{t('dash.topHubs')}</h4><ol className="hub-list">{view.analytics.hubs.map(hub => <li key={hub.id}><button type="button" className="text-button" onClick={() => { if (mode !== 'network') changeMode('network'); select(hub.id); requestAnimationFrame(() => network.current?.focus(hub.id)); }}>{hub.name}</button><span className="hub-rank">{(hub.rank * 100).toFixed(1)} %</span></li>)}</ol></>}
           {view.insights && view.insights.length > 0 && <>

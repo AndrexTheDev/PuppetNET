@@ -118,3 +118,12 @@
 .timeline-bars li{display:grid;grid-template-columns:5.5ch 1fr auto;align-items:center;gap:var(--space-2,0.5rem)}
 .timeline-month{font-variant-numeric:tabular-nums;opacity:.8}
 .timeline-bar{height:.5rem;border-radius:var(--radius-1,0.25rem);background:var(--color-green-muted)}
+
+/* Wave 8: interactive timeline months + entity-resolution hints (token-only) */
+.timeline-month{font-variant-numeric:tabular-nums;opacity:.8;background:none;border:0;padding:0;font:inherit;color:inherit;text-align:left;cursor:pointer;text-decoration:underline;text-underline-offset:.15em}
+.timeline-month:hover{opacity:1}
+.timeline-month:disabled{opacity:.5;cursor:not-allowed;text-decoration:none}
+.dupe-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:var(--space-1,0.25rem)}
+.dupe-list li{display:grid;grid-template-columns:1fr auto auto;align-items:center;gap:var(--space-2,0.5rem);border-left:2px solid var(--line);padding-left:var(--space-2,0.5rem)}
+.dupe-label{font-weight:600}
+.dupe-count{font-variant-numeric:tabular-nums;opacity:.75;font-size:.85em}

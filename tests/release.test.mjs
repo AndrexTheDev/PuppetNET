@@ -184,3 +184,17 @@ test('wave 7: ego expansion and temporal analytics stay inside the worker contra
   assert.ok(dashboard.includes("t('dash.timelineTitle')"), 'the timeline block is dictionary-driven');
   assert.ok(read('apps/web/app/dashboard/SidePanel.tsx').includes("t('inspector.egoButton')"), 'the inspector offers expansion');
 });
+
+test('wave 8: entity-resolution hints stay browser-side and never auto-merge', () => {
+  const data = read('apps/web/app/dashboard/graph-data.ts');
+  assert.match(data, /export function duplicateCandidates\(nodes: GraphNode\[\], limit = 12\)/, 'bounded, pure hint function');
+  assert.match(data, /export function monthWindow\(month: string\)/, 'timeline clicks resolve through the real calendar');
+  const worker = read('apps/web/app/dashboard/graph.worker.ts');
+  assert.match(worker, /duplicateCandidates\(filtered\.nodes\)/, 'hints are computed on the filtered slice in the worker');
+  assert.match(worker, /\.\.\.\(duplicates\.length \? \{ duplicates \} : \{\}\)/, 'empty hint lists are omitted, not faked');
+  const dashboard = read('apps/web/app/dashboard/Dashboard.tsx');
+  assert.ok(dashboard.includes("t('dash.dupeTitle')"), 'duplicate block is dictionary-driven');
+  assert.ok(dashboard.includes('aria-label={t(\'dash.timelineSelect\''), 'timeline months are labelled controls');
+  assert.ok(dashboard.includes('setSearch(group.label)'), 'comparing duplicates only switches the table query');
+  assert.ok(!/merge|dedupe\(/.test(data.match(/export function duplicateCandidates[\s\S]*?\n}/)?.[0] ?? ''), 'no silent merging');
+});

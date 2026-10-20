@@ -3,7 +3,7 @@ import { MultiDirectedGraph, UndirectedGraph } from 'graphology';
 import forceAtlas2 from 'graphology-layout-forceatlas2';
 import betweenness from 'graphology-metrics/centrality/betweenness';
 import louvain from 'graphology-communities-louvain';
-import { demoDataset, normalizeDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, levelFor, shortestPath, namePartition, brokerShares, egoNetwork, mentionTimeline, EGO_DEPTH_LIMIT, ANALYSIS_LIMITS, LIMITS, TYPES, type Dataset, type Filters, type View } from './graph-data';
+import { demoDataset, normalizeDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, levelFor, shortestPath, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, EGO_DEPTH_LIMIT, ANALYSIS_LIMITS, LIMITS, TYPES, type Dataset, type Filters, type View } from './graph-data';
 import type { WorkerRequest, WorkerResponse } from './protocol';
 const scope = self as unknown as { onmessage: ((event: MessageEvent<WorkerRequest>) => void) | null; postMessage: (value: WorkerResponse, transfer?: Transferable[]) => void };
 let dataset: Dataset = { nodes: [], edges: [], evidence: [] };
@@ -68,7 +68,9 @@ function build(filters: Filters) {
   // Wave 7: temporal analytics ride along with every view — computed on the
   // filtered single nodes (before LoD grouping), empty slices stay empty.
   const timeline = mentionTimeline(filtered.nodes);
-  view = { version, nodes: grouped.nodes, edges: grouped.edges, mapPoints: geo.points, stats: { totalNodes: dataset.nodes.length, totalEdges: dataset.edges.length, filteredNodes: filtered.nodes.length, filteredEdges: filtered.edges.length, locatedNodes: geo.count, grouped: !!members.size, level: levelFor(filtered.nodes.length, filters), focused: !!focus, truncated: dataset.truncated === true }, ...(dataset.analytics ? { analytics: dataset.analytics } : {}), ...(dataset.insights?.length ? { insights: dataset.insights } : {}), ...(timeline.length ? { timeline } : {}) };
+  // Wave 8: entity-resolution hints on the same filtered single nodes.
+  const duplicates = duplicateCandidates(filtered.nodes);
+  view = { version, nodes: grouped.nodes, edges: grouped.edges, mapPoints: geo.points, stats: { totalNodes: dataset.nodes.length, totalEdges: dataset.edges.length, filteredNodes: filtered.nodes.length, filteredEdges: filtered.edges.length, locatedNodes: geo.count, grouped: !!members.size, level: levelFor(filtered.nodes.length, filters), focused: !!focus, truncated: dataset.truncated === true }, ...(dataset.analytics ? { analytics: dataset.analytics } : {}), ...(dataset.insights?.length ? { insights: dataset.insights } : {}), ...(timeline.length ? { timeline } : {}), ...(duplicates.length ? { duplicates } : {}) };
   graph = new MultiDirectedGraph();
   for (const n of view.nodes) graph.addNode(n.id, { x: n.x, y: n.y, size: 2 });
   for (const e of view.edges) graph.addDirectedEdgeWithKey(e.id, e.source, e.target, { weight: Math.max(.001, e.weight) });

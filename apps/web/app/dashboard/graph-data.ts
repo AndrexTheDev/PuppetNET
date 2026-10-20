@@ -35,6 +35,8 @@ export interface View {
   insights?: GraphInsight[];
   /** Wave 7: first mentions per month in the filtered slice (deterministic buckets). */
   timeline?: { month: string; count: number }[];
+  /** Wave 8: entity-resolution hints — same normalized label, different ids. */
+  duplicates?: { label: string; ids: string[]; sameType: boolean }[];
 }
 export const LIMITS = { nodes: 200_000, edges: 500_000, bytes: 64 * 1024 * 1024 };
 const record = (v: unknown): Record<string, unknown> => v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {};
@@ -353,6 +355,45 @@ export function mentionTimeline(nodes: GraphNode[], limit = 24): { month: string
     .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
     .slice(-Math.max(1, limit))
     .map(([month, count]) => ({ month, count }));
+}
+
+/** Wave 8 entity-resolution hints: nodes whose normalized labels collide while
+ * their ids differ — the classic cross-source duplicate. Conservative by
+ * design (case/whitespace folding only, no phonetic guessing): a structural
+ * hint for the investigator, never a merge decision. LoD groups are excluded
+ * (they are display artifacts, not entities). Deterministic order: larger
+ * groups first, then the normalized label; bounded to `limit` groups. */
+export function duplicateCandidates(nodes: GraphNode[], limit = 12): { label: string; ids: string[]; sameType: boolean }[] {
+  const groups = new Map<string, GraphNode[]>();
+  for (const node of nodes) {
+    if (node.group) continue;
+    const key = node.label.toLowerCase().replace(/\s+/g, ' ').trim();
+    if (!key) continue;
+    const list = groups.get(key);
+    if (list) list.push(node); else groups.set(key, [node]);
+  }
+  const out: { label: string; ids: string[]; sameType: boolean }[] = [];
+  for (const members of groups.values()) {
+    if (members.length < 2) continue;
+    out.push({
+      label: members[0].label,
+      ids: members.map(m => m.id),
+      sameType: members.every(m => m.type === members[0].type),
+    });
+  }
+  out.sort((a, b) => b.ids.length - a.ids.length || (a.label.toLowerCase() < b.label.toLowerCase() ? -1 : a.label.toLowerCase() > b.label.toLowerCase() ? 1 : 0));
+  return out.slice(0, Math.max(1, limit));
+}
+
+/** Wave 8: exact UTC calendar window for a `YYYY-MM` histogram bucket — the
+ * click-to-filter contract of the timeline. Invalid months are null, never
+ * guessed; leap years come from the real calendar. */
+export function monthWindow(month: string): { from: string; to: string } | null {
+  if (!/^\d{4}-\d{2}$/.test(month)) return null;
+  const year = Number(month.slice(0, 4)), index = Number(month.slice(5, 7));
+  if (index < 1 || index > 12) return null;
+  const lastDay = new Date(Date.UTC(year, index, 0)).getUTCDate();
+  return { from: `${month}-01`, to: `${month}-${String(lastDay).padStart(2, '0')}` };
 }
 
 export function fuzzyScore(query: string, value: string): number {
