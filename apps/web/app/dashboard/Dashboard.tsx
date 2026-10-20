@@ -33,6 +33,9 @@ export default function Dashboard() {
   const [researchQuery, setResearchQuery] = useState(''), [researchBusy, setResearchBusy] = useState(false);
   const [pathSource, setPathSource] = useState(''), [pathTarget, setPathTarget] = useState('');
   const [pathResult, setPathResult] = useState<PathResult | null>(null), [pathError, setPathError] = useState('');
+  const [brokers, setBrokers] = useState<{ id: string; label: string; share: number }[] | null>(null);
+  const [analysisNotice, setAnalysisNotice] = useState('');
+  const [louvainActive, setLouvainActive] = useState(false), [louvainCount, setLouvainCount] = useState(0);
   const [standby, setStandby] = useState<Standby | null>(null);
   const loadingApi = useRef<AbortController | null>(null), loadingDetail = useRef<AbortController | null>(null);
   const staticRequest = useRef<AbortController | null>(null), reloadStatic = useRef<(() => void) | null>(null);
@@ -48,7 +51,7 @@ export default function Dashboard() {
   }, []);
   const clearSelected = useCallback(() => { selectedId.current = null; setSelected(null); setEvidence([]); loadingDetail.current?.abort(); setDetailError(''); }, []);
   const send = useCallback((request: WorkerRequest) => worker.current?.postMessage(request), []);
-  const requestView = useCallback((kind: 'filter' | 'reset' = 'filter') => { setBusy(true); setError(''); clearSelected(); setPathResult(null); setPathError(''); send({ kind, version: ++version.current, filters: filtersRef.current }); }, [send, clearSelected]);
+  const requestView = useCallback((kind: 'filter' | 'reset' = 'filter') => { setBusy(true); setError(''); clearSelected(); setPathResult(null); setPathError(''); setBrokers(null); setAnalysisNotice(''); send({ kind, version: ++version.current, filters: filtersRef.current }); }, [send, clearSelected]);
   useEffect(() => {
     const instance = new Worker(new URL('./graph.worker.ts', import.meta.url)); worker.current = instance;
     instance.onmessage = ({ data }: MessageEvent<WorkerResponse>) => {
@@ -69,6 +72,18 @@ export default function Dashboard() {
         setAnnouncement(`Pfad gefunden: ${data.hops} Verbindungen von ${labelOf(data.nodes[0])} nach ${labelOf(data.nodes[data.nodes.length - 1])}.`);
         return;
       }
+      if (data.kind === 'broker') {
+        if (data.version !== version.current) return; // stale answer for an older slice
+        setBrokers(data.brokers); setAnalysisNotice(data.notice ?? '');
+        setAnnouncement(data.notice ? `Broker-Analyse begrenzt: ${data.notice}` : `Broker-Analyse fertig: ${data.brokers.length} Vermittler gefunden.`);
+        return;
+      }
+      if (data.kind === 'louvain') {
+        setLouvainActive(data.active); setLouvainCount(data.communities);
+        if (data.notice) setAnalysisNotice(data.notice);
+        setAnnouncement(data.active ? `Louvain-Partition aktiv: ${data.communities} Communities im geladenen Datensatz.` : 'Export-Communities wiederhergestellt.');
+        return;
+      }
       if (data.kind === 'error' && data.version === version.current) { setError(data.message); setBusy(false); pendingSource.current = committedSource.current; }
     };
     instance.onerror = event => { setError(`Daten-Worker: ${event.message || 'konnte nicht gestartet werden'}`); setBusy(false); };
@@ -77,6 +92,7 @@ export default function Dashboard() {
       const controller = new AbortController(); staticRequest.current = controller;
       const bootVersion = ++version.current;
       setBusy(true); setError(''); clearSelected(); setStandby(null); setPathResult(null); setPathError('');
+      setBrokers(null); setAnalysisNotice(''); setLouvainActive(false); setLouvainCount(0);
       loadStaticGraph({ signal: controller.signal }).then(data => {
         if (controller.signal.aborted || version.current !== bootVersion || worker.current !== instance) return;
         if (data.source === 'static') {
@@ -119,11 +135,11 @@ export default function Dashboard() {
   }, [view, send]);
   function demo(count: number) {
     staticRequest.current?.abort(); pendingSource.current = count > 900 ? `Fiktiver Lasttest · ${number(count * 4)} Elemente` : 'Fiktive Demo';
-    clearSelected(); setBusy(true); setError(''); setNotice(''); setStandby(null); setPathResult(null); setPathError(''); send({ kind: 'demo', count, version: ++version.current, filters: filtersRef.current });
+    clearSelected(); setBusy(true); setError(''); setNotice(''); setStandby(null); setPathResult(null); setPathError(''); setBrokers(null); setAnalysisNotice(''); setLouvainActive(false); setLouvainCount(0); send({ kind: 'demo', count, version: ++version.current, filters: filtersRef.current });
   }
   function importFile(file: File) {
     if (file.size > LIMITS.bytes) { setError('Importlimit: 64 MiB JSON.'); return; }
-    staticRequest.current?.abort(); pendingSource.current = file.name; setBusy(true); setError(''); clearSelected(); setPathResult(null); setPathError('');
+    staticRequest.current?.abort(); pendingSource.current = file.name; setBusy(true); setError(''); clearSelected(); setPathResult(null); setPathError(''); setBrokers(null); setAnalysisNotice(''); setLouvainActive(false); setLouvainCount(0);
     send({ kind: 'import', file, version: ++version.current, filters: filtersRef.current });
   }
   async function startResearch() {
@@ -217,6 +233,17 @@ export default function Dashboard() {
           <dl className="analytics-facts"><div><dt>Communities</dt><dd>{number(view.analytics.communities)}</dd></div><div><dt>Dichte</dt><dd>{(view.analytics.density * 100).toFixed(2)} %</dd></div>{view.analytics.temporalRange && <div><dt>Zeitraum</dt><dd>{view.analytics.temporalRange.first} → {view.analytics.temporalRange.last}</dd></div>}</dl>
           {view.analytics.hubs.length > 0 && <><h4 className="hub-heading">Top-Hubs (PageRank)</h4><ol className="hub-list">{view.analytics.hubs.map(hub => <li key={hub.id}><button type="button" className="text-button" onClick={() => { if (mode !== 'network') changeMode('network'); select(hub.id); requestAnimationFrame(() => network.current?.focus(hub.id)); }}>{hub.name}</button><span className="hub-rank">{(hub.rank * 100).toFixed(1)} %</span></li>)}</ol></>}
         </div>}
+        <div className="algorithm-panel"><div className="section-heading"><h3>Graph-Algorithmen</h3></div>
+          <p className="muted">Betweenness und Louvain laufen im Web Worker auf deinen geladenen Daten — freie Browser-Rechenzeit, keine CI-Minuten, keine Cloud.</p>
+          <div className="algorithm-actions">
+            <button type="button" disabled={busy} onClick={() => { setAnalysisNotice(''); setBrokers(null); send({ kind: 'broker' }); }}>Broker-Analyse</button>
+            <button type="button" aria-pressed={louvainActive} disabled={busy} onClick={() => { setAnalysisNotice(''); send({ kind: 'louvain', active: !louvainActive }); }}>{louvainActive ? 'Louvain zurücksetzen' : 'Communities nachschärfen'}</button>
+          </div>
+          {analysisNotice && <p className="inline-warning" role="status">{analysisNotice}</p>}
+          {louvainActive && <p className="muted" role="status">Louvain-Partition aktiv: {louvainCount} Communities im geladenen Datensatz (deterministisch, `randomWalk:false`). Ersetzt die Export-Communities in Filter und Farbmodus, bis du zurücksetzt.</p>}
+          {brokers !== null && brokers.length > 0 && <><h4 className="hub-heading">Top-Broker (Betweenness-Anteil)</h4><ol className="hub-list">{brokers.map(broker => <li key={broker.id}><button type="button" className="text-button" onClick={() => { if (mode !== 'network') changeMode('network'); select(broker.id); requestAnimationFrame(() => network.current?.focus(broker.id)); }}>{broker.label}</button><span className="hub-rank">{(broker.share * 100).toFixed(1)} %</span></li>)}</ol><p className="muted">Broker verbinden sonst getrennte Gruppen (Vermittler/Engpässe). Hohe Betweenness ist ein Strukturhinweis, keine Bewertung.</p></>}
+          {brokers !== null && brokers.length === 0 && !analysisNotice && <p className="muted" role="status">Keine Broker mit Betweenness &gt; 0 im aktuellen Ausschnitt — zum Beispiel, weil er nur aus getrennten Paaren besteht.</p>}
+        </div>
         <div className="pathfinder"><div className="section-heading"><h3>Pfadfinder</h3></div>
           <p className="muted">Kürzeste Verbindung zwischen zwei Entitäten im sichtbaren Ausschnitt (maximal 6 Hops, deterministische Breitensuche).</p>
           <label htmlFor="path-source">Von<input id="path-source" list="pathfinder-options" autoComplete="off" value={pathSource} onChange={e => setPathSource(e.target.value)} placeholder="Name oder ID …" /></label>

@@ -81,3 +81,11 @@
 .color-toggle{margin-left:auto;padding:6px 10px;font-size:11px}
 .view-export{display:flex;gap:6px;flex-wrap:wrap}
 .view-export button{padding:4px 8px;font-size:11px}
+
+/* Wave 2b: on-demand graph algorithms (betweenness brokers, Louvain refinement). */
+.algorithm-panel{border-top:1px solid var(--color-forest-700);padding-top:12px;margin-top:12px}
+.algorithm-panel h3{margin:0 0 8px;font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--color-muted)}
+.algorithm-panel p.muted{font-size:11px;color:var(--color-muted-dark);margin:6px 0 0}
+.algorithm-actions{display:flex;gap:6px;flex-wrap:wrap}
+.algorithm-actions button{padding:6px 10px;font-size:11px}
+.algorithm-actions button[aria-pressed=true]{border-color:var(--color-gold-muted);color:var(--color-gold)}

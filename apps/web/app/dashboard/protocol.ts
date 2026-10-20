@@ -7,6 +7,8 @@ export type WorkerRequest =
   | { kind: 'reset'; version: number; filters: Filters }
   | { kind: 'detail'; id: string }
   | { kind: 'path'; source: string; target: string }
+  | { kind: 'broker' }
+  | { kind: 'louvain'; active: boolean }
   | { kind: 'layout'; running: boolean };
 export type WorkerResponse =
   | { kind: 'view'; view: View }
@@ -15,5 +17,7 @@ export type WorkerResponse =
   | { kind: 'detail'; node?: GraphNode; evidence: Evidence[] }
   | { kind: 'path'; source: string; target: string; nodes: string[] | null;
       edges: { id: string; source: string; target: string; type: string }[] | null; hops: number }
+  | { kind: 'broker'; version: number; brokers: { id: string; label: string; share: number }[]; notice?: string }
+  | { kind: 'louvain'; active: boolean; communities: number; notice?: string }
   | { kind: 'error'; version: number; message: string };
 export type SourceData = Dataset;

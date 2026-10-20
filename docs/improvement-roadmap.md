@@ -62,14 +62,18 @@ Guardrails: keine neuen Workflow-Dateien (`test_hybrid_ci.py` pinnt das Fileset)
 - nur Allowlist-Eingaben → kein Privatdaten-Leck; Kosten <1 s bei 5 000 Knoten/20 000 Kanten;
 - Revision-Hash bleibt stabil (Determinismus), 3 neue Tests (Suite: 1293).
 
-### Welle 2 — Analyse-UI im Dashboard (Browser = 0 Actions-Minuten) — ✅ umgesetzt (2b offen)
+### Welle 2 — Analyse-UI im Dashboard (Browser = 0 Actions-Minuten) — ✅ umgesetzt (inkl. 2b)
 
 **Umgesetzt am 20.10.2026:** Pathfinder, Rank/Degree-Anzeige (Inspector, Tabelle,
 Top-Hub-Liste), Community-Filter + Netzwerk-Farbmodus, Zeitraum-Filter,
 Fuzzy-Suche, teilbare Permalinks (URL-State), CSV/JSON-Export der Ansicht.
-**Auf Welle 2b verschoben:** Betweenness-Analyse und Louvain-Nachschärfung im
-Worker (neue npm-Dependencies `graphology-metrics`/`graphology-communities-louvain`;
-bewusst eigener Schritt, um diesen PR klein und testbar zu halten).
+**Welle 2b (ebenfalls 20.10.2026):** Betweenness-Broker-Analyse (On-Demand im
+Worker, ≤1 200 Knoten im Ausschnitt, Top-10-Liste mit Betweenness-Anteil) und
+Louvain-Nachschärfung der Communities (`randomWalk:false` → deterministisch,
+≤20 000 geladene Knoten; ersetzt die Export-Communities in Filter/Farbmodus,
+bis zurückgesetzt wird). Dependencies: `graphology-metrics` (Subpath-Import
+`centrality/betweenness`) und `graphology-communities-louvain`. Oberhalb der
+Grenzen erklärt die UI das Limit ehrlich, statt den Worker einzufrieren.
 
 1. **Pathfinder** (höchster Nutzwert, Maltego-Kern): zwei Entitäten wählen → BFS im
    `graph.worker` auf dem gefilterten View (Hop-Limit ≤6) → Pfad als Kanten-Highlight +
@@ -131,7 +135,7 @@ Actions-Kosten, aber größerer Testaufwand → bewusst ans Ende priorisiert.
 | Welle | Ort | Zusätzliche Actions-Minuten | Status |
 | --- | --- | --- | --- |
 | 1 Export-Analytics | bestehender Export-Schritt | **0** | ✅ umgesetzt |
-| 2 Analyse-UI | Browser/Web Worker | **0** | ✅ umgesetzt (2b: Betweenness/Louvain offen) |
+| 2 Analyse-UI | Browser/Web Worker | **0** | ✅ umgesetzt (inkl. 2b) |
 | 3 Entitätsseiten | Pages-Build | **0** | geplant |
 | 4 Ingestion-Qualität | bestehende ≤5-min-Jobs | **0** | geplant |
 | 5 Compliance/Trust | statische Seiten + Doku | **0** | geplant |
@@ -207,14 +211,18 @@ determinism requirement for everything that enters the revision hash.
 - allowlist inputs only → no private-data leak; cost <1 s at 5,000 nodes/20,000 edges;
 - revision hash stays stable (determinism), 3 new tests (suite: 1293).
 
-### Wave 2 — analysis UI in the dashboard (browser = 0 Actions minutes) — ✅ implemented (2b open)
+### Wave 2 — analysis UI in the dashboard (browser = 0 Actions minutes) — ✅ implemented (incl. 2b)
 
 **Implemented 2026-10-20:** pathfinder, rank/degree display (inspector, table,
 top-hub list), community filter + network color mode, time-window filter, fuzzy
 search, shareable permalinks (URL state), CSV/JSON export of the view.
-**Deferred to Wave 2b:** betweenness analysis and Louvain refinement in the
-worker (new npm dependencies `graphology-metrics`/`graphology-communities-louvain`;
-deliberately a separate step to keep this PR small and testable).
+**Wave 2b (also 2026-10-20):** betweenness broker analysis (on demand in the
+worker, ≤1,200 nodes in the visible slice, top-10 list with betweenness share)
+and Louvain community refinement (`randomWalk:false` → deterministic, ≤20,000
+loaded nodes; replaces the export communities in filter/color mode until reset).
+Dependencies: `graphology-metrics` (subpath import `centrality/betweenness`) and
+`graphology-communities-louvain`. Above the caps the UI honestly explains the
+limit instead of freezing the worker.
 
 1. **Pathfinder** (highest user value, Maltego's core): pick two entities → BFS in the
    `graph.worker` over the filtered view (hop limit ≤6) → path as edge highlight +
@@ -276,7 +284,7 @@ minutes but carry a larger testing burden → deliberately prioritized last.
 | Wave | Location | Additional Actions minutes | Status |
 | --- | --- | --- | --- |
 | 1 Export analytics | existing export step | **0** | ✅ implemented |
-| 2 Analysis UI | browser/web worker | **0** | ✅ implemented (2b: betweenness/Louvain open) |
+| 2 Analysis UI | browser/web worker | **0** | ✅ implemented (incl. 2b) |
 | 3 Entity pages | Pages build | **0** | planned |
 | 4 Ingestion quality | existing ≤5-min jobs | **0** | planned |
 | 5 Compliance/trust | static pages + docs | **0** | planned |

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
-import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
+import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, namePartition, brokerShares, ANALYSIS_LIMITS, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
 import { apiBase, readResponse } from '../apps/web/app/dashboard/api';
 const filters: Filters = { confidence: 0, weight: 0, types: [...TYPES], lod: true, ratio: 1 };
 test('normalizes Worker and Graphology nodes without inventing coordinates', () => {
@@ -200,4 +200,28 @@ test('permalinks round-trip and reject junk instead of trusting the URL', () => 
 test('community colors are deterministic HSL tokens', () => {
   assert.equal(communityColor('c000'), communityColor('c000'));
   assert.match(communityColor('c001'), /^hsl\(\d{1,3} 58% 58%\)$/);
+});
+
+test('Louvain partition naming is stable: largest first, ties by smallest member id', () => {
+  const named = namePartition({ b: 1, c: 1, a: 2, d: 0 });
+  assert.equal(named.get('b'), 'l000');
+  assert.equal(named.get('c'), 'l000');
+  assert.equal(named.get('a'), 'l001', 'singleton tie breaks by smallest member id');
+  assert.equal(named.get('d'), 'l002');
+  assert.deepEqual([...namePartition({ d: 0, a: 2, c: 1, b: 1 })], [...named], 'key order does not matter');
+  assert.equal(namePartition({}).size, 0);
+});
+
+test('broker shares normalize, drop zero/invalid betweenness and stay bounded', () => {
+  const brokers = brokerShares({ a: 3, b: 1, c: 0, d: Number.NaN });
+  assert.equal(brokers.length, 2);
+  assert.equal(brokers[0].id, 'a');
+  assert.ok(Math.abs(brokers[0].share - 0.75) < 1e-9);
+  assert.ok(Math.abs(brokers[1].share - 0.25) < 1e-9);
+  assert.deepEqual(brokerShares({ a: 0, b: 0 }), [], 'all-zero betweenness is an honest empty list');
+  const many: Record<string, number> = {};
+  for (let i = 0; i < 30; i++) many[`n${i}`] = i + 1;
+  assert.equal(brokerShares(many).length, 10, 'top list stays bounded');
+  assert.deepEqual(brokerShares({ z: 1, y: 1 }).map(b => b.id), ['y', 'z'], 'value ties break by id');
+  assert.ok(ANALYSIS_LIMITS.broker < ANALYSIS_LIMITS.louvain);
 });

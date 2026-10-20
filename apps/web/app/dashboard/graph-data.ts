@@ -344,3 +344,37 @@ export function decodeViewState(search: string): ViewUrlState {
   if (to) state.to = to;
   return state;
 }
+
+/* Wave 2b: on-demand graph algorithms in the worker (betweenness brokers,
+ * Louvain refinement). Both are bounded and deterministic; the naming and
+ * ranking helpers live here so they are unit-testable without a DOM. */
+
+/** Honest compute caps: above these the UI explains the limit instead of freezing. */
+export const ANALYSIS_LIMITS = { broker: 1200, louvain: 20_000 } as const;
+
+/** Stable names for an algorithm partition: largest community first, ties by
+ * smallest member id → "l000", "l001", … (distinct from export "c###"). */
+export function namePartition(partition: Record<string, string | number>): Map<string, string> {
+  const groups = new Map<string, string[]>();
+  for (const id of Object.keys(partition).sort()) {
+    const key = String(partition[id]);
+    const list = groups.get(key);
+    if (list) list.push(id); else groups.set(key, [id]);
+  }
+  const ranked = [...groups.values()].sort((a, b) => b.length - a.length || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+  const out = new Map<string, string>();
+  ranked.forEach((members, index) => {
+    const name = `l${String(index).padStart(3, '0')}`;
+    for (const id of members) out.set(id, name);
+  });
+  return out;
+}
+
+/** Top brokers by betweenness share (value / total), deterministic tie-break. */
+export function brokerShares(values: Record<string, number>, limit = 10): { id: string; share: number }[] {
+  const entries = Object.entries(values).filter(([, value]) => Number.isFinite(value) && value > 0);
+  const total = entries.reduce((sum, [, value]) => sum + value, 0);
+  if (!total) return [];
+  entries.sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+  return entries.slice(0, Math.max(1, limit)).map(([id, value]) => ({ id, share: value / total }));
+}
