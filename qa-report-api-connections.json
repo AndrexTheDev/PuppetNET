@@ -1,16 +1,17 @@
 {
-  "generated_at": "2026-10-20T14:10:42+00:00",
+  "generated_at": "2026-10-20T14:13:05+00:00",
   "github_ref": "arena/90cccbb3-puppetnet",
-  "github_run_id": "39436662942",
+  "github_run_id": "39437100897",
   "stages": {
     "export": {
       "detail": "graph_latest.json + manifest + 2 slices generated",
       "edges": 1,
       "nodes": 2,
-      "revision": "87d6d2b37a12",
+      "revision": "211f84c2d561",
       "status": "ok"
     },
     "gemini": {
+      "answer": "1",
       "attempts": [
         {
           "detail": "countTokens: HTTP 404 NOT_FOUND: models/gemini-1.5-flash is not found for API version v1beta, or is not supported for countTokens. Call ModelService.ListModels to see the list of available models and their supported methods.",
@@ -20,15 +21,16 @@
           "ok": false
         },
         {
-          "detail": "generateContent (gemini-3.8-flash): ReadTimeout: HTTPSConnectionPool(host='generativelanguage.googleapis.com', port=443): Read timed out. (read timeout=60)",
           "http_status": null,
-          "kind": "network",
-          "model": "gemini-3.8-flash",
-          "ok": false
+          "kind": "ok",
+          "model": "gemini-flash-lite-latest",
+          "ok": true
         }
       ],
-      "detail": "generateContent (gemini-3.8-flash): ReadTimeout: HTTPSConnectionPool(host='generativelanguage.googleapis.com', port=443): Read timed out. (read timeout=60)",
-      "model": "gemini-1.5-flash",
+      "detail": "'gemini-flash-lite-latest' answered with 110 total tokens",
+      "model_answered": "gemini-flash-lite-latest",
+      "model_configured": "gemini-1.5-flash",
+      "over_production_budget": true,
       "served_models": [
         "antigravity-preview-05-2026",
         "antigravity-preview-09-2026",
@@ -77,7 +79,12 @@
         "lyria-3.5",
         "nano-banana-pro-preview"
       ],
-      "status": "fail"
+      "status": "warn",
+      "usage": {
+        "candidates": 1,
+        "prompt": 109,
+        "total": 110
+      }
     },
     "neo4j": {
       "detail": "authentication rejected (NEO4J_USER/NEO4J_PASSWORD invalid): {neo4j_code: Neo.ClientError.Security.Unauthorized} {message: The client is unauthorized due to authentication failure.} {gql_status: 42NFF} {gql_status_description: error: syntax error or access rule violation - permission/access denied. Access denied, see the security logs for details.}",
@@ -110,7 +117,7 @@
   },
   "summary": {
     "status_export": "OK",
-    "status_gemini_api": "FAIL",
+    "status_gemini_api": "WARN",
     "status_neo4j": "FAIL",
     "status_secrets": "OK",
     "status_spacy": "OK"
