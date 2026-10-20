@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
-import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, monthWindow, bundleEdges, structuralVulnerability, EGO_DEPTH_LIMIT, VULNERABILITY_NODE_LIMIT, normalizeInsights, ANALYSIS_LIMITS, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
+import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, monthWindow, bundleEdges, structuralVulnerability, pathTimeline, EGO_DEPTH_LIMIT, VULNERABILITY_NODE_LIMIT, normalizeInsights, ANALYSIS_LIMITS, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
 import { apiBase, readResponse } from '../apps/web/app/dashboard/api';
 const filters: Filters = { confidence: 0, weight: 0, types: [...TYPES], lod: true, ratio: 1 };
 test('normalizes Worker and Graphology nodes without inventing coordinates', () => {
@@ -399,4 +399,57 @@ test('wave 9 vulnerability: bridges, articulation points and the k-core nucleus'
   const bounded = structuralVulnerability(tail.nodes, tail.edges, 1);
   assert.equal(bounded?.cutVertices.length, 1, 'the list is bounded');
   assert.equal(bounded?.cutVertices[0].degree, 3, 'highest degree first');
+});
+
+test('wave 10 path timelines date every hop and flag anachronisms honestly', () => {
+  const data = normalizeDataset({
+    nodes: [{ key: 'a', name: 'A' }, { key: 'b', name: 'B' }, { key: 'c', name: 'C' }, { key: 'd', name: 'D' }],
+    evidence: [
+      { id: 'd1', title: 'Doc 1', date: '2020-01-01T08:00:00Z' },
+      { id: 'd2', title: 'Doc 2', date: '2021-06-01' },
+      { id: 'd3a', title: 'Doc 3a', date: '2019-05-01' },
+      { id: 'd3b', title: 'Doc 3b', date: '2019-07-15' },
+    ],
+    edges: [
+      { source: 'a', target: 'b', type: 'OWNS', evidenceIds: ['d1'] },
+      { source: 'b', target: 'c', type: 'ACQUIRED', evidenceIds: ['d2'] },
+      { source: 'c', target: 'd', type: 'MET_WITH', evidenceIds: ['d3a', 'd3b'] },
+    ],
+  });
+  const timeline = pathTimeline(data, ['a', 'b', 'c', 'd']);
+  assert.equal(timeline?.hops.length, 3);
+  assert.deepEqual([timeline?.hops[0].first, timeline?.hops[0].last], ['2020-01-01', '2020-01-01'], 'timestamps normalize to the day');
+  assert.equal(timeline?.hops[2].evidence, 2, 'provenance unions per hop');
+  assert.deepEqual([timeline?.hops[2].first, timeline?.hops[2].last], ['2019-05-01', '2019-07-15'], 'the window spans all documents');
+  assert.equal(timeline?.hops[2].ordered, false, 'a hop documented before the previous one is an anachronism');
+  assert.equal(timeline?.anachronisms, 1);
+  assert.deepEqual([timeline?.first, timeline?.last], ['2019-05-01', '2021-06-01'], 'the chain span is the outer envelope');
+  assert.equal(pathTimeline(data, ['a']), null, 'a single node is not a chain');
+  assert.equal(pathTimeline(data, ['a', 'd']), null, 'a hop without a documented relation is null, not invented');
+  assert.deepEqual(pathTimeline(data, ['a', 'b', 'c', 'd']), timeline, 'deterministic');
+  const undated = normalizeDataset({
+    nodes: [{ key: 'a', name: 'A' }, { key: 'b', name: 'B' }],
+    evidence: [], edges: [{ source: 'a', target: 'b', type: 'OWNS' }],
+  });
+  const bare = pathTimeline(undated, ['a', 'b']);
+  assert.equal(bare?.hops[0].first, undefined, 'undated hops stay honestly empty');
+  assert.equal(bare?.anachronisms, 0, 'missing dates are never turned into a verdict');
+});
+
+test('wave 10 failure simulation counts the parts left behind', () => {
+  const data = normalizeDataset({
+    nodes: ['a', 'b', 'c', 'd', 'e'].map(key => ({ key, name: key.toUpperCase() })), evidence: [],
+    edges: [['a', 'b'], ['b', 'c'], ['c', 'a'], ['c', 'd'], ['d', 'e']].map(([source, target]) => ({ source, target })),
+  });
+  const vulnerability = structuralVulnerability(data.nodes, data.edges);
+  const c = vulnerability?.cutVertices.find(vertex => vertex.id === 'c');
+  const d = vulnerability?.cutVertices.find(vertex => vertex.id === 'd');
+  assert.deepEqual(c?.impact, { components: 2, largest: 2 }, 'removing C leaves the triangle remnant and the tail');
+  assert.deepEqual(d?.impact, { components: 2, largest: 3 }, 'removing D isolates the triangle');
+  assert.ok(vulnerability!.cutVertices.every(vertex => vertex.impact.components >= 2), 'an articulation point always splits something');
+  const path = normalizeDataset({
+    nodes: ['a', 'b', 'c'].map(key => ({ key, name: key.toUpperCase() })), evidence: [],
+    edges: [{ source: 'a', target: 'b' }, { source: 'b', target: 'c' }],
+  });
+  assert.deepEqual(structuralVulnerability(path.nodes, path.edges)?.cutVertices.find(v => v.id === 'b')?.impact, { components: 2, largest: 1 });
 });

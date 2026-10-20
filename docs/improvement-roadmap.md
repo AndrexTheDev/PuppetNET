@@ -251,6 +251,28 @@ Bündelungs-Schalter + Verwundbarkeits-Panel im Analytik-Bereich (DE/EN, Sprungp
 direkt fokussierbar), token-only CSS, 2 neue Datenlagen-Tests (dashboard 27) +
 1 neuer Release-Pin — `ci:pages` grün, 0 zusätzliche Actions-Minuten.
 
+### Welle 10 — Zeitliche Plausibilität + Ausfall-Simulation — ✅ umgesetzt (2026-10-20)
+
+- **„Pfad über Zeit"**: Jede Teilstrecke eines kürzesten Pfades erhält das
+  **dokumentierte Zeitfenster** ihrer Beziehung (früheste bis späteste
+  Beleg-Datumsangabe, auf den Tag normalisiert, mit vereinigter Provenienz). Liegt die
+  späteste Beleglage einer Teilstrecke **vor** dem Beginn der vorherigen, wird sie als
+  **Anachronismus** markiert — die Kette kann so nicht stattgefunden haben, ohne dass
+  eine Erklärung fehlt. Undatierte Teilstrecken bleiben ehrlich leer und werden nie zum
+  Urteil; eine Teilstrecke ohne belegte Beziehung liefert `null` statt einer Erfindung.
+- **Ausfall-Simulation**: Jeder Artikulationspunkt aus Welle 9 trägt jetzt bei, in wie
+  viele Teile der Ausschnitt bei seinem Wegfall zerfällt und wie groß der größte
+  verbleibende Teil ist („zerfällt in 3 Teile · größter 42"). Das ist die operative
+  Frage hinter der Strukturanalyse — nicht nur *ob* eine Entität kritisch ist, sondern
+  *was* ihr Wegfall kostet.
+
+**Geliefert (Welle 10)**: `pathTimeline()` (reine, getestete Funktion), `PathTimeline`
+im Pfad-Protokoll + Worker-Berechnung auf dem sichtbaren Ausschnitt, `impact` je
+Artikulationspunkt, Beleglagen-Block im Pfad-Panel (mit positiver Bestätigung bei
+plausibler Kette) und Ausfall-Hinweis in der Verwundbarkeitsliste (DE/EN), token-only
+CSS, 2 neue Datenlagen-Tests (dashboard 29) + 1 neuer Release-Pin (release 16) —
+`ci:pages` grün, 0 zusätzliche Actions-Minuten.
+
 ## 4. Budget-Zusammenfassung
 
 | Welle | Ort | Zusätzliche Actions-Minuten | Status |
@@ -264,6 +286,7 @@ direkt fokussierbar), token-only CSS, 2 neue Datenlagen-Tests (dashboard 27) +
 | 7 Ego/Zeitachse | Browser/Web Worker | **0** | ✅ umgesetzt |
 | 8 Entitätsauflösung/Zeitachse | Browser/Web Worker | **0** | ✅ umgesetzt |
 | 9 Bündelung/Verwundbarkeit | Browser/Web Worker | **0** | ✅ umgesetzt |
+| 10 Zeitplausibilität/Ausfall | Browser/Web Worker | **0** | ✅ umgesetzt |
 
 Kein Schritt erzeugt neue Workflows, neue Cron-Jobs, längere Jobs oder bezahlte
 Dienste. Die einzigen verbrauchsrelevanten Grenzen sind die bestehenden: 3
@@ -520,6 +543,27 @@ vulnerability panel in the analytics area (DE/EN, jump-off points focusable dire
 token-only CSS, 2 new data-layer tests (dashboard 27) + 1 new release pin —
 `ci:pages` green, 0 extra Actions minutes.
 
+### Wave 10 — temporal plausibility + failure simulation — ✅ implemented (2026-10-20)
+
+- **"Path over time"**: every hop of a shortest path carries the **documented window**
+  of its relationship (earliest to latest evidence date, normalized to the day, with
+  united provenance). If a hop's latest documentation lies **before** the previous hop
+  began, it is flagged as an **anachronism** — the chain cannot have happened that way
+  without a missing explanation. Undated hops stay honestly empty and never become a
+  verdict; a hop without a documented relation returns `null` instead of an invention.
+- **Failure simulation**: every articulation point from Wave 9 now reports how many
+  parts the slice falls into when it disappears and how large the largest survivor is
+  ("splits into 3 parts · largest 42"). That is the operational question behind
+  structural analysis — not only *whether* an entity is critical, but *what* losing it
+  costs.
+
+**Delivered (Wave 10)**: `pathTimeline()` (pure, tested function), `PathTimeline` in the
+path protocol + worker computation on the visible slice, `impact` per articulation
+point, per-hop evidence block in the path panel (with positive confirmation for a
+plausible chain) and the failure hint in the vulnerability list (DE/EN), token-only CSS,
+2 new data-layer tests (dashboard 29) + 1 new release pin (release 16) — `ci:pages`
+green, 0 extra Actions minutes.
+
 ## 4. Budget summary
 
 | Wave | Location | Additional Actions minutes | Status |
@@ -533,6 +577,7 @@ token-only CSS, 2 new data-layer tests (dashboard 27) + 1 new release pin —
 | 7 Ego/timeline | browser/web worker | **0** | ✅ implemented |
 | 8 entity resolution/timeline | browser/web worker | **0** | ✅ implemented |
 | 9 bundling/vulnerability | browser/web worker | **0** | ✅ implemented |
+| 10 chronology/failure | browser/web worker | **0** | ✅ implemented |
 
 No step creates new workflows, new cron jobs, longer jobs or paid services. The only
 consumption-relevant limits remain the existing ones: 3 reservations/UTC day, 5-minute

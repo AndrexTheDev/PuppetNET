@@ -293,6 +293,11 @@ const DE = {
   'dash.vulnCore': 'k = {core} · {size} Knoten',
   'dash.vulnNone': 'Keine Artikulationspunkte — der Ausschnitt ist zweifach zusammenhängend.',
   'dash.vulnAria': '{label} im Netz fokussieren',
+  'dash.vulnImpact': 'zerfällt in {parts} Teile · größter {largest}',
+  'dash.pathTimelineTitle': 'Beleglage je Teilstrecke',
+  'dash.pathChronoOk': 'Chronologisch plausibel: keine Teilstrecke ist vor der vorherigen belegt.',
+  'dash.pathAnachronism': 'vor der vorherigen Teilstrecke belegt',
+  'dash.pathAnachronismNote': '{count} Teilstrecke(n) passen nicht zur Reihenfolge — die Kette kann andersherum verlaufen oder ein Bindeglied fehlen; Quellen prüfen.',
 
   // Intro / ads -------------------------------------------------------------------
   'intro.replay': 'Intro ansehen ↗',
@@ -575,6 +580,11 @@ const EN: typeof DE = {
   'dash.vulnCore': 'k = {core} · {size} nodes',
   'dash.vulnNone': 'No articulation points — the slice is biconnected.',
   'dash.vulnAria': 'Focus {label} in the network',
+  'dash.vulnImpact': 'splits into {parts} parts · largest {largest}',
+  'dash.pathTimelineTitle': 'Evidence per hop',
+  'dash.pathChronoOk': 'Chronologically plausible: no hop is documented before the previous one.',
+  'dash.pathAnachronism': 'documented before the previous hop',
+  'dash.pathAnachronismNote': '{count} hop(s) do not match the order — the chain may run the other way or a link may be missing; check the sources.',
 
   'intro.replay': 'Watch intro ↗',
   'intro.aria': 'PuppetNET intro',

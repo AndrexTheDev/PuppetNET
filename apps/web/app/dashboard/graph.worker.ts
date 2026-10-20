@@ -3,7 +3,7 @@ import { MultiDirectedGraph, UndirectedGraph } from 'graphology';
 import forceAtlas2 from 'graphology-layout-forceatlas2';
 import betweenness from 'graphology-metrics/centrality/betweenness';
 import louvain from 'graphology-communities-louvain';
-import { demoDataset, normalizeDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, levelFor, shortestPath, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, bundleEdges, structuralVulnerability, EGO_DEPTH_LIMIT, ANALYSIS_LIMITS, LIMITS, TYPES, type Dataset, type Filters, type View } from './graph-data';
+import { demoDataset, normalizeDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, levelFor, shortestPath, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, bundleEdges, structuralVulnerability, pathTimeline, EGO_DEPTH_LIMIT, ANALYSIS_LIMITS, LIMITS, TYPES, type Dataset, type Filters, type View } from './graph-data';
 import type { WorkerRequest, WorkerResponse } from './protocol';
 const scope = self as unknown as { onmessage: ((event: MessageEvent<WorkerRequest>) => void) | null; postMessage: (value: WorkerResponse, transfer?: Transferable[]) => void };
 let dataset: Dataset = { nodes: [], edges: [], evidence: [] };
@@ -93,10 +93,13 @@ scope.onmessage = async ({ data }) => {
   if (data.kind === 'path') {
     // Pathfinder runs on the visible slice (filters + drill focus) — an honest
     // "no path in this excerpt" instead of a hidden full-dataset answer.
-    const result = shortestPath(currentFiltered(lastFilters), data.source, data.target);
+    const slice = currentFiltered(lastFilters);
+    const result = shortestPath(slice, data.source, data.target);
     send({ kind: 'path', source: data.source, target: data.target, nodes: result?.nodes ?? null,
       edges: result ? result.edges.map(e => ({ id: e.id, source: e.source, target: e.target, type: e.type })) : null,
-      hops: result ? Math.max(0, result.nodes.length - 1) : 0 });
+      hops: result ? Math.max(0, result.nodes.length - 1) : 0,
+      // Wave 10: the documented window per hop travels with the chain.
+      timeline: result ? pathTimeline(slice, result.nodes) : null });
     return;
   }
   if (data.kind === 'broker') {

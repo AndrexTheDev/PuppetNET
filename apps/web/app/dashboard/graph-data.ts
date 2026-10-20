@@ -28,11 +28,22 @@ export interface GraphEdge { id: string; source: string; target: string; type: s
 export interface Dataset { nodes: GraphNode[]; edges: GraphEdge[]; evidence: Evidence[]; truncated?: boolean; analytics?: GraphAnalytics; insights?: GraphInsight[] }
 export interface Filters { confidence: number; weight: number; types: EntityType[]; lod: boolean; ratio: number; community?: string; from?: string; to?: string; bundle?: boolean }
 export interface Vulnerability {
-  cutVertices: { id: string; label: string; degree: number }[];
+  cutVertices: { id: string; label: string; degree: number; impact: { components: number; largest: number } }[];
   cutEdges: number;
   maxCore: number;
   maxCoreSize: number;
 }
+/** Wave 10: one hop of a link chain with the documented window of the
+ * relationship(s) connecting its two nodes. `ordered` is false when the hop is
+ * documented entirely before the previous hop began — an anachronism that needs
+ * an explanation instead of a hunch. */
+export interface PathTimelineHop {
+  from: string; to: string; type: string;
+  first?: string; last?: string;
+  evidence: number;
+  ordered: boolean;
+}
+export interface PathTimeline { hops: PathTimelineHop[]; first?: string; last?: string; anachronisms: number }
 export interface MapPoint { id: string; lat: number; lon: number; count: number; label: string; exampleId: string }
 export interface View {
   version: number; nodes: GraphNode[]; edges: GraphEdge[]; mapPoints: MapPoint[];
@@ -515,7 +526,63 @@ export function structuralVulnerability(nodes: GraphNode[], edges: GraphEdge[], 
   const cutVertices: { id: string; label: string; degree: number }[] = [];
   for (let v = 0; v < n; v++) if (cut[v]) cutVertices.push({ id: singles[v].id, label: singles[v].label, degree: strength[v] });
   cutVertices.sort((a, b) => b.degree - a.degree || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-  return { cutVertices: cutVertices.slice(0, Math.max(1, limit)), cutEdges, maxCore, maxCoreSize };
+  // Wave 10: failure simulation — how many parts does the slice fall into when
+  // this articulation point disappears, and how big is the largest survivor?
+  const componentsWithout = (skip: number) => {
+    const reached = new Uint8Array(n);
+    reached[skip] = 1;
+    let components = 0, largest = 0;
+    for (let start = 0; start < n; start++) {
+      if (reached[start]) continue;
+      components++;
+      let size = 0;
+      const stack = [start];
+      reached[start] = 1;
+      while (stack.length) {
+        const v = stack.pop()!;
+        size++;
+        for (const u of adjacency[v]) if (u !== skip && !reached[u]) { reached[u] = 1; stack.push(u); }
+      }
+      if (size > largest) largest = size;
+    }
+    return { components, largest };
+  };
+  return {
+    cutVertices: cutVertices.slice(0, Math.max(1, limit)).map(entry => ({ ...entry, impact: componentsWithout(index.get(entry.id)!) })),
+    cutEdges, maxCore, maxCoreSize,
+  };
+}
+
+/**
+ * Wave 10: temporal plausibility of a link chain. Each hop carries the
+ * documented window of the relationship(s) connecting its two nodes (earliest
+ * to latest evidence date, normalized to YYYY-MM-DD). A hop whose latest
+ * documentation predates the previous hop's earliest one is an anachronism —
+ * the chain cannot have happened in that order without an explanation.
+ * Undated hops stay honestly empty and never turn into a verdict; a hop without
+ * any connecting edge returns null instead of inventing a relation.
+ */
+export function pathTimeline(data: Dataset, ids: string[]): PathTimeline | null {
+  if (ids.length < 2) return null;
+  const dateOf = new Map(data.evidence.map(e => [e.id, isoDate(e.date)]));
+  const hops: PathTimelineHop[] = [];
+  for (let i = 1; i < ids.length; i++) {
+    const from = ids[i - 1], to = ids[i];
+    const edges = data.edges.filter(e => (e.source === from && e.target === to) || (e.source === to && e.target === from));
+    if (edges.length === 0) return null;
+    const days = edges.flatMap(e => e.evidenceIds.map(id => dateOf.get(id))).filter((d): d is string => !!d).sort();
+    const first = days[0], last = days[days.length - 1];
+    const previous = hops[hops.length - 1];
+    const breaks = !!(previous?.first && last && last < previous.first);
+    hops.push({
+      from, to, type: edges.map(e => e.type).sort()[0],
+      first, last, evidence: new Set(edges.flatMap(e => e.evidenceIds)).size,
+      ordered: !breaks,
+    });
+  }
+  const starts = hops.map(h => h.first).filter((d): d is string => !!d).sort();
+  const ends = hops.map(h => h.last).filter((d): d is string => !!d).sort();
+  return { hops, first: starts[0], last: ends[ends.length - 1], anachronisms: hops.filter(h => !h.ordered).length };
 }
 
 export function fuzzyScore(query: string, value: string): number {

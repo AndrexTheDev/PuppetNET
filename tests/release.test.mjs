@@ -213,3 +213,18 @@ test('wave 9: bundling and vulnerability analysis stay deterministic and browser
   assert.ok(dashboard.includes("t('dash.vulnTitle')"), 'vulnerability block is dictionary-driven');
   assert.ok(dashboard.includes("t('dash.vulnCutEdges')"), 'cut edges are explained, not just counted');
 });
+
+test('wave 10: path chronology and failure simulation stay honest', () => {
+  const data = read('apps/web/app/dashboard/graph-data.ts');
+  assert.match(data, /export function pathTimeline\(data: Dataset, ids: string\[\]\): PathTimeline \| null/, 'pure, null-honest path chronology');
+  assert.match(data, /const componentsWithout = \(skip: number\)/, 'failure simulation reuses the same adjacency');
+  assert.match(data, /impact: componentsWithout\(index\.get\(entry\.id\)!\)/, 'impact is attached to the bounded articulation list');
+  assert.match(read('apps/web/app/dashboard/protocol.ts'), /timeline: PathTimeline \| null/, 'the worker ships the hop timeline');
+  const worker = read('apps/web/app/dashboard/graph.worker.ts');
+  assert.match(worker, /timeline: result \? pathTimeline\(slice, result\.nodes\) : null/, 'the worker derives chronology from the visible slice');
+  const dashboard = read('apps/web/app/dashboard/Dashboard.tsx');
+  assert.ok(dashboard.includes("t('dash.pathTimelineTitle')"), 'the per-hop block is dictionary-driven');
+  assert.ok(dashboard.includes("t('dash.pathChronoOk')"), 'a plausible chain is stated positively');
+  assert.ok(dashboard.includes("t('dash.vulnImpact',"), 'the failure simulation is shown next to each articulation point');
+  assert.ok(!/Math\.random/.test(data.match(/export function pathTimeline[\s\S]*?\n}/)?.[0] ?? ''), 'no randomness in chronology');
+});

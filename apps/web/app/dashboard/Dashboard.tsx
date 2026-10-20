@@ -2,7 +2,7 @@
 import dynamic from 'next/dynamic';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import EntityTable, { type TableRow } from './EntityTable';
-import { COLORS, TYPES, LIMITS, decodeViewState, edgesToCSV, encodeViewState, monthWindow, nodesToCSV, rankSearch, resolveNodeRef, viewToJSON, type Evidence, type Filters, type GraphEdge, type GraphNode, type View, type ViewUrlState } from './graph-data';
+import { COLORS, TYPES, LIMITS, decodeViewState, edgesToCSV, encodeViewState, monthWindow, nodesToCSV, rankSearch, resolveNodeRef, viewToJSON, type Evidence, type Filters, type GraphEdge, type GraphNode, type PathTimeline, type View, type ViewUrlState } from './graph-data';
 import type { NetworkHandle, PathHighlight } from './NetworkGraph';
 import type { WorkerRequest, WorkerResponse } from './protocol';
 import { loadStaticGraph, requestResearch, type Standby } from '../../src/lib/dataFetcher';
@@ -15,7 +15,7 @@ function DynamicStage({ k }: { k: 'webgl' | 'map' }) { const t = useT(); return 
 const NetworkGraph = dynamic(() => import('./NetworkGraph'), { ssr: false, loading: () => <DynamicStage k="webgl" /> });
 const MapModule = dynamic(() => import('./MapModule'), { ssr: false, loading: () => <DynamicStage k="map" /> });
 const initialFilters: Filters = { confidence: 0, weight: 0, types: [...TYPES], lod: true, ratio: 1 };
-interface PathResult { ids: string[]; labels: string[]; types: string[]; edgeIds: string[]; hops: number }
+interface PathResult { ids: string[]; labels: string[]; types: string[]; edgeIds: string[]; hops: number; timeline: PathTimeline | null }
 export default function Dashboard() {
   const worker = useRef<Worker | null>(null), network = useRef<NetworkHandle>(null), version = useRef(0), selectedId = useRef<string | null>(null), selectedEdgeId = useRef<string | null>(null);
   // Shareable permalink state: mode, query, focus, community, time window, color mode.
@@ -78,7 +78,7 @@ export default function Dashboard() {
           return;
         }
         const labelOf = (id: string) => viewLatest.current?.nodes.find(n => n.id === id)?.label ?? id;
-        setPathResult({ ids: data.nodes, labels: data.nodes.map(labelOf), types: data.edges.map(e => e.type), edgeIds: data.edges.map(e => e.id), hops: data.hops });
+        setPathResult({ ids: data.nodes, labels: data.nodes.map(labelOf), types: data.edges.map(e => e.type), edgeIds: data.edges.map(e => e.id), hops: data.hops, timeline: data.timeline ?? null });
         setPathError('');
         setAnnouncement(tRef.current('dash.annPathFound', { hops: data.hops, from: labelOf(data.nodes[0]), to: labelOf(data.nodes[data.nodes.length - 1]) }));
         return;
@@ -314,7 +314,7 @@ export default function Dashboard() {
             <h4 className="hub-heading">{t('dash.vulnTitle')}</h4>
             <dl className="analytics-facts"><div><dt>{t('dash.vulnCutEdges')}</dt><dd>{number(view.vulnerability.cutEdges)}</dd></div><div><dt>k-Core</dt><dd>{t('dash.vulnCore', { core: view.vulnerability.maxCore, size: number(view.vulnerability.maxCoreSize) })}</dd></div></dl>
             {view.vulnerability.cutVertices.length > 0
-              ? <ol className="hub-list">{view.vulnerability.cutVertices.map(node => <li key={node.id}><button type="button" className="text-button" aria-label={t('dash.vulnAria', { label: node.label })} onClick={() => { if (mode !== 'network') changeMode('network'); select(node.id); requestAnimationFrame(() => network.current?.focus(node.id)); }}>{node.label}</button><span className="hub-rank">{number(node.degree)}</span></li>)}</ol>
+              ? <ol className="hub-list">{view.vulnerability.cutVertices.map(node => <li key={node.id}><button type="button" className="text-button" aria-label={t('dash.vulnAria', { label: node.label })} onClick={() => { if (mode !== 'network') changeMode('network'); select(node.id); requestAnimationFrame(() => network.current?.focus(node.id)); }}>{node.label}</button><span className="hub-rank">{number(node.degree)}</span><span className="vuln-impact">{t('dash.vulnImpact', { parts: node.impact.components, largest: number(node.impact.largest) })}</span></li>)}</ol>
               : <p className="muted">{t('dash.vulnNone')}</p>}
             <p className="muted">{t('dash.vulnText')}</p>
           </div>}
@@ -357,6 +357,17 @@ export default function Dashboard() {
               <button type="button" className="text-button" onClick={() => { select(pathResult.ids[index]); requestAnimationFrame(() => network.current?.focus(pathResult.ids[index])); }}>{label}</button>
               {index < pathResult.types.length && <span className="hop-edge" aria-label={t('dash.viaAria', { type: pathResult.types[index] })}> —{pathResult.types[index]}→</span>}
             </li>)}</ol>
+            {pathResult.timeline && pathResult.timeline.hops.length > 0 && <div className="path-timeline">
+              <h4 className="hub-heading">{t('dash.pathTimelineTitle')}</h4>
+              <ol className="path-dates">{pathResult.timeline.hops.map((hop, index) => <li key={`${hop.from}:${hop.to}:${index}`}>
+                <span className="path-date">{hop.first ?? '—'}{hop.last && hop.last !== hop.first ? ` → ${hop.last}` : ''}</span>
+                <span className="path-hop-type">{hop.type}</span>
+                {!hop.ordered && <strong className="inline-warning">{t('dash.pathAnachronism')}</strong>}
+              </li>)}</ol>
+              {pathResult.timeline.anachronisms > 0
+                ? <p className="inline-warning" role="status">{t('dash.pathAnachronismNote', { count: pathResult.timeline.anachronisms })}</p>
+                : <p className="muted" role="status">{t('dash.pathChronoOk')}</p>}
+            </div>}
             {view?.stats.grouped && <p className="muted">{t('dash.pathGroupedNote')}</p>}
             <button type="button" className="text-button" onClick={() => { setPathResult(null); setPathError(''); }}>{t('dash.pathClear')}</button>
           </div>}

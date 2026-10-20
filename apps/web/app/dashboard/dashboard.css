@@ -131,3 +131,12 @@
 /* Wave 9: structural-vulnerability block (token-only) */
 .vuln-panel{margin-top:var(--space-3,1rem);border-top:1px solid var(--line);padding-top:var(--space-2,0.5rem)}
 .vuln-panel .analytics-facts{margin-top:var(--space-1,0.25rem)}
+
+/* Wave 10: per-hop evidence windows + failure simulation (token-only) */
+.path-timeline{margin-top:var(--space-2,0.5rem);border-top:1px solid var(--line);padding-top:var(--space-1,0.25rem)}
+.path-dates{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:var(--space-1,0.25rem)}
+.path-dates li{display:grid;grid-template-columns:10ch 1fr;gap:var(--space-1,0.25rem);align-items:baseline;font-size:.85em}
+.path-date{font-variant-numeric:tabular-nums;opacity:.8}
+.path-hop-type{opacity:.7}
+.path-dates li .inline-warning{grid-column:1/-1}
+.vuln-impact{display:block;font-size:.8em;opacity:.7;font-variant-numeric:tabular-nums}
