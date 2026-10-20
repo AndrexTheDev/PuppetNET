@@ -4,7 +4,7 @@ import { createWorker, type Env, type EdgeCache } from '../apps/worker/src/index
 
 const env: Env = { PAGES_ORIGIN: 'https://puppetnet-web.pages.dev', ALLOWED_ORIGINS: 'https://puppetnet-web.pages.dev',
   GITHUB_OWNER: 'AndrexTheDev', GITHUB_REPO: 'PuppetNET',
-  GITHUB_DISPATCH_TOKEN: 'server-only-not-a-real-github-token', SEARCH_AUTH_TOKEN: 'operator-only-test-secret-32-characters' };
+  GH_PAT: 'server-only-not-a-real-github-token', SEARCH_AUTH_TOKEN: 'operator-only-test-secret-32-characters' };
 const ctx = () => { const tasks: Promise<unknown>[] = []; return { tasks, waitUntil: (task: Promise<unknown>) => { tasks.push(task); } }; };
 function search(query: unknown = 'Example Holdings', extra: RequestInit = {}) {
   return new Request('https://relay.test/api/search', { method: 'POST',
@@ -16,7 +16,7 @@ test('authorized dispatch: fixed repo/event, no GitHub secret in response, never
   let calls = 0;
   const worker = createWorker({ fetch: async (url, init) => {
     calls++; assert.equal(url, 'https://api.github.com/repos/AndrexTheDev/PuppetNET/dispatches');
-    assert.equal(new Headers(init?.headers).get('Authorization'), `Bearer ${env.GITHUB_DISPATCH_TOKEN}`);
+    assert.equal(new Headers(init?.headers).get('Authorization'), `Bearer ${env.GH_PAT}`);
     assert.equal(init?.redirect, 'error');
     assert.deepEqual(JSON.parse(String(init?.body)), { event_type: 'puppetnet-refresh', client_payload: { query: 'Example Holdings' } });
     return new Response(null, { status: 204 });
@@ -24,7 +24,7 @@ test('authorized dispatch: fixed repo/event, no GitHub secret in response, never
   const response = await worker.fetch(search(), env, ctx());
   assert.equal(response.status, 202); assert.equal(calls, 1);
   assert.equal(response.headers.get('Cache-Control'), 'no-store');
-  const text = await response.text(); assert.ok(!text.includes(env.GITHUB_DISPATCH_TOKEN!));
+  const text = await response.text(); assert.ok(!text.includes(env.GH_PAT!));
   assert.equal(JSON.parse(text).status, 'accepted');
 });
 
@@ -110,9 +110,25 @@ test('search relay has no bindings, scheduled work or imported historical graph 
 
 test('active provisioning dry run is secret-free; real run with missing secrets fails before account calls', async () => {
   const { spawnSync } = await import('node:child_process');
-  const cleanEnv = { ...process.env, GITHUB_DISPATCH_TOKEN: '', SEARCH_AUTH_TOKEN: '' };
+  const cleanEnv = { ...process.env, GH_PAT: '', SEARCH_AUTH_TOKEN: '' };
   const plan = spawnSync(process.execPath, ['scripts/provision-search-worker.mjs', '--dry-run'], { encoding: 'utf8', env: cleanEnv });
   assert.equal(plan.status, 0); assert.match(plan.stdout, /KV-free/); assert.match(plan.stdout, /no account calls/i);
   const failed = spawnSync(process.execPath, ['scripts/provision-search-worker.mjs'], { encoding: 'utf8', env: cleanEnv });
   assert.equal(failed.status, 1); assert.match(failed.stderr, /No account call/);
+});
+
+test('GitHub credential cannot authenticate a browser and reused operator secret fails closed', async () => {
+  const worker = createWorker({ fetch: async () => new Response(null, { status: 204 }) });
+  const wrong = search(); wrong.headers.set('Authorization', `Bearer ${env.GH_PAT}`);
+  assert.equal((await worker.fetch(wrong, env, ctx())).status, 401);
+  assert.equal((await worker.fetch(search(), { ...env, SEARCH_AUTH_TOKEN: env.GH_PAT!.repeat(2), GH_PAT: env.GH_PAT!.repeat(2) }, ctx())).status, 503);
+});
+
+test('active Worker and provisioner use only canonical GH_PAT secret', async () => {
+  const { readFileSync } = await import('node:fs');
+  const source = readFileSync('apps/worker/src/index.ts', 'utf8');
+  const provisioner = readFileSync('scripts/provision-search-worker.mjs', 'utf8');
+  assert.match(source, /const dispatchToken = env\.GH_PAT;/);
+  assert.match(provisioner, /GH_PAT: process\.env\.GH_PAT/);
+  assert.doesNotMatch(source + provisioner, /GITHUB_DISPATCH_TOKEN/);
 });

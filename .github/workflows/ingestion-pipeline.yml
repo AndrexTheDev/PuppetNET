@@ -6,12 +6,14 @@ on:
       - 'packages/pipeline/**'
       - 'tests/**.py'
       - '.github/workflows/ingestion-pipeline.yml'
+      - '.github/workflows/daily_ingestion.yml'
   pull_request:
     branches: [main]
     paths:
       - 'packages/pipeline/**'
       - 'tests/**.py'
       - '.github/workflows/ingestion-pipeline.yml'
+      - '.github/workflows/daily_ingestion.yml'
   schedule:
     - cron: '17 5 * * *'
   workflow_dispatch:
@@ -27,6 +29,8 @@ concurrency:
   cancel-in-progress: false
 jobs:
   tests:
+    # No redundant full test/model install on the new daily pipeline schedule.
+    if: github.event_name != 'schedule' || vars.ENABLE_DAILY_STATIC != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -93,7 +97,7 @@ jobs:
       NLP_MAX_SENTENCES_PER_DOC: '100'
       HF_HOME: ${{ github.workspace }}/.cache/huggingface
       NEO4J_URI: ${{ secrets.NEO4J_URI }}
-      NEO4J_USERNAME: ${{ secrets.NEO4J_USERNAME }}
+      NEO4J_USER: ${{ secrets.NEO4J_USER }}
       NEO4J_PASSWORD: ${{ secrets.NEO4J_PASSWORD }}
       PROXY_WORKER_URL: ${{ secrets.PROXY_WORKER_URL }}
       PROXY_AUTH_TOKEN: ${{ secrets.PROXY_AUTH_TOKEN }}
@@ -110,7 +114,7 @@ jobs:
         shell: bash
         run: |
           test -n "$NEO4J_URI" || { echo 'Missing NEO4J_URI'; exit 1; }
-          test -n "$NEO4J_USERNAME" || { echo 'Missing NEO4J_USERNAME'; exit 1; }
+          test -n "$NEO4J_USER" || { echo 'Missing NEO4J_USER'; exit 1; }
           test -n "$NEO4J_PASSWORD" || { echo 'Missing NEO4J_PASSWORD'; exit 1; }
       - uses: actions/setup-python@v5
         with:
@@ -256,7 +260,7 @@ jobs:
     # writes, no NLP dependencies) to prove the pipeline credentials work and to
     # wake an instance that is already paused. It is a separate job so a failed
     # or disabled ingestion cannot hide a dead heartbeat.
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: vars.ENABLE_DAILY_STATIC != 'true' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
@@ -264,7 +268,7 @@ jobs:
       KEEP_ALIVE_TIMEOUT_SECONDS: '30'
       KEEP_ALIVE_RETRIES: '2'
       NEO4J_URI: ${{ secrets.NEO4J_URI }}
-      NEO4J_USERNAME: ${{ secrets.NEO4J_USERNAME }}
+      NEO4J_USER: ${{ secrets.NEO4J_USER }}
       NEO4J_PASSWORD: ${{ secrets.NEO4J_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
@@ -272,7 +276,7 @@ jobs:
         shell: bash
         run: |
           test -n "$NEO4J_URI" || { echo 'Missing NEO4J_URI'; exit 1; }
-          test -n "$NEO4J_USERNAME" || { echo 'Missing NEO4J_USERNAME'; exit 1; }
+          test -n "$NEO4J_USER" || { echo 'Missing NEO4J_USER'; exit 1; }
           test -n "$NEO4J_PASSWORD" || { echo 'Missing NEO4J_PASSWORD'; exit 1; }
       - uses: actions/setup-python@v5
         with:

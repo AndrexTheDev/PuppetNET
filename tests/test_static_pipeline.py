@@ -45,7 +45,7 @@ def test_export_is_stable_and_stale_files_removed(tmp_path):
     assert export_slices(graph(), tmp_path) == first
     assert (tmp_path / "graph_latest.json").stat().st_mtime_ns == mtime
     raw = graph()
-    raw["nodes"][0]["public"] = False
+    raw["nodes"][0]["public_released"] = False
     export_slices(raw, tmp_path)
     assert len(list((tmp_path / "entities").glob("*.json"))) == 1
     assert json.loads((tmp_path / "graph_latest.json").read_text())["edges"] == []
@@ -54,7 +54,7 @@ def test_export_is_stable_and_stale_files_removed(tmp_path):
 def test_empty_refuses_to_erase_existing(tmp_path):
     export_slices(graph(), tmp_path)
     original = (tmp_path / "graph_latest.json").read_bytes()
-    with pytest.raises(ValueError, match="No explicitly public"):
+    with pytest.raises(ValueError, match="No releasable"):
         export_slices({"nodes": [], "edges": []}, tmp_path)
     assert (tmp_path / "graph_latest.json").read_bytes() == original
     assert export_slices({"nodes": [], "edges": []}, tmp_path, allow_empty=True)["nodes"] == []
@@ -219,7 +219,7 @@ def test_negation_cannot_be_sent_to_cloud():
     assert engine.parse_document(Document(doc_id="d1", source_id="s", url="", text="x")).relations == []
 
 
-def test_workflow_is_ten_minutes_opt_in_serialized_and_no_payload_shell():
+def test_workflow_is_five_minutes_opt_in_serialized_and_no_payload_shell():
     root = Path(__file__).resolve().parents[1]
     text = (root / ".github/workflows/daily_ingestion.yml").read_text()
     data = yaml.safe_load(text)
@@ -227,16 +227,16 @@ def test_workflow_is_ten_minutes_opt_in_serialized_and_no_payload_shell():
     triggers = data.get("on", data.get(True))
     assert triggers["schedule"][0]["cron"] == "0 3 * * *"
     job = data["jobs"]["publish"]
-    assert job["timeout-minutes"] == 10
-    assert job["env"]["MAX_RUNTIME_SECONDS"] == "300"
-    assert "timeout 315s python" in text
-    assert "timeout 60s python" in text
+    assert job["timeout-minutes"] == 5
+    assert job["env"]["MAX_RUNTIME_SECONDS"] == "90"
+    assert "timeout 105s python" in text
+    assert "timeout 45s python" in text
     assert "ENABLE_DAILY_STATIC" in job["if"]
     assert data["concurrency"]["cancel-in-progress"] is False
     assert all("client_payload" not in step.get("run", "") for step in job["steps"])
     assert "client_payload.query" in job["env"]["INGEST_QUERY"]
     assert 'git push origin "HEAD:$PUBLISH_BRANCH"' in text
-    assert job["env"]["PUBLISH_BRANCH"] == "arena/5fb0fe0b-puppetnet"
+    assert job["env"]["PUBLISH_BRANCH"] == "main"
     assert text.index("--reserve-run") < text.index("pip install")
     assert 'git add -- apps/web/public/data/' in text
 
@@ -265,3 +265,162 @@ def test_german_backend_overrides_registry_english_feeds(settings):
                       adapter="rss", options={"feeds": ["https://example.org/en/feed"]})
     adapter = RssAdapter(spec, AdapterContext(settings=settings, client=None, stats=IngestStats()))
     assert list(adapter._feed_urls()) == ["https://example.org/de/feed"]
+
+
+def test_cloud_usage_logged_without_secret_or_source_text(tmp_path, monkeypatch, caplog):
+    import logging
+    fallback = cloud(tmp_path, monkeypatch)
+    with caplog.at_level(logging.INFO):
+        assert fallback.classify("Sensitive sentence", "Alice", "Acme") == "FOUNDED"
+    assert fallback.reported_tokens == 82
+    assert fallback.unknown_usage_calls == 0
+    assert "reported_tokens=82" in caplog.text
+    assert "test-not-a-real-key" not in caplog.text
+    assert "Sensitive sentence" not in caplog.text
+
+
+def test_export_accepts_neo4j_user_secret(monkeypatch):
+    from src.export_static_slices import read_neo4j
+    monkeypatch.setenv("NEO4J_URI", "neo4j+s://example.test")
+    monkeypatch.setenv("NEO4J_USER", "new-user")
+    monkeypatch.setenv("NEO4J_PASSWORD", "test-password")
+
+    def connect(uri, *, auth, **kwargs):
+        assert auth == ("new-user", "test-password")
+        raise RuntimeError("offline connection stub reached")
+
+    monkeypatch.setattr("neo4j.GraphDatabase.driver", connect)
+    with pytest.raises(RuntimeError, match="offline connection stub reached"):
+        read_neo4j()
+
+
+def test_cleaning_removes_marketing_filler_not_negation():
+    assert clean_html("<p>Jetzt kostenlos abonnieren!</p><p>Anna besitzt Acme nicht.</p>") == "Anna besitzt Acme nicht."
+
+
+@pytest.mark.parametrize("confidence,released", [(.75, True), (.7499, False), (1, True),
+                                                    (float("nan"), False), (float("inf"), False),
+                                                    (True, False), ("bad", False), (2, False), (-1, False)])
+def test_auto_release_confidence_boundary(confidence, released):
+    raw = graph()
+    row = raw["nodes"][0]
+    row.pop("public")
+    row["confidence"] = confidence
+    output = build_public_graph(raw)
+    node = next((node for node in output["nodes"] if node["name"] == "Anna"), None)
+    assert bool(node) is released
+    if node:
+        assert node["public_released"] is True
+
+
+def test_verified_feed_is_exact_operator_allowlist_not_boolean(monkeypatch):
+    monkeypatch.setenv("VERIFIED_RSS_FEEDS", "https://trusted.example/rss")
+    raw = graph()
+    raw["nodes"][0].update(public=False, confidence=.1, feed_urls=["https://trusted.example/rss"])
+    raw["edges"][0].update(public=False, confidence=.1, requires_review=True,
+                            feed_urls=["https://trusted.example/rss"])
+    output = build_public_graph(raw)
+    assert len(output["nodes"]) == 2
+    assert len(output["edges"]) == 1
+    assert output["edges"][0]["public_released"] is True
+    raw["nodes"][0].update(feed_urls=["https://trusted.example/rss.evil"], verified_rss=True)
+    assert len(build_public_graph(raw)["nodes"]) == 1
+
+
+@pytest.mark.parametrize("flag", ["private", "noindex", "release_blocked", "negated", "hedged", "calculated"])
+def test_auto_release_never_overrides_vetoes(flag, monkeypatch):
+    monkeypatch.setenv("VERIFIED_RSS_FEEDS", "https://trusted.example/rss")
+    raw = graph()
+    raw["nodes"][0].update(confidence=.99, feed_url="https://trusted.example/rss", **{flag: True})
+    assert len(build_public_graph(raw)["nodes"]) == 1
+    raw = graph()
+    raw["edges"][0].update(confidence=.99, feed_url="https://trusted.example/rss", **{flag: True})
+    assert build_public_graph(raw)["edges"] == []
+
+
+def test_auto_release_emits_valid_complete_slices_and_withdrawal(tmp_path):
+    raw = graph()
+    for row in [*raw["nodes"][:2], raw["edges"][0]]:
+        row.update(public=False, confidence=.75, requires_review=True)
+    output = export_slices(raw, tmp_path)
+    assert len(output["nodes"]) == 2 and len(output["edges"]) == 1
+    assert all(row["public_released"] for row in [*output["nodes"], *output["edges"]])
+    files = list((tmp_path / "entities").glob("*.json"))
+    assert len(files) == 2
+    assert all(json.loads(file.read_text())["entity"]["public_released"] for file in files)
+    raw["nodes"][0]["public_released"] = False
+    output = export_slices(raw, tmp_path)
+    assert len(output["nodes"]) == 1
+    assert len(list((tmp_path / "entities").glob("*.json"))) == 1
+    assert output["edges"] == []
+
+
+def test_rss_provenance_survives_document_storage():
+    from puppetnet.models import Document
+    doc = Document(doc_id="d", source_id="news_world", url="https://article.example/a", text="text",
+                   extra={"feed_url": "https://trusted.example/rss"})
+    assert doc.to_node_properties()["feed_url"] == "https://trusted.example/rss"
+
+
+def test_workflow_main_uses_pat_no_branch_dependency_and_only_expected_staging():
+    text = (Path(__file__).resolve().parents[1] / ".github/workflows/daily_ingestion.yml").read_text()
+    data = yaml.safe_load(text)
+    job = data["jobs"]["publish"]
+    checkout = next(step for step in job["steps"] if step.get("uses") == "actions/checkout@v4")
+    assert checkout["with"]["token"] == "${{ secrets.GH_PAT }}"
+    assert checkout["with"]["ref"] == "main"
+    assert job["env"]["NEO4J_USER"] == "${{ secrets.NEO4J_USER }}"
+    assert job["env"]["VERIFIED_RSS_FEEDS"] == "${{ vars.VERIFIED_RSS_FEEDS }}"
+    assert "arena/" not in text
+    assert "refs/heads/main" in job["if"]
+    assert "--force" not in text
+    assert "git add ." not in text
+
+
+def test_all_withdrawals_publish_empty_snapshot_when_explicitly_allowed(tmp_path):
+    export_slices(graph(), tmp_path)
+    raw = graph()
+    for row in raw["nodes"]:
+        row["public_released"] = False
+    output = export_slices(raw, tmp_path, allow_empty=True)
+    assert output["nodes"] == [] and output["edges"] == []
+    assert list((tmp_path / "entities").glob("*.json")) == []
+
+
+def test_neo4j_release_uses_stored_document_provenance(monkeypatch):
+    from src.export_static_slices import read_neo4j
+    monkeypatch.setenv("NEO4J_URI", "neo4j+s://example.test")
+    monkeypatch.setenv("NEO4J_USER", "neo4j")
+    monkeypatch.setenv("NEO4J_PASSWORD", "test-password")
+    monkeypatch.setenv("VERIFIED_RSS_FEEDS", "https://trusted.example/rss")
+
+    class Transaction:
+        def run(self, query, **params):
+            if "AS node" in query:
+                assert "WHERE e.public = true" not in query
+                return [{"node": {"canonical_key": "a", "name": "Anna", "entity_type": "Person", "confidence": .2, "doc_ids": ["d"]}},
+                        {"node": {"canonical_key": "b", "name": "Acme", "entity_type": "Organization", "confidence": .75}}]
+            if "AS edge" in query:
+                return [{"edge": {"source": "a", "target": "b", "type": "FOUNDED", "confidence": .2,
+                                  "requires_review": True, "doc_ids": ["d"]}}]
+            assert params["ids"] == ["d"]
+            return [{"doc": {"id": "d", "title": "Register", "feed_url": "https://trusted.example/rss"}}]
+
+    class Driver:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def session(self, **kwargs):
+            return self
+
+        def execute_read(self, function):
+            return function(Transaction())
+
+    monkeypatch.setattr("neo4j.GraphDatabase.driver", lambda *a, **kw: Driver())
+    output = build_public_graph(read_neo4j())
+    assert len(output["nodes"]) == 2 and len(output["edges"]) == 1
+    assert output["nodes"][0]["public_released"] is True
+    assert output["evidence"][0]["id"] == "d"

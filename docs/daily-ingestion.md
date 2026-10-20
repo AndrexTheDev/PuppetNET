@@ -1,181 +1,100 @@
-# Local-first daily pipeline and unified static publication
+# Daily ingestion – automatische Freigabe und Produktion auf main
 
-## Implemented files
+## Einmalige Aktivierung
 
-- `packages/pipeline/src/token_saver_nlp.py`: HTML/regex cleanup, local German
-  spaCy NER/dependency extraction, optional bounded Gemini predicate classification.
-- `packages/pipeline/src/export_static_slices.py`: reviewed, public Neo4j/local
-  export, stable content revisions, safe per-entity slices, daily run reservation CLI.
-- `.github/workflows/daily_ingestion.yml`: 03:00 UTC, repository dispatch and manual
-  dispatch, ten-minute job timeout, at most two reserved runs per UTC day.
+1. Code-PR auf `main` integrieren. Die Entwicklungssitzung arbeitet weiterhin
+   ausschließlich auf `arena/5fb0fe0b-puppetnet`; der produktive Workflow selbst
+   checkt `main` aus und hat keine Arena-Branch-Abhängigkeit mehr.
+2. Repository-Secrets: `NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD`, `GH_PAT`.
+   `GEMINI_API_KEY` nur für bewusst aktivierten Cloud-Fallback. Alte Secret-Namen
+   werden nicht mehr als Aliasse akzeptiert.
+3. `GH_PAT`: auf dieses Repository beschränkter Token mit Contents read/write.
+   Branch-Regeln müssen den erwarteten Bot-Push zulassen. Keine Schutzregeln
+   pauschal abschalten; bei Ablehnung scheitert der Job ohne Force-Push.
+4. Repository-Variablen: `DAILY_RSS_FEEDS` mit echten deutschsprachigen RSS-URLs;
+   optional `VERIFIED_RSS_FEEDS` als kommagetrennte Allowlist exakter HTTPS-Feed-URLs.
+   Ein Feed ist nicht automatisch verifiziert, nur weil er eingelesen wird.
+5. `ENABLE_GEMINI_FALLBACK=false` zunächst beibehalten. Für Auto-Publikation
+   nach bewusster Prüfung der Policy `ENABLE_DAILY_STATIC=true` setzen.
+6. Cloudflare Pages: Produktionsbranch `main`, Git-Integration aktiv und
+   Datenpfade `apps/web/*` nicht aus dem Build-Watch ausschließen. Ledgerpfade
+   `.pipeline-state/*` nicht als alleinigen Build-Trigger konfigurieren.
 
-These are real pipeline integrations, not isolated examples: `NLP_BACKEND=token_saver`
-selects the new engine in the existing harvesting/dedupe/Neo4j writer. Old spaCy and
-GLiNER modes remain available. Enabling `ENABLE_DAILY_STATIC=true` disables the old
-scheduled GLiNER ingestion job so there is no duplicate ingestion schedule.
-The existing separate tests and keep-alive jobs are not removed.
+## Freigabepolicy
 
-## Important departures / prerequisites
+- Confidence >=0.75 ODER exakte verifizierte RSS-Provenienz → im statischen Export
+  `public_released: true` und kompatibel `public: true`.
+- Die Vertrauensentscheidung kommt ausschließlich aus `VERIFIED_RSS_FEEDS` und
+  dem vom RSS-Adapter gespeicherten `Document.feed_url`. `source_id=news_world`,
+  ein `verified_rss=true`-Wert oder der Domainname eines Artikels genügen nicht.
+- `private`, `noindex`, `release_blocked`, `negated`, `hedged`, `calculated` und
+  berechnete `PUPPET_MASTER_OF`-Kanten werden nicht automatisch veröffentlicht.
+  `public_released: false` ist eine explizite Rücknahme und überstimmt Auto-Approval.
+- `public: false` ist dagegen häufig nur der NLP-Draftdefault. Ein hinreichender
+  Score bzw. verifizierte Herkunft darf diesen Default überwinden. Auch der
+  automatische `requires_review`-Marker wird nur unter dieser Policy überwunden.
+- Manuell bereits öffentliche Daten bleiben kompatibel. Keine Veröffentlichung
+  von Freitext-Evidenz, Privatnotizen, Risk-Scores oder vollständigen DB-Properties.
+- Release-Flags werden im Export erzeugt; der Exporter verändert Neo4j nicht.
+  Ältere Dokumente ohne gespeicherte Feed-URL brauchen erneute Ingestion oder
+  erfüllen die Confidence-Regel. Herkunft wird nicht aus der Artikel-URL geraten.
 
-1. **No automatic main push.** This session is fixed to
-   `arena/5fb0fe0b-puppetnet`; the workflow checks out and pushes only that branch.
-   It is not a claim that a Production deployment will be triggered. The repository
-   currently documents `main` as Pages production branch. Review/merge the data PR
-   for production, or intentionally configure a Pages preview for the publication
-   branch. Workflow triggers themselves must first exist on the default branch.
-   Nothing has been pushed, merged, enabled or provisioned by this change.
-2. **Gemini 1.5 Flash is a historical model name.** The requested name is the
-   configurable default, not an assurance that Google still serves it. A 404/429
-   or API failure disables cloud processing for that run, without dropping local
-   extraction. Set `GEMINI_MODEL` to a currently available supported model and
-   verify that account's free quota, privacy terms and billing. No universal free
-   API or always-free operation is guaranteed. Default cloud processing is OFF.
-3. **150 means input + output.** `countTokens` receives the exact generation
-   contents; prompts above 100 tokens are not generated. Output cap is <=50 and
-   input+output <=150. Non-thinking 1.5/2.0 models are allowed; 2.5 Flash uses
-   thinkingBudget=0; unknown thinking models are refused. Output must be a single
-   allowed numeric predicate code. No entity creation or arbitrary Cypher from AI.
-4. **Public export requires review.** Nodes AND edges must explicitly have boolean
-   `public=true`, no private/noindex flag, and edges must not require review.
-   Raw NLP results are NOT auto-approved. Empty publication fails closed unless
-   deliberately passed `--allow-empty`; existing public files are not silently
-   replaced by demo data or wiped after an unsuccessful database read.
-5. **Ten minutes is a hard upper timeout, not a successful-completion promise.**
-   Cold dependency/model installs, sleeping AuraDB or slow feeds may exhaust it.
-   No heavy Torch/GLiNER model is installed by this workflow. Ingestion subprocess
-   is bounded at 315 seconds (300-second internal processing budget) and export at 60 seconds, within the job deadline.
+**Warnung:** Confidence misst Extraktionssicherheit, nicht objektive Wahrheit.
+Die Aktivierung dieser Policy akzeptiert automatische öffentliche Publikation
+und mögliche Fehler ohne vorgelagerte menschliche Prüfung.
 
-## Configuration
+## Lauf und Limits
 
-Repository variables:
+Trigger: täglich 03:00 UTC, `repository_dispatch` mit `puppetnet-refresh`, manuell.
+Nur Ausführungen auf `main`, opt-in. Gemeinsame Serialisierung mit Legacy-Ingestion.
+Höchstens zwei Git-persistierte Reservierungen/UTC-Tag, davon höchstens ein Cron.
+Reservierung wird VOR Modellinstallation und Datenbankarbeit auf main gesichert.
 
-| Variable | Value |
-|---|---|
-| `ENABLE_DAILY_STATIC` | `true` only when ready to activate |
-| `DAILY_RSS_FEEDS` | Comma-separated, operator-approved German RSS URLs |
-| `ENABLE_GEMINI_FALLBACK` | `false` initially; opt in only after quota/privacy review |
-| `GEMINI_MODEL` | Requested default `gemini-1.5-flash`; verify availability or override |
+Hartes Joblimit 5 Minuten; Ingestion intern 90 Sekunden, Prozesslimit 105 Sekunden,
+Export 45 Sekunden. Kalte Installation/Aura-Wakeup kann den Job trotzdem abbrechen.
+Gemini standardmäßig aus, höchstens 100 Eingabe- + 50 Ausgabetokens pro Generierung,
+3 Reservierungen/Lauf, 6/Tag. Historischer Modellname ist keine API-Verfügbarkeitszusage.
 
-Secrets:
+Exporter liest einen begrenzten Snapshot: maximal 5000 Entity-Kandidaten, 20000
+Kanten, 5000 Dokumentmetadaten. `truncated` signalisiert erreichte Grenzen; keine
+unbegrenzte Vollständigkeitsgarantie. Kanten brauchen beide veröffentlichten Enden.
+Nur erlaubte öffentliche Metadaten und sichere HTTP(S)-Quellenlinks werden exportiert.
+Stabile Slugs und SHA256-Dateinamen verhindern ID-Pfadmanipulation. Manifestgesteuertes
+Pruning entfernt nur zuvor vom Exporter geschriebene, inzwischen veraltete Slices.
 
-- `NEO4J_URI` (`neo4j+s://...`, verified TLS)
-- `NEO4J_USERNAME`
-- `NEO4J_PASSWORD`
-- `GEMINI_API_KEY` only for optional cloud stage
-- `PROXY_WORKER_URL` and `PROXY_AUTH_TOKEN` ONLY if operating a separate historical HTTP relay; leave unset for the new search-only Worker
+Ergebnis: `graph_latest.json`, `static-manifest.json`, `entities/<sha256-id>.json`.
+Nur geänderte Inhalte werden committet; unveränderte Daten erzeugen keinen Datencommit.
+Fehlgeschlagene Datenbankabfragen löschen nie den letzten Stand. Der produktive
+Workflow setzt bewusst `--allow-empty`: ein erfolgreich gelesener Snapshot ohne
+freigabefähige Entitäten veröffentlicht einen gültigen leeren Graphen und entfernt
+alte Slices (wichtig bei vollständiger Rücknahme). Lokal bleibt die Leerexport-Sperre
+ohne ausdrückliches `--allow-empty` aktiv.
 
-GitHub Actions needs contents-write permission for the publication job and an
-existing remote publication branch. Branch protections may reject its push; the
-workflow must fail rather than silently bypass protections. Pages needs its own
-configured Git integration and Production-only SITE_ORIGIN.
+## Automatischer Push
 
-## Local use
+Checkout authentifiziert mit `GH_PAT`, Ziel ist fest `main`. Quota-/Cloud-Ledger
+werden eng begrenzt separat gestaged, Daten nur unter `apps/web/public/data/`.
+Keine Shell-Interpolation der Rechercheanfrage, kein `git add .`, kein Force-Push.
+Wenn main parallel geändert wird, darf der Push mit Non-Fast-Forward scheitern;
+keine fremden Commits werden überschrieben. Cloud-Ledger-Persistenz muss erfolgreich
+sein, bevor neue Daten publiziert werden. Harte Jobabbrüche können Schluss-Schritte
+verhindern; die frühe Laufreservierung bleibt trotzdem erhalten.
 
-```bash
-python -m venv .venv
-. .venv/bin/activate
-pip install -e './packages/pipeline[dev]'
-pip install 'https://github.com/explosion/spacy-models/releases/download/de_core_news_sm-3.8.0/de_core_news_sm-3.8.0-py3-none-any.whl'
+PAT-Datenpushes können den Cloudflare-Produktionsbuild auslösen. Ein erfolgreicher
+Push ist kein Nachweis einer erfolgreichen Bereitstellung; Pages-Status prüfen.
+Token-Ablauf, Branch-Regeln und deaktivierte Git-Integration können den Ablauf stoppen.
 
-# Existing ingestion CLI, new local-first backend:
-NLP_BACKEND=token_saver RSS_FEEDS='https://YOUR-APPROVED-SOURCE/feed' \
-  ENABLED_SOURCES=news_world MAX_RUNTIME_SECONDS=300 \
-  MAX_DOCUMENTS_TOTAL=10 ANALYTICS_ENABLED=false TRIPLET_BACKEND=off \
-  python packages/pipeline/ingest.py --sources news_world --limit 10
+## Lokale Nutzung
 
-# Reviewed local graph; each approved node and edge needs public:true:
-python packages/pipeline/src/export_static_slices.py --input reviewed-graph.json
+```sh
+NEO4J_URI='neo4j+s://…' NEO4J_USER='neo4j' NEO4J_PASSWORD='…' \
+  python packages/pipeline/src/export_static_slices.py --neo4j
 
-# Or bounded, explicitly public data from AuraDB:
-python packages/pipeline/src/export_static_slices.py --neo4j
+VERIFIED_RSS_FEEDS='https://deine-gepruefte-quelle.example/rss' \
+  python packages/pipeline/src/export_static_slices.py --input graph.json
 
 SITE_ORIGIN=https://puppetnet-web.pages.dev npm run ci:pages
 ```
 
-A missing de_core_news_sm model is an error, not a silent English/blank fallback.
-`news_world` in this backend uses the configured German feeds instead of prepending
-English default feeds. The local model supports conservative German named-entity
-SVO patterns, not arbitrary multilingual relation understanding. Negated/hedged
-sentences and uncertain passive direction are skipped rather than asserted.
-
-## Manual refresh/search
-
-Send an authenticated GitHub `repository_dispatch` with:
-
-```json
-{
-  "event_type": "puppetnet-refresh",
-  "client_payload": {"query": "Example Holdings"}
-}
-```
-
-The optional query is a literal, case-insensitive filter on titles/text harvested
-from the **configured RSS sources**, not a general Internet search engine. It is
-at most 120 printable characters, passed through an environment variable, never
-inserted into shell or Cypher. Without it, the bounded feed slice is refreshed.
-Filtered-out documents are not marked deduped as though they had been processed.
-No unauthenticated public dispatch endpoint is added to the website.
-
-Scheduled and manual runs share a durable `.pipeline-state/daily-budget.json`:
-TOTAL <=2 UTC-day reservations, scheduled <=1. A reservation is committed/pushed
-BEFORE ingestion; failed runs consume their reservation. No cache is trusted as
-quota authority. Actions concurrency serializes writers. A rejected reservation
-performs no ingestion/export. Gemini uses a persisted hash/reservation ledger,
-<=3 attempted classifications per process and <=6 ledger reservations per day;
-failed/repeated requests do not trigger unbounded retries. Do not run parallel
-local writers against these filesystem ledgers. A hard job cancellation may
-prevent its final Gemini-ledger flush; the already-persisted daily run reservation
-still limits how many workflow processes can start.
-
-## Unified public data contract
-
-```
-Neo4j explicit public approval OR reviewed local graph
-  -> graph_latest.json
-      -> modern dashboard (same-origin bounded fetch)
-      -> legacy static provider (same snapshot, no API token)
-      -> Next static entity pages
-      -> build-time sitemap
-  -> entities/<sha256(canonical-id)>.json
-  -> static-manifest.json (canonical ID -> safe filename, revision)
-```
-
-The aggregate is the canonical source. Per-entity slices are supplementary files
-for selective consumers; the existing Next profile renderer deliberately still
-normalizes the aggregate so pages/relationships match exactly. It does not make
-one HTTP request per entity or use the raw canonical ID as a filesystem path.
-
-Compatibility: `entities.json` and then `entities.sample.json` remain profile
-fallbacks when no `graph_latest.json` exists. Modern/legacy runtime consumers also
-fall back to explicitly labelled demos when the snapshot is absent/unreachable.
-No live-API token is sent to the public file. Legacy static data is labelled a
-published snapshot, not a live database connection or an invented demo.
-
-Export bounds: 5,000 public nodes, 20,000 public relationships, up to 5,000 public
-source references. Only allowlisted properties are published. Document bodies,
-private notes, risk scores and PUPPET_MASTER_OF edges are not exported. Sources
-must also be explicitly public; unsafe source URLs are omitted. The current
-export does not reconstruct every private evidence trail for the public website.
-
-Identical content produces identical revisions/files: no timestamp-only commits.
-Per-file writes are atomic; a set of files is made publicly coherent by the Git
-commit/deployment, not by claiming the local filesystem has a multi-file transaction.
-Only files owned by the previous export manifest are pruned. Readers should compare
-revisions if reading individual slices across a deployment boundary.
-
-Existing published entities revoked/removed disappear on the next successful export
-and deployment. Failed exports intentionally retain the last published snapshot;
-urgent takedown therefore needs an explicit operational path, not reliance on retries.
-
-## Verification performed
-
-- Offline Python suite and lint; dedicated new tests for approval filters, cleanup,
-  stable output, safe filenames, pruning, durable daily cap, Gemini exact input
-  count/output cap/schema/deduplication and German PER/SVO/negation contracts.
-- Legacy DOM test uses an actual streamed Response with a two-node publication.
-- Full Pages build with a temporary two-node publication: two real entity profiles
-  and matching sitemap URLs generated successfully. Temporary publication removed
-  afterwards; no fictional test publication is committed as real data.
-- spaCy inference contracts use constructed German parse fixtures; no claim of
-  real-model precision, Gemini API availability, live AuraDB writes, workflow
-  activation, production delivery or an actual ten-minute cloud run is made.
+Beispielwerte ersetzen. Keine echten Zugangsdaten in Shell-History oder Chat speichern;
+für reale Nutzung Umgebungsvariablen über einen Secret-Manager setzen.

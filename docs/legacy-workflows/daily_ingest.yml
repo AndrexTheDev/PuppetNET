@@ -14,7 +14,7 @@
 #  every source with the `tier` input (`all`).
 #
 #  Required repository secrets (Settings → Secrets and variables → Actions):
-#      NEO4J_URI, NEO4J_USERNAME, NEO4J_PASSWORD
+#      NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD
 #      PROXY_WORKER_URL, PROXY_AUTH_TOKEN
 #  Optional:
 #      OPENCORPORATES_API_TOKEN, COMPANIES_HOUSE_API_KEY,
@@ -178,7 +178,7 @@ jobs:
           esac
         env:
           NEO4J_URI: ${{ secrets.NEO4J_URI }}
-          NEO4J_USERNAME: ${{ secrets.NEO4J_USERNAME }}
+          NEO4J_USER: ${{ secrets.NEO4J_USER }}
           NEO4J_PASSWORD: ${{ secrets.NEO4J_PASSWORD }}
           PROXY_WORKER_URL: ${{ secrets.PROXY_WORKER_URL }}
           PROXY_AUTH_TOKEN: ${{ secrets.PROXY_AUTH_TOKEN }}
@@ -254,7 +254,7 @@ jobs:
           INGEST_ARGS: ${{ steps.args.outputs.args }}
           # --- Neo4j AuraDB -------------------------------------------------
           NEO4J_URI: ${{ secrets.NEO4J_URI }}
-          NEO4J_USERNAME: ${{ secrets.NEO4J_USERNAME }}
+          NEO4J_USER: ${{ secrets.NEO4J_USER }}
           NEO4J_PASSWORD: ${{ secrets.NEO4J_PASSWORD }}
           NEO4J_DATABASE: ${{ secrets.NEO4J_DATABASE }}
           # --- Cloudflare Worker edge relay ---------------------------------

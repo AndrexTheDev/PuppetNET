@@ -21,6 +21,8 @@ async function idle() {
 try {
   await page.goto(url);
   await idle();
+  await page.getByRole('button', { name: '◈ Netzwerk', exact: true }).click();
+  await page.getByRole('button', { name: 'Layout', exact: true }).click();
   assert.equal(await host.getAttribute('data-rendered-nodes'), '900');
   assert.equal(await host.locator('canvas').count(), 1);
   await page.waitForFunction(() => Number(document.querySelector('[data-testid=sigma-host]')?.getAttribute('data-layout-updates')) > 0);

@@ -96,7 +96,7 @@ test('provisioning patches the toml, uploads secrets and deploys against a stub'
       PATH: `${join(dir, 'bin')}:${process.env.PATH}`,
       STUB_LOG: logPath,
       NEO4J_URI: 'neo4j+s://example.databases.neo4j.io:7687',
-      NEO4J_USERNAME: 'neo4j',
+      NEO4J_USER: 'neo4j',
       NEO4J_PASSWORD: 'test-password',
       CF_ACCOUNT_ID: 'a'.repeat(32),
       CF_API_TOKEN: 'analytics-token',
@@ -131,7 +131,7 @@ test('provisioning patches the toml, uploads secrets and deploys against a stub'
   const names = secrets.map((line) => line.split(' ')[1]).sort();
   assert.deepEqual(names, [
     'CF_ACCOUNT_ID', 'CF_API_TOKEN', 'GRAPH_API_TOKEN', 'NEO4J_PASSWORD', 'NEO4J_URI',
-    'NEO4J_USERNAME', 'PROXY_AUTH_TOKEN', 'STATUS_TOKEN', 'TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID',
+    'NEO4J_USER', 'PROXY_AUTH_TOKEN', 'STATUS_TOKEN', 'TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID',
   ]);
   for (const name of ['PROXY_AUTH_TOKEN', 'GRAPH_API_TOKEN', 'STATUS_TOKEN']) {
     const line = secrets.find((entry) => entry.startsWith(`SECRET ${name} `));
@@ -192,10 +192,10 @@ test('a second run keeps the existing namespaces and tokens', (t) => {
   assert.equal(calls.filter((line) => line.includes('kv namespace create')).length, 2,
     'only the untouched RESULT_KV pair is created');
   assert.ok(calls.some((line) => line.includes('kv namespace create PUPPETNET_RESULTS')));
-  // Only NEO4J_USERNAME is new: the other secrets already exist and are kept.
+  // Only NEO4J_USER is new: the other secrets already exist and are kept.
   assert.deepEqual(
     calls.filter((line) => line.startsWith('SECRET ')).map((line) => line.split(' ')[1]),
-    ['NEO4J_USERNAME'],
+    ['NEO4J_USER'],
     'existing secrets are kept; nothing is re-uploaded without --rotate'
   );
   const toml = readFileSync(join(dir, 'apps/worker/wrangler.toml'), 'utf8');

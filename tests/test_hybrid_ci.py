@@ -33,7 +33,7 @@ def test_ingestion_requires_tests_main_optin_and_real_secrets():
     assert job['env']['DRY_RUN'] == 'false'
     assert any('GLiNEREngine' in step.get('run', '') for step in job['steps'])
     credentials = next(step['run'] for step in job['steps'] if step.get('name') == 'Require actual database credentials')
-    for name in ['NEO4J_URI', 'NEO4J_USERNAME', 'NEO4J_PASSWORD']:
+    for name in ['NEO4J_URI', 'NEO4J_USER', 'NEO4J_PASSWORD']:
         assert name in credentials
 
 

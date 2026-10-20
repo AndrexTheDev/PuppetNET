@@ -17,7 +17,7 @@ it performs is also listed manually below so it can be audited or reproduced.
 cd /path/to/PuppetNET
 npx wrangler login
 export NEO4J_URI='neo4j+s://<instance>.databases.neo4j.io:7687'
-export NEO4J_USERNAME='neo4j'
+export NEO4J_USER='neo4j'
 export NEO4J_PASSWORD='...'
 export CF_ACCOUNT_ID='<32-hex account tag>'
 export CF_API_TOKEN='...'          # Account → Account Analytics → Read
@@ -56,7 +56,7 @@ Useful flags:
    remains.
 2. **Secrets.** Generates `PROXY_AUTH_TOKEN`, `GRAPH_API_TOKEN` and
    `STATUS_TOKEN` with `crypto.randomBytes(32).toString("hex")` when they do not
-   exist (64 hex characters). Reads `NEO4J_URI`, `NEO4J_USERNAME`,
+   exist (64 hex characters). Reads `NEO4J_URI`, `NEO4J_USER`,
    `NEO4J_PASSWORD`, `CF_API_TOKEN`, `CF_ACCOUNT_ID` and the optional Telegram
    pair from the environment. Values go to `wrangler secret put` on **stdin**,
    never on the command line. Existing tokens are not rotated without
@@ -125,7 +125,7 @@ openssl rand -hex 32 | npx wrangler secret put GRAPH_API_TOKEN
 openssl rand -hex 32 | npx wrangler secret put STATUS_TOKEN
 
 npx wrangler secret put NEO4J_URI
-npx wrangler secret put NEO4J_USERNAME
+npx wrangler secret put NEO4J_USER
 npx wrangler secret put NEO4J_PASSWORD
 npx wrangler secret put CF_API_TOKEN
 npx wrangler secret put CF_ACCOUNT_ID

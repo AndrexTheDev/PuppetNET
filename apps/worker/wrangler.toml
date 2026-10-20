@@ -15,7 +15,7 @@ GITHUB_OWNER = "AndrexTheDev"
 GITHUB_REPO = "PuppetNET"
 
 # Secrets (never commit values):
-#   GITHUB_DISPATCH_TOKEN: fine-grained GitHub token authorized for repository_dispatch
+#   GH_PAT: fine-grained GitHub token authorized for repository_dispatch
 #   SEARCH_AUTH_TOKEN: independent random operator token, at least 32 characters
 # The browser receives neither GitHub credentials nor database credentials.
 # Deploy from this workspace: npm run deploy -w @puppetnet/worker

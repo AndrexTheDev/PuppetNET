@@ -7,7 +7,7 @@ export interface Env {
   ALLOWED_ORIGINS: string;
   GITHUB_OWNER: string;
   GITHUB_REPO: string;
-  GITHUB_DISPATCH_TOKEN?: string;
+  GH_PAT?: string;
   SEARCH_AUTH_TOKEN?: string;
 }
 export interface Context { waitUntil(promise: Promise<unknown>): void }
@@ -93,9 +93,11 @@ export function createWorker(deps: Dependencies = {}) {
       if (url.pathname === '/api/search') {
         if (request.method !== 'POST') return json({ error: 'method_not_allowed' }, 405);
         if (!env.SEARCH_AUTH_TOKEN || env.SEARCH_AUTH_TOKEN.length < 32) return json({ error: 'search_not_configured' }, 503);
+        if (env.SEARCH_AUTH_TOKEN === env.GH_PAT) return json({ error: 'independent_search_token_required' }, 503);
         const auth = request.headers.get('Authorization') || '';
         if (!auth.startsWith('Bearer ') || !await equalToken(auth.slice(7), env.SEARCH_AUTH_TOKEN)) return json({ error: 'unauthorized' }, 401);
-        if (!env.GITHUB_DISPATCH_TOKEN || !/^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/.test(env.GITHUB_OWNER)
+        const dispatchToken = env.GH_PAT;
+        if (!dispatchToken || !/^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/.test(env.GITHUB_OWNER)
             || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/.test(env.GITHUB_REPO)) return json({ error: 'dispatch_not_configured' }, 503);
         if (!/^application\/json(?:;|$)/i.test(request.headers.get('Content-Type') || '')) return json({ error: 'json_required' }, 415);
         let body: unknown;
@@ -113,7 +115,7 @@ export function createWorker(deps: Dependencies = {}) {
         try {
           const result = await network(`https://api.github.com/repos/${env.GITHUB_OWNER}/${env.GITHUB_REPO}/dispatches`, {
             method: 'POST', redirect: 'error', signal: controller.signal,
-            headers: { Authorization: `Bearer ${env.GITHUB_DISPATCH_TOKEN}`, Accept: 'application/vnd.github+json',
+            headers: { Authorization: `Bearer ${dispatchToken}`, Accept: 'application/vnd.github+json',
               'Content-Type': 'application/json', 'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'PuppetNET-Search-Relay' },
             body: JSON.stringify({ event_type: 'puppetnet-refresh', client_payload: { query: raw.trim() } }),
           });

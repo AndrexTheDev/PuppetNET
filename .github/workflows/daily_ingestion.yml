@@ -15,29 +15,29 @@ concurrency:
 
 jobs:
   publish:
-    if: vars.ENABLE_DAILY_STATIC == 'true'
+    if: vars.ENABLE_DAILY_STATIC == 'true' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
     permissions:
       contents: write
     env:
-      # This Arena session is fixed to this publication branch. Never push main.
-      # Production promotion remains an explicitly reviewed PR/merge step.
-      PUBLISH_BRANCH: arena/5fb0fe0b-puppetnet
+      # Runtime data publication targets production; development stays on its PR branch.
+      PUBLISH_BRANCH: main
       NLP_BACKEND: token_saver
       SPACY_MODELS: de_core_news_sm
       INGEST_QUERY: ${{ github.event.client_payload.query || '' }}
       ENABLED_SOURCES: news_world
       RSS_FEEDS: ${{ vars.DAILY_RSS_FEEDS }}
+      VERIFIED_RSS_FEEDS: ${{ vars.VERIFIED_RSS_FEEDS }}
       MAX_DOCUMENTS_TOTAL: '10'
       MAX_DOCUMENTS_PER_SOURCE: '10'
-      MAX_RUNTIME_SECONDS: '300'
+      MAX_RUNTIME_SECONDS: '90'
       ANALYTICS_ENABLED: 'false'
       TRIPLET_BACKEND: 'off'
       DRY_RUN: 'false'
       STATE_DIR: .state
       NEO4J_URI: ${{ secrets.NEO4J_URI }}
-      NEO4J_USERNAME: ${{ secrets.NEO4J_USERNAME }}
+      NEO4J_USER: ${{ secrets.NEO4J_USER }}
       NEO4J_PASSWORD: ${{ secrets.NEO4J_PASSWORD }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-1.5-flash' }}
@@ -46,9 +46,14 @@ jobs:
       PROXY_WORKER_URL: ${{ secrets.PROXY_WORKER_URL }}
       PROXY_AUTH_TOKEN: ${{ secrets.PROXY_AUTH_TOKEN }}
     steps:
+      - name: Require publication token
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: test -n "$GH_PAT" # never print credential values
       - uses: actions/checkout@v4
         with:
-          ref: arena/5fb0fe0b-puppetnet
+          ref: main
+          token: ${{ secrets.GH_PAT }}
           fetch-depth: 1
       - uses: actions/setup-python@v5
         with:
@@ -57,7 +62,7 @@ jobs:
           cache-dependency-path: packages/pipeline/pyproject.toml
       - name: Validate prerequisites
         run: |
-          test -n "$NEO4J_URI" && test -n "$NEO4J_USERNAME" && test -n "$NEO4J_PASSWORD"
+          test -n "$NEO4J_URI" && test -n "$NEO4J_USER" && test -n "$NEO4J_PASSWORD"
           test -n "$RSS_FEEDS" # configure German-language sources for de_core_news_sm
           python - <<'PYCODE'
           import os
@@ -95,18 +100,18 @@ jobs:
         shell: bash
         run: |
           set +e
-          timeout 315s python packages/pipeline/ingest.py --sources news_world --limit 10
+          timeout 105s python packages/pipeline/ingest.py --sources news_world --limit 10
           code=$?
           set -e
           # Partial success is reported; hard/configuration errors abort publication.
           if [ "$code" -eq 3 ]; then
-            echo '::warning::Partial ingestion; only previously approved public data will be exported.'
+            echo '::warning::Partial ingestion; only policy-released, non-private data will be exported.'
           elif [ "$code" -ne 0 ]; then
             exit "$code"
           fi
-      - name: Export only approved public graph and entity slices
+      - name: Export auto-released public graph and entity slices
         if: steps.quota.outputs.allowed == 'true'
-        run: timeout 60s python packages/pipeline/src/export_static_slices.py --neo4j
+        run: timeout 45s python packages/pipeline/src/export_static_slices.py --neo4j --allow-empty
       - name: Persist cloud reservations, including failed requests
         if: always() && steps.quota.outputs.allowed == 'true'
         run: |
@@ -120,9 +125,12 @@ jobs:
       - name: Publish changed static data only
         if: success() && steps.quota.outputs.allowed == 'true'
         run: |
-          git add -- apps/web/public/data/graph_latest.json apps/web/public/data/static-manifest.json apps/web/public/data/entities/
+          git add -- apps/web/public/data/graph_latest.json apps/web/public/data/static-manifest.json
+          if test -d apps/web/public/data/entities; then
+            git add -A -- apps/web/public/data/entities/
+          fi
           if ! git diff --cached --quiet; then
-            git commit -m "data: publish reviewed static graph"
+            git commit -m "data: publish auto-released static graph"
             git push origin "HEAD:$PUBLISH_BRANCH"
           fi
       - uses: actions/cache/save@v4

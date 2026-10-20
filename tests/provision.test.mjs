@@ -42,7 +42,7 @@ test('legacy provisioner detects zero-KV config and plans no account changes', (
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /KV-free/);
   assert.match(result.stdout, /No account calls/i);
-  assert.match(result.stdout, /GITHUB_DISPATCH_TOKEN/);
+  assert.match(result.stdout, /GH_PAT/);
   assert.match(result.stdout, /SEARCH_AUTH_TOKEN/);
   assert.equal(digest(TOML), before, 'dry run must not edit wrangler.toml');
   assert.equal(existsSync(GENERATED), hadGenerated, 'dry run must not write generated secrets');

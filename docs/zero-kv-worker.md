@@ -66,7 +66,7 @@ Cache API is per-edge and evictable; it is neither a global rate limiter nor a l
 
 Required server-side secrets:
 
-- `GITHUB_DISPATCH_TOKEN`: a fine-grained GitHub credential permitted to send
+- `GH_PAT`: a fine-grained GitHub credential permitted to send
   repository_dispatch to the configured repository (GitHub requires the applicable
   repository contents-write permission for this endpoint).
 - `SEARCH_AUTH_TOKEN`: a DIFFERENT random operator credential, >=32 characters.
@@ -98,10 +98,9 @@ No automatic retries of non-idempotent GitHub dispatch POSTs are performed.
 
 ## Migration / activation (not performed by these edits)
 
-1. Review and integrate code. Configure the GitHub daily workflow and its existing
-   opt-in, source list, secrets and publication branch. It still publishes only to
-   `arena/5fb0fe0b-puppetnet`, not production `main`; the previous production-promotion
-   caveat remains. A new Worker does not fix that deployment boundary automatically.
+1. Integrate the code PR into main. The daily workflow then checks out and pushes
+   main with the repository GH_PAT; configure Neo4j secrets, RSS allowlist and opt-in
+   as described in docs/daily-ingestion.md. Branch rules must allow the bot's push.
 2. Set Worker plaintext variables and the two new secrets. `npm run provision:worker
    -- --dry-run` shows the KV-free plan. With credentials supplied securely via the
    environment, `npm run provision:worker` uploads only those two secrets through

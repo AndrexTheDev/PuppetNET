@@ -283,7 +283,7 @@ function workerBridge(options = {}) {
   const env = {
     PROXY_AUTH_TOKEN: "relay-token-abc123",
     NEO4J_URI: "neo4j+s://abcd1234.databases.neo4j.io:7687",
-    NEO4J_USERNAME: "neo4j",
+    NEO4J_USER: "neo4j",
     NEO4J_PASSWORD: "aura-SECRET-do-not-leak",
     NEO4J_DATABASE: "neo4j",
     GRAPH_API_TOKEN: GRAPH_TOKEN,

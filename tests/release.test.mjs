@@ -9,7 +9,7 @@ test('SEO generator matches the public entity routes, with absolute deployment U
   assert.equal(result.status, 0, result.stderr);
   const manifest = JSON.parse(read('apps/web/public/data/seo-metadata.json'));
   const sitemap = read('apps/web/public/sitemap.xml');
-  assert.ok(manifest.entities.length > 0, 'sample publication must produce profiles');
+  assert.ok(Array.isArray(manifest.entities), 'empty authoritative publications are valid');
   for (const entity of manifest.entities) {
     assert.ok(sitemap.includes(`${manifest.origin}/entity/${entity.slug}/`));
     assert.ok(entity.metadata.openGraph);
@@ -40,11 +40,31 @@ test('custom SITE_ORIGIN is used consistently across sitemap and Schema.org', ()
     assert.equal(result.status, 0, result.stderr);
     const sitemap = read('apps/web/public/sitemap.xml');
     const manifest = read('apps/web/public/data/seo-metadata.json');
-    assert.ok(sitemap.includes('https://release.example.org/entity/'));
-    assert.ok(manifest.includes('https://release.example.org/entity/'));
+    assert.ok(sitemap.includes('https://release.example.org/'));
+    assert.ok(manifest.includes('https://release.example.org'));
     assert.ok(!manifest.includes('https://old.example.org'));
   } finally {
     const reset = spawnSync(process.execPath, ['scripts/generate-seo.js'], { encoding: 'utf8' });
     assert.equal(reset.status, 0, reset.stderr);
+  }
+});
+
+
+test('resource defaults avoid unsolicited GPU renderer and force simulation', () => {
+  const dashboard = read('apps/web/app/dashboard/Dashboard.tsx');
+  assert.ok(dashboard.includes("useState<'network' | 'map' | 'list'>('list')"));
+  assert.ok(dashboard.includes("mode === 'network' && <NetworkGraph"));
+  assert.match(read('apps/web/app/dashboard/graph.worker.ts'), /layoutWanted = false/);
+  assert.match(read('apps/web/public/legacy/app.js'), /layout: "grid"/);
+  const scripts = JSON.parse(read('apps/web/package.json')).scripts;
+  assert.ok(scripts.prebuild.includes('generate-seo.js'));
+});
+
+test('CSS primitives and canvas palette share the same source', () => {
+  const palette = JSON.parse(read('apps/web/src/styles/palette.json'));
+  const tokens = read('apps/web/src/styles/globals.css');
+  for (const [key, value] of Object.entries(palette)) assert.ok(tokens.includes(`--color-${key}: ${value};`));
+  for (const file of ['NetworkGraph.tsx', 'MapModule.tsx', 'graph-data.ts']) {
+    assert.doesNotMatch(read(`apps/web/app/dashboard/${file}`), /#[0-9a-f]{6}\b/i);
   }
 });

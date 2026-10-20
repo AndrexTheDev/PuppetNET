@@ -42,6 +42,7 @@ git push origin arena/5fb0fe0b-puppetnet
   diesen Branch beobachtet.
 - [ ] Produktionsdomain/HTTPS, Cache-Header und neue Datenrevision prüfen;
   Search-Worker separat nach Zero-KV-Runbook migrieren, Secrets nur serverseitig.
+- [ ] GH_PAT mit passenden Rechten hinterlegen; Branch-Regeln prüfen.
 - [ ] GitHub-Dispatch-Workflow muss auf dem Defaultbranch registriert sein;
   Pipeline-Aktivierung und Freigabe der Daten sind gesonderte Schritte.
 - [ ] Kontingente, Actions-Ausführungen und Provider-Abrechnung kontrollieren.

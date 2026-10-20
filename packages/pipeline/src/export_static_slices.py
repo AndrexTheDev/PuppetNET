@@ -1,8 +1,8 @@
-"""Publish a bounded, explicitly approved graph for ALL static consumers.
+"""Publish a bounded graph using confidence/RSS release policy for all consumers.
 
 python packages/pipeline/src/export_static_slices.py --input reviewed-graph.json
 python packages/pipeline/src/export_static_slices.py --neo4j
-No database-to-public dump: nodes AND relationships require public=true.
+Auto-release: confidence >=0.75 or exact verified RSS provenance; privacy vetoes win.
 """
 from __future__ import annotations
 
@@ -62,8 +62,44 @@ def reserve_run(path: Path, event: str, day: str | None = None) -> bool:
     return True
 
 
-def approved(row: dict) -> bool:
-    return row.get("public") is True and not row.get("private") and not row.get("noindex")
+def verified_feeds() -> set[str]:
+    """Operator allowlist: exact HTTPS feed URLs, never a feed-supplied boolean."""
+    feeds = {value.strip() for value in os.getenv("VERIFIED_RSS_FEEDS", "").split(",") if value.strip()}
+    if len(feeds) > 100:
+        raise ValueError("At most 100 verified RSS feeds are allowed")
+    for value in feeds:
+        parsed = urlsplit(value)
+        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.fragment:
+            raise ValueError("VERIFIED_RSS_FEEDS requires exact HTTPS feed URLs without credentials/fragments")
+    return feeds
+
+
+def auto_released(row: dict, feeds: set[str]) -> bool:
+    # Booleans are not confidence numbers. Invalid/nonfinite/out-of-range data
+    # must not become publishable by coercion or clamping.
+    value = row.get("confidence")
+    try:
+        confidence = float(value) if not isinstance(value, bool) else -1.
+    except (ValueError, TypeError):
+        confidence = -1.
+    provenance = row.get("feed_urls", [])
+    if not isinstance(provenance, list):
+        provenance = []
+    return (math.isfinite(confidence) and .75 <= confidence <= 1.) or any(
+        isinstance(url, str) and url in feeds for url in [row.get("feed_url"), *provenance])
+
+
+def approved(row: dict, feeds: set[str] | None = None) -> bool:
+    feeds = verified_feeds() if feeds is None else feeds
+    if any(row.get(flag) for flag in ("private", "noindex", "release_blocked", "negated", "hedged", "calculated")):
+        return False
+    if row.get("public_released") is False:  # explicit operator withdrawal
+        return False
+    automatic = auto_released(row, feeds)
+    if row.get("requires_review") and not automatic and row.get("public_released") is not True:
+        return False
+    # public=false may be an extraction draft default, not a privacy veto.
+    return row.get("public") is True or row.get("public_released") is True or automatic
 
 
 def entity_slug(key: str, name: str) -> str:
@@ -96,43 +132,60 @@ def score(value: Any) -> float:
 
 
 def read_neo4j(limit: int = MAX_NODES) -> dict:
-    """Two bounded queries in one read transaction; no unrestricted properties()."""
+    """Bounded read snapshot, with feed provenance joined through stored doc IDs.
+
+    No SET/properties() or trusting an arbitrary verified_rss boolean. Export
+    release flags are materialized in JSON, not written back into the database.
+    """
     from neo4j import GraphDatabase, unit_of_work
-    uri, user, password = (os.environ.get(k, "") for k in ("NEO4J_URI", "NEO4J_USERNAME", "NEO4J_PASSWORD"))
+    uri, user, password = (os.getenv(key, "") for key in ("NEO4J_URI", "NEO4J_USER", "NEO4J_PASSWORD"))
     if not all((uri, user, password)):
-        raise ValueError("NEO4J_URI, NEO4J_USERNAME and NEO4J_PASSWORD are required")
+        raise ValueError("NEO4J_URI, NEO4J_USER and NEO4J_PASSWORD are required")
     if not uri.startswith("neo4j+s://"):
         raise ValueError("Production export requires a TLS-verified neo4j+s:// URI")
 
     @unit_of_work(timeout=20)
     def read(tx):
         nodes = [dict(row["node"]) for row in tx.run("""
-            MATCH (e:Entity) WHERE e.public = true
-              AND coalesce(e.private,false) = false AND coalesce(e.noindex,false) = false
-            WITH e ORDER BY coalesce(e.updated_at,e.last_seen,'') DESC, e.canonical_key
+            MATCH (e:Entity)
+            WHERE coalesce(e.private,false) = false AND coalesce(e.noindex,false) = false
+            WITH e ORDER BY coalesce(e.public_released,e.public,false) DESC,
+                            coalesce(e.confidence,0) DESC, e.canonical_key
             LIMIT $limit
-            RETURN e{.canonical_key,.name,.entity_type,.description,.public,.private,.noindex,
+            RETURN e{.canonical_key,.name,.entity_type,.description,.public,.public_released,
+                     .private,.noindex,.release_blocked,.requires_review,.calculated,.negated,.hedged,
                      .updated_at,.last_seen,.lat,.lon,.confidence,.doc_ids} AS node
-        """, limit=limit)]
+        """, limit=max(1, min(limit, MAX_NODES)))]
         keys = [node["canonical_key"] for node in nodes]
         edges = [dict(row["edge"]) for row in tx.run("""
             MATCH (a:Entity)-[r]->(b:Entity)
             WHERE a.canonical_key IN $keys AND b.canonical_key IN $keys
-              AND r.public = true AND coalesce(r.private,false) = false
-              AND coalesce(r.noindex,false) = false AND coalesce(r.requires_review,false) = false
+              AND coalesce(r.private,false) = false AND coalesce(r.noindex,false) = false
               AND type(r) <> 'PUPPET_MASTER_OF'
-            RETURN {source:a.canonical_key,target:b.canonical_key,type:type(r),public:true,
-                    confidence:r.confidence,weight:r.weight} AS edge
+            RETURN {source:a.canonical_key,target:b.canonical_key,type:type(r),public:r.public,
+                    public_released:r.public_released,release_blocked:r.release_blocked,
+                    requires_review:r.requires_review,calculated:r.calculated,
+                    negated:r.negated,hedged:r.hedged,confidence:r.confidence,weight:r.weight,
+                    doc_ids:coalesce(r.doc_ids,[]),doc_id:r.doc_id} AS edge
             ORDER BY edge.source,edge.target,edge.type LIMIT $limit
         """, keys=keys, limit=MAX_EDGES)]
-        evidence = [dict(row["doc"]) for row in tx.run("""
-            MATCH (e:Entity)-[r:EVIDENCED_BY|MENTIONS]-(d:Document)
-            WHERE e.canonical_key IN $keys AND d.public = true AND r.public = true
-              AND coalesce(d.private,false) = false AND coalesce(d.noindex,false) = false
-            RETURN DISTINCT {id:d.doc_id,title:d.title,url:d.url,source:d.source_id,
-                             date:d.published_at,public:true} AS doc LIMIT 5000
-        """, keys=keys)]
-        return {"nodes": nodes, "edges": edges, "evidence": evidence, "demo": False}
+        ids = sorted({str(doc) for row in [*nodes, *edges]
+                      for doc in [*(row.get("doc_ids") or []), row.get("doc_id")] if doc})[:5000]
+        documents = [dict(row["doc"]) for row in tx.run("""
+            UNWIND $ids AS doc_id
+            MATCH (d:Document {doc_id:doc_id})
+            WHERE coalesce(d.private,false) = false AND coalesce(d.noindex,false) = false
+            RETURN {id:d.doc_id,title:d.title,url:d.url,source:d.source_id,date:d.published_at,
+                    feed_url:d.feed_url,public:d.public,public_released:d.public_released,
+                    release_blocked:d.release_blocked} AS doc LIMIT 5000
+        """, ids=ids)]
+        sources = {doc["id"]: doc.get("feed_url") for doc in documents
+                   if doc.get("public_released") is not False and not doc.get("release_blocked")}
+        for row in [*nodes, *edges]:
+            row["feed_urls"] = sorted({sources[doc] for doc in [*(row.get("doc_ids") or []), row.get("doc_id")]
+                                       if doc in sources and isinstance(sources[doc], str)})
+        return {"nodes": nodes, "edges": edges, "evidence": documents, "demo": False,
+                "truncated": len(nodes) >= min(limit, MAX_NODES) or len(edges) >= MAX_EDGES or len(ids) >= 5000}
 
     with (
         GraphDatabase.driver(uri, auth=(user, password), connection_timeout=10,
@@ -149,9 +202,10 @@ def build_public_graph(raw: dict, limit: int = MAX_NODES) -> dict:
         raise ValueError("Local input exceeds safety limits")
     types = {"person": "Person", "per": "Person", "organization": "Organization", "org": "Organization",
              "company": "Organization", "location": "Location", "loc": "Location", "craft": "Craft"}
+    feeds = verified_feeds()
     by_id = {}
     for row in raw["nodes"]:
-        if not isinstance(row, dict) or not approved(row):
+        if not isinstance(row, dict) or not approved(row, feeds):
             continue
         key = clean(row.get("canonical_key") or row.get("key") or row.get("id"))
         name = clean(row.get("name") or row.get("label"))
@@ -162,7 +216,7 @@ def build_public_graph(raw: dict, limit: int = MAX_NODES) -> dict:
             raise ValueError(f"Duplicate approved node id: {key}")
         # Allowlist: no private notes, document text, risk scores or arbitrary properties.
         node = {"confidence": score(row.get("confidence")), "id": key, "key": key, "name": name, "label": name, "type": kind,
-                "entity_type": kind, "public": True, "slug": entity_slug(key, name),
+                "entity_type": kind, "public": True, "public_released": True, "slug": entity_slug(key, name),
                 "description": clean(row.get("description"), 320),
                 "updatedAt": clean(row.get("updatedAt") or row.get("updated_at") or row.get("last_seen"), 40)}
         for field, bound in (("lat", 90), ("lon", 180)):
@@ -175,7 +229,7 @@ def build_public_graph(raw: dict, limit: int = MAX_NODES) -> dict:
         by_id[key] = node
     evidence = []
     for item in raw.get("evidence", [])[:5000]:
-        if not isinstance(item, dict) or not approved(item):
+        if not isinstance(item, dict) or not approved(item, feeds):
             continue
         entry = {"id": clean(item.get("id")), "title": clean(item.get("title")),
                  "source": clean(item.get("source")), "date": clean(item.get("date"), 40)}
@@ -202,7 +256,7 @@ def build_public_graph(raw: dict, limit: int = MAX_NODES) -> dict:
     keys = {node["id"] for node in nodes}
     edges = {}
     for row in raw["edges"]:
-        if not isinstance(row, dict) or not approved(row) or row.get("requires_review"):
+        if not isinstance(row, dict) or not approved(row, feeds):
             continue
         source, target = clean(row.get("source")), clean(row.get("target"))
         predicate = clean(row.get("type") or row.get("predicate"), 64)
@@ -213,16 +267,16 @@ def build_public_graph(raw: dict, limit: int = MAX_NODES) -> dict:
         signature = source + "|" + predicate + "|" + target
         edges[signature] = {"id": hashlib.sha256(signature.encode()).hexdigest()[:24],
                             "source": source, "target": target, "type": predicate, "predicate": predicate,
-                            "public": True, "confidence": score(row.get("confidence")), "weight": score(row.get("weight"))}
+                            "public": True, "public_released": True, "confidence": score(row.get("confidence")), "weight": score(row.get("weight"))}
     return {"schemaVersion": 1, "demo": raw.get("demo") is True, "nodes": nodes,
             "edges": [edges[key] for key in sorted(edges)[:MAX_EDGES]],
-            "evidence": sorted(evidence, key=lambda item: item["id"]), "truncated": len(by_id) > len(nodes) or len(edges) > MAX_EDGES}
+            "evidence": sorted(evidence, key=lambda item: item["id"]), "truncated": raw.get("truncated") is True or len(by_id) > len(nodes) or len(edges) > MAX_EDGES}
 
 
 def export_slices(raw: dict, output: Path = DEFAULT_OUT, *, allow_empty: bool = False) -> dict:
     graph = build_public_graph(raw)
     if not graph["nodes"] and not allow_empty:
-        raise ValueError("No explicitly public entities: refusing to erase existing publication; use --allow-empty deliberately")
+        raise ValueError("No releasable entities: refusing to erase existing publication; use --allow-empty deliberately")
     # Stable content hash: no clock-only commits or unnecessary Pages rebuilds.
     digest = hashlib.sha256(json.dumps(graph, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     graph["revision"] = digest
@@ -273,7 +327,7 @@ def main() -> None:
         parser.error("Local export input exceeds 64 MiB")
     raw = json.loads(args.input.read_text(encoding="utf-8")) if args.input else read_neo4j()
     graph = export_slices(raw, args.out, allow_empty=args.allow_empty)
-    print(f"Published {len(graph['nodes'])} reviewed nodes, {len(graph['edges'])} relationships; revision {graph['revision'][:12]}")
+    print(f"Published {len(graph['nodes'])} released nodes, {len(graph['edges'])} relationships; revision {graph['revision'][:12]}")
 
 
 if __name__ == "__main__":

@@ -711,6 +711,7 @@ class Document:
     def to_node_properties(self) -> dict[str, Any]:
         return {
             "doc_id": self.doc_id,
+            "feed_url": str(self.extra.get("feed_url", ""))[:2000],
             "source_id": self.source_id,
             "url": self.url,
             "title": (self.title or "")[:1024],

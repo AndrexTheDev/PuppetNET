@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 from datetime import datetime, timezone
@@ -21,8 +22,14 @@ from bs4 import BeautifulSoup
 from puppetnet.models import Document, Entity, EntityType, ExtractionMethod, Relation, RelationType
 from puppetnet.parsing.nlp_engine import ParseResult
 
+logger = logging.getLogger(__name__)
+
 PREDICATES = ("OWNS", "FOUNDED", "EMPLOYED_BY", "LOCATED_IN", "MEMBER_OF", "MET_WITH")
 VERBS = {"besitzen": "OWNS", "gründen": "FOUNDED", "treffen": "MET_WITH"}
+# Drop complete marketing filler lines, not grammatical stopwords: deleting
+# "nicht", prepositions or auxiliaries would corrupt negation/dependency direction.
+FILLER_LINE = re.compile(r"(?:jetzt (?:kostenlos )?(?:abonnieren|registrieren)|"
+                         r"(?:hier )?klicken sie hier|mehr erfahren|alle rechte vorbehalten)[.! ]*", re.I)
 NEGATIVE = re.compile(r"\b(nicht|kein\w*|angeblich|möglicherweise|mutmaßlich|soll|könnte)\b", re.I)
 
 
@@ -41,7 +48,7 @@ def clean_html(text: str, limit: int = 20_000) -> str:
             line = re.sub(r"[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,190}\.[A-Za-z]{2,24}", " ", line)
         line = re.sub(r"[\x00-\x1f\x7f\u200b-\u200f]", " ", line)
         line = re.sub(r"\s+", " ", line).strip()
-        if line and line not in seen:
+        if line and not FILLER_LINE.fullmatch(line) and line not in seen:
             seen.add(line)
             lines.append(line)
     return "\n".join(lines)[:limit]
@@ -64,6 +71,8 @@ class GeminiFallback:
         self.enabled = os.getenv("ENABLE_GEMINI_FALLBACK", "false").lower() == "true" and bool(self.key)
         self.disabled = False
         self.calls_this_run = 0
+        self.reported_tokens = 0
+        self.unknown_usage_calls = 0
 
     def classify(self, sentence: str, subject: str, obj: str) -> str | None:
         if not self.enabled or self.disabled or self.calls_this_run >= 3:
@@ -97,6 +106,8 @@ class GeminiFallback:
         contents = [{"role": "user", "parts": [{"text": prompt}]}]
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}"
         headers = {"x-goog-api-key": self.key}
+        generated = False
+        reported = False
         try:
             counted = self.session.post(url + ":countTokens", headers=headers,
                                         json={"contents": contents}, timeout=(3, 10), allow_redirects=False)
@@ -109,6 +120,7 @@ class GeminiFallback:
                 config["thinkingConfig"] = {"thinkingBudget": 0}
             elif not self.model.startswith(("gemini-1.5-", "gemini-2.0-")):
                 return None  # do not silently budget unknown thinking models as non-thinking
+            generated = True
             result = self.session.post(url + ":generateContent", headers=headers, json={
                 "contents": contents,
                 "generationConfig": config,
@@ -116,13 +128,22 @@ class GeminiFallback:
             result.raise_for_status()
             payload = result.json()
             usage = payload.get("usageMetadata", {})
-            if usage.get("totalTokenCount", 151) > 150:
+            total = usage.get("totalTokenCount")
+            if type(total) is int and total >= 0:
+                self.reported_tokens += total
+                reported = True
+            if not reported or total > 150:
                 return None
             answer = payload["candidates"][0]["content"]["parts"][0]["text"].strip()
             return PREDICATES[int(answer) - 1] if answer in {"1", "2", "3", "4", "5", "6"} else None
         except (requests.RequestException, ValueError, KeyError, IndexError, TypeError):
             self.disabled = True  # unavailable/quota-limited model: no repeated failures this run
             return None
+        finally:
+            if generated and not reported:
+                self.unknown_usage_calls += 1
+            logger.info("Gemini run usage: reservations=%d reported_tokens=%d unknown_usage_calls=%d",
+                        self.calls_this_run, self.reported_tokens, self.unknown_usage_calls)
 
 
 class TokenSaverEngine:
@@ -204,4 +225,6 @@ class TokenSaverEngine:
                 "cloud_enabled": bool(getattr(self.fallback, "enabled", False)), "max_cloud_tokens": 150}
 
     def close(self) -> None:
-        pass
+        logger.info("NLP run summary: cloud_reservations=%d reported_tokens=%d unknown_usage_calls=%d",
+                    getattr(self.fallback, "calls_this_run", 0), getattr(self.fallback, "reported_tokens", 0),
+                    getattr(self.fallback, "unknown_usage_calls", 0))

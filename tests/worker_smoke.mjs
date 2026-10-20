@@ -424,7 +424,7 @@ function makeGraphEnv(overrides = {}) {
   return {
     ...SECRETS,
     NEO4J_URI: NEO4J.uri,
-    NEO4J_USERNAME: NEO4J.user,
+    NEO4J_USER: NEO4J.user,
     NEO4J_PASSWORD: NEO4J.password,
     NEO4J_DATABASE: NEO4J.database,
     GRAPH_API_TOKEN: GRAPH_TOKEN,

@@ -45,6 +45,14 @@ writeSitemaps(legacyDir, renderSitemaps({ origin, entries: [{ loc: '/legacy/' }]
 robots(path.join(legacyDir, 'robots.txt'), '/legacy/sitemap.xml');
 mkdirSync(path.join(publicDir, 'data'), { recursive: true });
 writeFileSync(path.join(publicDir, 'data/seo-metadata.json'), `${JSON.stringify(dataset, null, 2)}\n`);
+// One palette source for CSS, WebGL and Leaflet. Keep the CSS mirror deterministic.
+const tokenPath = path.join(root, 'apps/web/src/styles/globals.css');
+const palette = JSON.parse(readFileSync(path.join(root, 'apps/web/src/styles/palette.json'), 'utf8'));
+const tokens = readFileSync(tokenPath, 'utf8').replace(/--color-([\w-]+):\s*#[0-9a-f]{6}/g, (match, key) => {
+  if (!/^#[0-9a-f]{6}$/i.test(palette[key] || '')) throw new Error(`Invalid palette token: ${key}`);
+  return `--color-${key}: ${palette[key]}`;
+});
+if (tokens !== readFileSync(tokenPath, 'utf8')) writeFileSync(tokenPath, tokens);
 mkdirSync(path.join(publicDir, 'styles'), { recursive: true });
 copyFileSync(path.join(root, 'apps/web/src/styles/globals.css'), path.join(publicDir, 'styles/globals.css'));
 const og = spawnSync(process.execPath, ['scripts/emit-og-images.mjs'], { cwd: root, env, stdio: 'inherit' });
