@@ -312,6 +312,25 @@ Statusansagen), Belegzeitraum-Zeile im Kanten-Panel, token-only CSS, 2 neue
 Datenlagen-Tests (dashboard 33) + 1 neuer Release-Pin (release 18) — `ci:pages` grün,
 0 zusätzliche Actions-Minuten.
 
+### Welle 13 — Entitätsauflösung vertieft + Mehrfach-Ausfall — ✅ umgesetzt (2026-10-20)
+
+- **Dubletten-Direktvergleich**: Fakten nebeneinander — Typ, Grad, Community, erste und
+  letzte Erwähnung, Belegzahl sowie **gemeinsame** und **eigene Nachbarn** je Kandidat.
+  Gemeinsame Nachbarn sind das eigentliche Auflösungssignal, abweichende Merkmale werden
+  farblich markiert (Typ, Community, Zeitfenster). Die Kandidaten selbst zählen **nicht**
+  als eigene Nachbarn, unbekannte IDs erzeugen keine Spalte, und die App führt weiterhin
+  nichts zusammen — der Hinweis „die App führt nichts zusammen" steht direkt am Vergleich.
+- **Mehrfach-Ausfall-Simulation**: Bis zu drei Artikulationspunkte per Checkbox
+  auswählen; der Worker rechnet auf dem **sichtbaren** Ausschnitt und meldet „n Knoten
+  entfernt → x Teile · größter y · isoliert z" inklusive Screenreader-Ansage. Auswahl
+  ist begrenzt, unbekannte IDs werden ignoriert, LoD-Gruppen sind keine Entitäten.
+
+**Geliefert (Welle 13)**: `compareDuplicates()` + `multiFailureImpact()` (reine,
+getestete Funktionen), Protokoll/Worker-Anfrage `impact`, Direktvergleich-Tabelle +
+Ausfall-Auswahl im Analytik-Panel (DE/EN), token-only CSS, 2 neue Datenlagen-Tests
+(dashboard 35) + 1 neuer Release-Pin (release 19) — `ci:pages` grün, 0 zusätzliche
+Actions-Minuten.
+
 ## 4. Budget-Zusammenfassung
 
 | Welle | Ort | Zusätzliche Actions-Minuten | Status |
@@ -328,6 +347,7 @@ Datenlagen-Tests (dashboard 33) + 1 neuer Release-Pin (release 18) — `ci:pages
 | 10 Zeitplausibilität/Ausfall | Browser/Web Worker | **0** | ✅ umgesetzt |
 | 11 Notizen/Fallbericht | Browser (localStorage) | **0** | ✅ umgesetzt |
 | 12 Wiedergabe/Belegzeitraum | Browser | **0** | ✅ umgesetzt |
+| 13 Direktvergleich/Mehrfachausfall | Browser/Web Worker | **0** | ✅ umgesetzt |
 
 Kein Schritt erzeugt neue Workflows, neue Cron-Jobs, längere Jobs oder bezahlte
 Dienste. Die einzigen verbrauchsrelevanten Grenzen sind die bestehenden: 3
@@ -642,6 +662,24 @@ announcements), evidence-window row in the edge panel, token-only CSS, 2 new dat
 tests (dashboard 33) + 1 new release pin (release 18) — `ci:pages` green, 0 extra
 Actions minutes.
 
+### Wave 13 — deeper entity resolution + multi-node failure — ✅ implemented (2026-10-20)
+
+- **Duplicate side-by-side comparison**: facts next to each other — type, degree,
+  community, first and last mention, evidence count plus **shared** and **own**
+  neighbours per candidate. Shared neighbours are the actual resolution signal;
+  differing attributes (type, community, time window) are marked. The candidates never
+  count as each other's neighbours, unknown ids never create a column, and the app
+  still merges nothing — the note "the app merges nothing" sits right next to the table.
+- **Multi-node failure simulation**: select up to three articulation points via
+  checkboxes; the worker computes on the **visible** slice and reports "n nodes removed →
+  x parts · largest y · isolated z" with a screen-reader announcement. The selection is
+  bounded, unknown ids are ignored, LoD groups are not entities.
+
+**Delivered (Wave 13)**: `compareDuplicates()` + `multiFailureImpact()` (pure, tested
+functions), `impact` protocol/worker request, side-by-side table + failure selection in
+the analytics panel (DE/EN), token-only CSS, 2 new data-layer tests (dashboard 35) +
+1 new release pin (release 19) — `ci:pages` green, 0 extra Actions minutes.
+
 ## 4. Budget summary
 
 | Wave | Location | Additional Actions minutes | Status |
@@ -658,6 +696,7 @@ Actions minutes.
 | 10 chronology/failure | browser/web worker | **0** | ✅ implemented |
 | 11 notes/case report | browser (localStorage) | **0** | ✅ implemented |
 | 12 playback/evidence window | browser | **0** | ✅ implemented |
+| 13 comparison/multi-failure | browser/web worker | **0** | ✅ implemented |
 
 No step creates new workflows, new cron jobs, longer jobs or paid services. The only
 consumption-relevant limits remain the existing ones: 3 reservations/UTC day, 5-minute

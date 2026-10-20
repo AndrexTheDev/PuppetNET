@@ -415,6 +415,119 @@ export function monthWindow(month: string): { from: string; to: string } | null 
   return { from: `${month}-01`, to: `${month}-${String(lastDay).padStart(2, '0')}` };
 }
 
+/** Wave 13: one side of a duplicate comparison — the facts an investigator
+ * weighs before deciding that two node ids are the same entity. */
+export interface DuplicateProfile {
+  id: string; label: string; type: EntityType;
+  degree: number; community?: string; firstSeen?: string; lastSeen?: string;
+  evidence: number;
+  neighbors: { id: string; label: string }[];
+}
+export interface DuplicateComparison {
+  profiles: DuplicateProfile[];
+  /** Neighbours every compared entity shares — the strongest merge signal. */
+  shared: { id: string; label: string }[];
+  /** Neighbours only this entity has (per id), sorted by label. */
+  unique: Record<string, string[]>;
+  /** Field names that differ across the compared entities (type, community, …). */
+  conflicts: string[];
+}
+
+/**
+ * Wave 13: side-by-side facts for up to four duplicate candidates. Pure and
+ * deterministic; neighbours are read undirected from the same filtered slice the
+ * hints came from, and the compared ids are never counted as neighbours of each
+ * other (a duplicate is not its own evidence). Fewer than two known ids -> null
+ * instead of a one-sided "comparison".
+ */
+export function compareDuplicates(data: Dataset, ids: string[], neighborLimit = 8): DuplicateComparison | null {
+  const known = new Map(data.nodes.map(node => [node.id, node]));
+  const wanted = [...new Set(ids)].filter(id => known.has(id)).slice(0, 4);
+  if (wanted.length < 2) return null;
+  const wantedSet = new Set(wanted);
+  const adjacency = new Map<string, Set<string>>();
+  for (const id of wanted) adjacency.set(id, new Set());
+  for (const edge of data.edges) {
+    for (const [from, to] of [[edge.source, edge.target], [edge.target, edge.source]] as const) {
+      if (!adjacency.has(from) || from === to || wantedSet.has(to)) continue;
+      adjacency.get(from)!.add(to);
+    }
+  }
+  const labelOf = (id: string) => known.get(id)?.label ?? id;
+  const profiles: DuplicateProfile[] = wanted.map(id => {
+    const node = known.get(id)!;
+    const neighbors = [...adjacency.get(id)!]
+      .map(peer => ({ id: peer, label: labelOf(peer) }))
+      .sort((a, b) => (a.label.toLowerCase() < b.label.toLowerCase() ? -1 : a.label.toLowerCase() > b.label.toLowerCase() ? 1 : a.id < b.id ? -1 : 1));
+    return {
+      id, label: node.label, type: node.type, degree: neighbors.length,
+      community: node.community, firstSeen: node.firstSeen, lastSeen: node.lastSeen,
+      evidence: new Set(node.evidenceIds).size,
+      neighbors: neighbors.slice(0, Math.max(1, neighborLimit)),
+    };
+  });
+  const sharedIds = profiles.map(profile => new Set(adjacency.get(profile.id)!)).reduce((left, right) => new Set([...left].filter(id => right.has(id))));
+  const shared = [...sharedIds].map(id => ({ id, label: labelOf(id) }))
+    .sort((a, b) => (a.label.toLowerCase() < b.label.toLowerCase() ? -1 : a.label.toLowerCase() > b.label.toLowerCase() ? 1 : a.id < b.id ? -1 : 1));
+  const unique: Record<string, string[]> = {};
+  for (const profile of profiles) {
+    unique[profile.id] = [...adjacency.get(profile.id)!]
+      .filter(peer => !sharedIds.has(peer) && !profiles.some(other => other.id !== profile.id && adjacency.get(other.id)!.has(peer)))
+      .map(labelOf).sort();
+  }
+  const conflicts: string[] = [];
+  const differs = (field: (profile: DuplicateProfile) => string | undefined) => {
+    const values = new Set(profiles.map(field));
+    return values.size > 1;
+  };
+  if (differs(profile => profile.type)) conflicts.push('type');
+  if (differs(profile => profile.community)) conflicts.push('community');
+  if (differs(profile => profile.firstSeen)) conflicts.push('firstSeen');
+  if (differs(profile => profile.lastSeen)) conflicts.push('lastSeen');
+  return { profiles, shared, unique, conflicts };
+}
+
+/** Wave 13: failure simulation for several entities at once — how many parts
+ * remain, how big the largest survivor is and how many nodes end up isolated.
+ * Only real entities count (LoD groups are display artifacts), the selection is
+ * bounded and unknown ids are ignored instead of silently shrinking the test. */
+export function multiFailureImpact(nodes: GraphNode[], edges: GraphEdge[], ids: string[], maxNodes = 4): { removed: number; components: number; largest: number; isolated: number } | null {
+  const singles = nodes.filter(node => !node.group).map(node => node.id).sort();
+  const known = new Set(singles);
+  const removed = new Set([...new Set(ids)].filter(id => known.has(id)).slice(0, Math.max(1, maxNodes)));
+  if (removed.size === 0) return null;
+  const index = new Map<string, number>();
+  singles.forEach((id, i) => index.set(id, i));
+  const adjacency: number[][] = singles.map(() => []);
+  const seen = new Set<string>();
+  for (const edge of edges) {
+    const a = index.get(edge.source), b = index.get(edge.target);
+    if (a === undefined || b === undefined || a === b) continue;
+    const key = a < b ? `${a}|${b}` : `${b}|${a}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    adjacency[a].push(b); adjacency[b].push(a);
+  }
+  const reached = new Uint8Array(singles.length);
+  for (const id of removed) reached[index.get(id)!] = 1;
+  let components = 0, largest = 0, isolated = 0;
+  for (let start = 0; start < singles.length; start++) {
+    if (reached[start]) continue;
+    components++;
+    let size = 0;
+    const stack = [start];
+    reached[start] = 1;
+    while (stack.length) {
+      const v = stack.pop()!;
+      size++;
+      for (const u of adjacency[v]) if (!reached[u]) { reached[u] = 1; stack.push(u); }
+    }
+    if (size > largest) largest = size;
+    if (size === 1) isolated++;
+  }
+  return { removed: removed.size, components, largest, isolated };
+}
+
 /** Wave 9: bundle parallel relationships of the same unordered pair into one
  * edge — Maltego-style link charts drown in multi-edges otherwise. The bundle
  * keeps the strongest documented confidence and the union of provenance; the

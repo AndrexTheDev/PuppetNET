@@ -124,7 +124,7 @@
 .timeline-month:hover{opacity:1}
 .timeline-month:disabled{opacity:.5;cursor:not-allowed;text-decoration:none}
 .dupe-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:var(--space-1,0.25rem)}
-.dupe-list li{display:grid;grid-template-columns:1fr auto auto;align-items:center;gap:var(--space-2,0.5rem);border-left:2px solid var(--line);padding-left:var(--space-2,0.5rem)}
+.dupe-list li{display:grid;grid-template-columns:1fr auto auto auto;align-items:center;gap:var(--space-2,0.5rem);border-left:2px solid var(--line);padding-left:var(--space-2,0.5rem)}
 .dupe-label{font-weight:600}
 .dupe-count{font-variant-numeric:tabular-nums;opacity:.75;font-size:.85em}
 
@@ -151,3 +151,13 @@
 .playback{display:flex;align-items:center;gap:var(--space-2,0.5rem);flex-wrap:wrap;margin-top:var(--space-2,0.5rem)}
 .playback-toggle{padding:0.35rem 0.7rem}
 .playback-month{font-variant-numeric:tabular-nums;opacity:.8;font-size:.85em}
+
+/* Wave 13: side-by-side entity resolution + multi-node failure simulation (token-only) */
+.dupe-diff-panel{margin-top:var(--space-2,0.5rem);border-top:1px solid var(--line);padding-top:var(--space-2,0.5rem)}
+.dupe-table{width:100%;border-collapse:collapse;font-size:.85em}
+.dupe-table th,.dupe-table td{padding:0.25rem 0.35rem;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+.dupe-table caption{caption-side:top;text-align:left;padding-bottom:var(--space-1,0.25rem)}
+.dupe-table tbody th{font-weight:500;opacity:.8;white-space:nowrap}
+.dupe-table td.conflict{color:var(--color-gold)}
+.dupe-id{display:block;font-size:.8em;opacity:.7;overflow-wrap:anywhere}
+.impact-check{accent-color:var(--color-green);width:13px;height:13px;margin:0 0.25rem 0 0;flex:none}

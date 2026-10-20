@@ -254,3 +254,16 @@ test('wave 12: cumulative playback and evidence windows stay browser-side', () =
   assert.ok(dashboard.includes("t('dash.playNote')"), 'the cumulative semantics are explained in the UI');
   assert.ok(read('apps/web/app/dashboard/SidePanel.tsx').includes("t('inspector.window')"), 'the edge inspector shows its documented window');
 });
+
+test('wave 13: entity resolution compares, the app never merges, failure tests stay sliced', () => {
+  const data = read('apps/web/app/dashboard/graph-data.ts');
+  assert.match(data, /export function compareDuplicates\(data: Dataset, ids: string\[\], neighborLimit = 8\): DuplicateComparison \| null/, 'comparison is pure and null-honest');
+  assert.match(data, /export function multiFailureImpact\(nodes: GraphNode\[\], edges: GraphEdge\[\], ids: string\[\], maxNodes = 4\)/, 'the failure test is bounded');
+  assert.doesNotMatch(data.match(/export function compareDuplicates[\s\S]*?\n}/)?.[0] ?? '', /merge|dedupe/, 'comparison never merges ids');
+  const worker = read('apps/web/app/dashboard/graph.worker.ts');
+  assert.match(worker, /const slice = currentFiltered\(lastFilters\);\n      const impact = multiFailureImpact\(slice\.nodes, slice\.edges, data\.ids\)/, 'impact runs on the visible slice');
+  const dashboard = read('apps/web/app/dashboard/Dashboard.tsx');
+  assert.ok(dashboard.includes("t('dash.dupeCompareTitle')"), 'the comparison table is dictionary-driven');
+  assert.ok(dashboard.includes("t('dash.dupeCompareNote')"), 'the no-merge rule is stated to the user');
+  assert.ok(dashboard.includes("t('dash.impactSelect')"), 'the failure selection is labelled');
+});

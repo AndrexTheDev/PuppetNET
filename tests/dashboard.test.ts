@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
-import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, monthWindow, bundleEdges, structuralVulnerability, pathTimeline, normalizeNote, readNotes, caseReport, nextPlaybackMonth, evidenceWindow, NOTE_LIMIT, EGO_DEPTH_LIMIT, VULNERABILITY_NODE_LIMIT, normalizeInsights, ANALYSIS_LIMITS, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
+import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, monthWindow, bundleEdges, structuralVulnerability, pathTimeline, normalizeNote, readNotes, caseReport, nextPlaybackMonth, evidenceWindow, compareDuplicates, multiFailureImpact, NOTE_LIMIT, EGO_DEPTH_LIMIT, VULNERABILITY_NODE_LIMIT, normalizeInsights, ANALYSIS_LIMITS, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
 import { apiBase, readResponse } from '../apps/web/app/dashboard/api';
 const filters: Filters = { confidence: 0, weight: 0, types: [...TYPES], lod: true, ratio: 1 };
 test('normalizes Worker and Graphology nodes without inventing coordinates', () => {
@@ -517,4 +517,44 @@ test('wave 12 relationship windows normalize dates and count only what is dated'
   assert.deepEqual(window, { first: '2020-12-31', last: '2021-03-02', dated: 2 }, 'undated documents do not widen the window');
   assert.deepEqual(evidenceWindow([]), { first: undefined, last: undefined, dated: 0 });
   assert.deepEqual(evidenceWindow([{ id: 'z', title: 'Z' }]), { first: undefined, last: undefined, dated: 0 });
+});
+
+test('wave 13 duplicate comparison weighs shared and own neighbours, never merges', () => {
+  const data = normalizeDataset({
+    nodes: [
+      { key: 'a', name: 'Alpha', entity_type: 'person', community: 'c000', firstSeen: '2020-01-01' },
+      { key: 'a2', name: 'Alpha', entity_type: 'person', community: 'c001' },
+      { key: 'n1', name: 'Nordlicht GmbH', entity_type: 'org' },
+      { key: 'n2', name: 'Hansa AG', entity_type: 'org' },
+      { key: 'n3', name: 'Ost GmbH', entity_type: 'org' },
+    ],
+    edges: [{ source: 'a', target: 'n1' }, { source: 'a2', target: 'n1' }, { source: 'a', target: 'n2' }, { source: 'a2', target: 'n3' }],
+    evidence: [],
+  });
+  const comparison = compareDuplicates(data, ['a', 'a2', 'missing']);
+  assert.equal(comparison?.profiles.length, 2, 'unknown ids never fabricate a column');
+  assert.deepEqual(comparison?.shared.map(peer => peer.id), ['n1'], 'the shared neighbour is the merge signal');
+  assert.deepEqual(comparison?.unique.a, ['Hansa AG']);
+  assert.deepEqual(comparison?.unique.a2, ['Ost GmbH']);
+  assert.ok(comparison!.profiles.every(profile => profile.neighbors.every(peer => peer.id !== 'a' && peer.id !== 'a2')), 'a duplicate is not its own neighbour');
+  assert.deepEqual(comparison?.conflicts, ['community', 'firstSeen'], 'only real differences are flagged');
+  assert.equal(compareDuplicates(data, ['a']), null, 'one column is not a comparison');
+  assert.deepEqual(compareDuplicates(data, ['a', 'a2']), comparison, 'deterministic');
+});
+
+test('wave 13 multi-node failure simulation counts parts, largest survivor and isolation', () => {
+  const build = (pairs: [string, string][], count: number) => normalizeDataset({
+    nodes: Array.from({ length: count }, (_, i) => ({ key: String.fromCharCode(97 + i), name: String.fromCharCode(65 + i) })),
+    edges: pairs.map(([source, target]) => ({ source, target })), evidence: [],
+  });
+  const path = build([['a', 'b'], ['b', 'c'], ['c', 'd']], 4);
+  assert.deepEqual(multiFailureImpact(path.nodes, path.edges, ['b', 'c']), { removed: 2, components: 2, largest: 1, isolated: 2 }, 'cutting the middle isolates both ends');
+  assert.deepEqual(multiFailureImpact(path.nodes, path.edges, ['b']), { removed: 1, components: 2, largest: 2, isolated: 1 });
+  const tail = build([['a', 'b'], ['b', 'c'], ['c', 'a'], ['c', 'd'], ['d', 'e']], 5);
+  assert.deepEqual(multiFailureImpact(tail.nodes, tail.edges, ['c', 'd']), { removed: 2, components: 2, largest: 2, isolated: 1 }, 'the triangle remnant survives, E falls out isolated');
+  assert.equal(multiFailureImpact(path.nodes, path.edges, ['zzz']), null, 'unknown ids are ignored, never silently tested');
+  assert.equal(multiFailureImpact(path.nodes, path.edges, []), null);
+  assert.equal(multiFailureImpact(path.nodes, path.edges, ['a', 'b', 'c', 'd'], 2)?.removed, 2, 'the selection is bounded');
+  const withGroup = [...path.nodes, { ...path.nodes[0], id: 'group:x', group: true }];
+  assert.deepEqual(multiFailureImpact(withGroup, path.edges, ['group:x']), null, 'LoD display groups are not entities');
 });

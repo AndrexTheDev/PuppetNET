@@ -3,7 +3,7 @@ import { MultiDirectedGraph, UndirectedGraph } from 'graphology';
 import forceAtlas2 from 'graphology-layout-forceatlas2';
 import betweenness from 'graphology-metrics/centrality/betweenness';
 import louvain from 'graphology-communities-louvain';
-import { demoDataset, normalizeDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, levelFor, shortestPath, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, bundleEdges, structuralVulnerability, pathTimeline, EGO_DEPTH_LIMIT, ANALYSIS_LIMITS, LIMITS, TYPES, type Dataset, type Filters, type View } from './graph-data';
+import { demoDataset, normalizeDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, levelFor, shortestPath, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, bundleEdges, structuralVulnerability, pathTimeline, multiFailureImpact, EGO_DEPTH_LIMIT, ANALYSIS_LIMITS, LIMITS, TYPES, type Dataset, type Filters, type View } from './graph-data';
 import type { WorkerRequest, WorkerResponse } from './protocol';
 const scope = self as unknown as { onmessage: ((event: MessageEvent<WorkerRequest>) => void) | null; postMessage: (value: WorkerResponse, transfer?: Transferable[]) => void };
 let dataset: Dataset = { nodes: [], edges: [], evidence: [] };
@@ -151,6 +151,15 @@ scope.onmessage = async ({ data }) => {
       if (neighborhood) focus = new Set(neighborhood);
       build(data.filters);
       send({ kind: 'ego', id: data.id, depth: Math.max(1, Math.min(EGO_DEPTH_LIMIT, Math.trunc(data.depth) || 1)), size: neighborhood ? neighborhood.length : null });
+      return;
+    }
+    if (data.kind === 'impact') {
+      // Wave 13: failure simulation for the current selection — computed on the
+      // same filtered slice the investigator is looking at, never on the full
+      // export behind it.
+      const slice = currentFiltered(lastFilters);
+      const impact = multiFailureImpact(slice.nodes, slice.edges, data.ids);
+      send({ kind: 'impact', version: data.version, removed: impact?.removed ?? 0, components: impact?.components ?? 0, largest: impact?.largest ?? 0, isolated: impact?.isolated ?? 0 });
       return;
     }
     if (data.kind === 'demo') { dataset = demoDataset(data.count); focus = null; louvainPartition = null; }

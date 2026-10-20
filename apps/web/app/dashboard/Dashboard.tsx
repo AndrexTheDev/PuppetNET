@@ -2,7 +2,7 @@
 import dynamic from 'next/dynamic';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import EntityTable, { type TableRow } from './EntityTable';
-import { COLORS, TYPES, LIMITS, NOTE_STORAGE_KEY, caseReport, decodeViewState, edgesToCSV, encodeViewState, monthWindow, nextPlaybackMonth, nodesToCSV, normalizeNote, rankSearch, readNotes, resolveNodeRef, viewToJSON, type Evidence, type Filters, type GraphEdge, type GraphNode, type PathTimeline, type View, type ViewUrlState } from './graph-data';
+import { COLORS, TYPES, LIMITS, NOTE_STORAGE_KEY, caseReport, decodeViewState, edgesToCSV, encodeViewState, monthWindow, nextPlaybackMonth, nodesToCSV, compareDuplicates, normalizeNote, rankSearch, readNotes, resolveNodeRef, viewToJSON, type Evidence, type Filters, type GraphEdge, type GraphNode, type PathTimeline, type View, type ViewUrlState } from './graph-data';
 import type { NetworkHandle, PathHighlight } from './NetworkGraph';
 import type { WorkerRequest, WorkerResponse } from './protocol';
 import { loadStaticGraph, requestResearch, type Standby } from '../../src/lib/dataFetcher';
@@ -39,6 +39,11 @@ export default function Dashboard() {
   const [egoQuery, setEgoQuery] = useState(''), [egoDepth, setEgoDepth] = useState(2), [egoStatus, setEgoStatus] = useState('');
   const [brokers, setBrokers] = useState<{ id: string; label: string; share: number }[] | null>(null);
   const [analysisNotice, setAnalysisNotice] = useState('');
+  // Wave 13: entity resolution and failure simulation are case actions, not
+  // background analytics - both work on the slice the investigator sees.
+  const [dupeCompareIds, setDupeCompareIds] = useState<string[]>([]);
+  const [impactIds, setImpactIds] = useState<string[]>([]);
+  const [impactResult, setImpactResult] = useState<{ removed: number; components: number; largest: number; isolated: number } | null>(null);
   // Wave 12: cumulative playback — the month list is frozen while it runs
   // (a time filter shrinks the visible timeline, so it cannot be re-derived).
   const [playing, setPlaying] = useState(false);
@@ -70,7 +75,7 @@ export default function Dashboard() {
   }, []);
   const clearSelected = useCallback(() => { selectedId.current = null; setSelected(null); setEvidence([]); selectedEdgeId.current = null; setSelectedEdge(null); setEdgeEvidence([]); loadingDetail.current?.abort(); setDetailError(''); }, []);
   const send = useCallback((request: WorkerRequest) => worker.current?.postMessage(request), []);
-  const requestView = useCallback((kind: 'filter' | 'reset' = 'filter') => { setBusy(true); setError(''); clearSelected(); setPathResult(null); setPathError(''); setBrokers(null); setAnalysisNotice(''); if (kind === 'reset') { setEgoStatus(''); setPlaying(false); setPlaybackMonths([]); } send({ kind, version: ++version.current, filters: filtersRef.current }); }, [send, clearSelected]);
+  const requestView = useCallback((kind: 'filter' | 'reset' = 'filter') => { setBusy(true); setError(''); clearSelected(); setPathResult(null); setPathError(''); setBrokers(null); setAnalysisNotice(''); if (kind === 'reset') { setEgoStatus(''); setPlaying(false); setPlaybackMonths([]); setDupeCompareIds([]); setImpactIds([]); setImpactResult(null); } send({ kind, version: ++version.current, filters: filtersRef.current }); }, [send, clearSelected]);
   useEffect(() => {
     const instance = new Worker(new URL('./graph.worker.ts', import.meta.url)); worker.current = instance;
     instance.onmessage = ({ data }: MessageEvent<WorkerResponse>) => {
@@ -90,6 +95,12 @@ export default function Dashboard() {
         setPathResult({ ids: data.nodes, labels: data.nodes.map(labelOf), types: data.edges.map(e => e.type), edgeIds: data.edges.map(e => e.id), hops: data.hops, timeline: data.timeline ?? null });
         setPathError('');
         setAnnouncement(tRef.current('dash.annPathFound', { hops: data.hops, from: labelOf(data.nodes[0]), to: labelOf(data.nodes[data.nodes.length - 1]) }));
+        return;
+      }
+      if (data.kind === 'impact') {
+        if (data.version !== version.current) return; // stale answer for an older slice
+        setImpactResult({ removed: data.removed, components: data.components, largest: data.largest, isolated: data.isolated });
+        setAnnouncement(tRef.current('dash.annImpact', { parts: data.components, largest: data.largest }));
         return;
       }
       if (data.kind === 'broker') {
@@ -286,6 +297,12 @@ export default function Dashboard() {
     return map;
   }, [view]);
   const tableRows: TableRow[] = shown.map(n => ({ ...n, degree: degrees.get(n.id) ?? 0 }));
+  const dupeComparison = useMemo(() => (dupeCompareIds.length >= 2 && view && !view.stats.grouped ? compareDuplicates({ nodes: view.nodes, edges: view.edges, evidence: [] }, dupeCompareIds) : null), [dupeCompareIds, view]);
+  const toggleImpact = (id: string) => {
+    const next = impactIds.includes(id) ? impactIds.filter(current => current !== id) : [...impactIds, id].slice(0, 3);
+    setImpactIds(next); setImpactResult(null);
+    if (next.length >= 2) send({ kind: 'impact', version: version.current, ids: next });
+  };
   const timelineMax = useMemo(() => (view?.timeline ?? []).reduce((max, bucket) => Math.max(max, bucket.count), 0), [view]);
   useEffect(() => {
     const wanted = initialFocus.current;
@@ -364,16 +381,38 @@ export default function Dashboard() {
                 <span className="dupe-label">{group.label}</span>
                 <span className="dupe-count">{number(group.ids.length)}{group.sameType ? '' : ` · ${t('dash.dupeMixed')}`}</span>
                 <button type="button" className="text-button dupe-compare" aria-label={t('dash.dupeCompareAria', { label: group.label })} onClick={() => { if (mode !== 'list') changeMode('list'); setSearch(group.label); setListPage(0); setAnalysisNotice(t('dash.annDupe', { count: number(group.ids.length), label: group.label })); }}>{t('dash.dupeCompare')}</button>
+                <button type="button" className="text-button dupe-diff" aria-label={t('dash.dupeCompareActionAria', { label: group.label })} onClick={() => { setDupeCompareIds(group.ids.slice(0, 4)); setAnalysisNotice(t('dash.annDupeCompare', { count: number(Math.min(4, group.ids.length)) })); }}>{t('dash.dupeCompareAction')}</button>
               </li>
             ))}</ul>
             <p className="muted">{t('dash.dupeText')}</p>
+            {dupeCompareIds.length >= 2 && (view.stats.grouped
+              ? <p className="muted">{t('dash.dupeGrouped')}</p>
+              : dupeComparison && <div className="dupe-diff-panel">
+                <div className="section-heading"><h4 className="hub-heading">{t('dash.dupeCompareTitle')}</h4><button type="button" className="text-button" onClick={() => setDupeCompareIds([])}>{t('dash.dupeCompareClose')}</button></div>
+                <table className="dupe-table">
+                  <caption className="muted">{t('dash.dupeCompareCaption')}</caption>
+                  <thead><tr><th scope="col">{t('dash.dupeField')}</th>{dupeComparison.profiles.map(profile => <th key={profile.id} scope="col"><button type="button" className="text-button" onClick={() => { if (mode !== 'network') changeMode('network'); select(profile.id); requestAnimationFrame(() => network.current?.focus(profile.id)); }}>{profile.label}</button><code className="dupe-id">{profile.id}</code></th>)}</tr></thead>
+                  <tbody>
+                    <tr><th scope="row">{t('inspector.entityType')}</th>{dupeComparison.profiles.map(profile => <td key={profile.id} className={dupeComparison.conflicts.includes('type') ? 'conflict' : ''}>{t(`type.${profile.type}`)}</td>)}</tr>
+                    <tr><th scope="row">{t('inspector.degree')}</th>{dupeComparison.profiles.map(profile => <td key={profile.id}>{number(profile.degree)}</td>)}</tr>
+                    <tr><th scope="row">{t('inspector.community')}</th>{dupeComparison.profiles.map(profile => <td key={profile.id} className={dupeComparison.conflicts.includes('community') ? 'conflict' : ''}>{profile.community ?? '—'}</td>)}</tr>
+                    <tr><th scope="row">{t('inspector.firstSeen')}</th>{dupeComparison.profiles.map(profile => <td key={profile.id} className={dupeComparison.conflicts.includes('firstSeen') ? 'conflict' : ''}>{profile.firstSeen ?? '—'}</td>)}</tr>
+                    <tr><th scope="row">{t('inspector.lastSeen')}</th>{dupeComparison.profiles.map(profile => <td key={profile.id} className={dupeComparison.conflicts.includes('lastSeen') ? 'conflict' : ''}>{profile.lastSeen ?? '—'}</td>)}</tr>
+                    <tr><th scope="row">{t('dash.dupeEvidence')}</th>{dupeComparison.profiles.map(profile => <td key={profile.id}>{number(profile.evidence)}</td>)}</tr>
+                    <tr><th scope="row">{t('dash.dupeShared')}</th><td colSpan={dupeComparison.profiles.length}>{dupeComparison.shared.length ? dupeComparison.shared.map(peer => peer.label).join(', ') : '—'}</td></tr>
+                    <tr><th scope="row">{t('dash.dupeUnique')}</th>{dupeComparison.profiles.map(profile => <td key={profile.id}>{dupeComparison.unique[profile.id].join(', ') || '—'}</td>)}</tr>
+                  </tbody>
+                </table>
+                <p className="muted">{t('dash.dupeCompareNote')}</p>
+              </div>)}
           </>}
           {view.analytics.hubs.length > 0 && <><h4 className="hub-heading">{t('dash.topHubs')}</h4><ol className="hub-list">{view.analytics.hubs.map(hub => <li key={hub.id}><button type="button" className="text-button" onClick={() => { if (mode !== 'network') changeMode('network'); select(hub.id); requestAnimationFrame(() => network.current?.focus(hub.id)); }}>{hub.name}</button><span className="hub-rank">{(hub.rank * 100).toFixed(1)} %</span></li>)}</ol></>}
           {view.vulnerability && <div className="vuln-panel">
             <h4 className="hub-heading">{t('dash.vulnTitle')}</h4>
             <dl className="analytics-facts"><div><dt>{t('dash.vulnCutEdges')}</dt><dd>{number(view.vulnerability.cutEdges)}</dd></div><div><dt>k-Core</dt><dd>{t('dash.vulnCore', { core: view.vulnerability.maxCore, size: number(view.vulnerability.maxCoreSize) })}</dd></div></dl>
             {view.vulnerability.cutVertices.length > 0
-              ? <ol className="hub-list">{view.vulnerability.cutVertices.map(node => <li key={node.id}><button type="button" className="text-button" aria-label={t('dash.vulnAria', { label: node.label })} onClick={() => { if (mode !== 'network') changeMode('network'); select(node.id); requestAnimationFrame(() => network.current?.focus(node.id)); }}>{node.label}</button><span className="hub-rank">{number(node.degree)}</span><span className="vuln-impact">{t('dash.vulnImpact', { parts: node.impact.components, largest: number(node.impact.largest) })}</span></li>)}</ol>
+              ? <><p className="muted small-text">{t('dash.impactSelect')}</p><ol className="hub-list">{view.vulnerability.cutVertices.map(node => <li key={node.id}><input type="checkbox" className="impact-check" checked={impactIds.includes(node.id)} disabled={!impactIds.includes(node.id) && impactIds.length >= 3} aria-label={t('dash.impactAria', { label: node.label })} onChange={() => toggleImpact(node.id)} /><button type="button" className="text-button" aria-label={t('dash.vulnAria', { label: node.label })} onClick={() => { if (mode !== 'network') changeMode('network'); select(node.id); requestAnimationFrame(() => network.current?.focus(node.id)); }}>{node.label}</button><span className="hub-rank">{number(node.degree)}</span><span className="vuln-impact">{t('dash.vulnImpact', { parts: node.impact.components, largest: number(node.impact.largest) })}</span></li>)}</ol>
+                {impactResult && <p className="muted" role="status">{t('dash.impactResult', { removed: number(impactResult.removed), parts: impactResult.components, largest: number(impactResult.largest), isolated: number(impactResult.isolated) })} <button type="button" className="text-button" onClick={() => { setImpactIds([]); setImpactResult(null); }}>{t('dash.impactClear')}</button></p>}</>
               : <p className="muted">{t('dash.vulnNone')}</p>}
             <p className="muted">{t('dash.vulnText')}</p>
           </div>}
