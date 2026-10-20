@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
-import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, monthWindow, bundleEdges, structuralVulnerability, pathTimeline, normalizeNote, readNotes, caseReport, nextPlaybackMonth, evidenceWindow, compareDuplicates, multiFailureImpact, normalizeSavedName, readSavedViews, upsertSavedView, removeSavedView, evidenceToCSV, parseCaseNotes, mergeNotes, SAVED_VIEW_LIMIT, NOTE_LIMIT, EGO_DEPTH_LIMIT, VULNERABILITY_NODE_LIMIT, normalizeInsights, ANALYSIS_LIMITS, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
+import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, monthWindow, bundleEdges, structuralVulnerability, pathTimeline, normalizeNote, readNotes, caseReport, nextPlaybackMonth, evidenceWindow, compareDuplicates, multiFailureImpact, normalizeSavedName, readSavedViews, upsertSavedView, removeSavedView, evidenceToCSV, parseCaseNotes, mergeNotes, searchNoteIndex, caseBundle, SAVED_VIEW_LIMIT, NOTE_LIMIT, EGO_DEPTH_LIMIT, VULNERABILITY_NODE_LIMIT, normalizeInsights, ANALYSIS_LIMITS, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
 import { apiBase, readResponse } from '../apps/web/app/dashboard/api';
 const filters: Filters = { confidence: 0, weight: 0, types: [...TYPES], lod: true, ratio: 1 };
 test('normalizes Worker and Graphology nodes without inventing coordinates', () => {
@@ -635,4 +635,60 @@ test('wave 15 case report notes survive the roundtrip and never overwrite silent
   assert.deepEqual(mergeNotes({ x: 'keep' }, { '': 'leer', y: '   ' }), { notes: { x: 'keep' }, added: 0, unchanged: 0, skipped: 0 }, 'junk entries are dropped');
   const deterministic = mergeNotes({ a: 'eins' }, { b: 'zwei', c: 'drei' });
   assert.deepEqual(mergeNotes({ a: 'eins' }, { b: 'zwei', c: 'drei' }), deterministic);
+});
+
+test('wave 16 note index searches labels and note text with honest snippets', () => {
+  const nodes = normalizeDataset({
+    nodes: [{ key: 'a', name: 'Nordlicht GmbH' }, { key: 'b', name: 'Hansa AG' }], edges: [], evidence: [],
+  }).nodes;
+  const notes = {
+    a: 'Geschäftsführerin prüfen\nZweite Quelle fehlt für den Eigentümer',
+    b: 'Registerauszug bestellt',
+    ghost: 'Knoten nicht mehr im Ausschnitt',
+  };
+  assert.deepEqual(searchNoteIndex(nodes, notes, '').map(hit => hit.id), ['ghost', 'b', 'a'], 'empty query is a case overview, sorted by label');
+  const label = searchNoteIndex(nodes, notes, 'hansa');
+  assert.deepEqual(label.map(hit => [hit.id, hit.where]), [['b', 'label']]);
+  const both = searchNoteIndex(nodes, notes, 'nordlicht');
+  assert.equal(both[0].where, 'label');
+  const text = searchNoteIndex(nodes, notes, 'eigentümer');
+  assert.equal(text[0].id, 'a', 'note text matches too');
+  assert.equal(text[0].snippet, 'Zweite Quelle fehlt für den Eigentümer', 'the matching line becomes the snippet, not the first one');
+  assert.equal(text[0].where, 'note');
+  assert.deepEqual(searchNoteIndex(nodes, notes, 'zzz'), []);
+  assert.equal(searchNoteIndex(nodes, notes, 'knoten')[0].label, 'ghost', 'a note whose entity vanished keeps its raw id as label');
+  const ranked = searchNoteIndex(nodes, { a: 'hansa', b: 'hansa' }, 'hansa');
+  assert.deepEqual(ranked.map(hit => [hit.id, hit.where]), [['b', 'both'], ['a', 'note']], 'label hits rank above note-only hits, both-match hits first');
+  const long = searchNoteIndex(nodes, { a: 'x'.repeat(400) }, 'xxx');
+  assert.equal(long[0].snippet.length, 140, 'snippets are bounded');
+  assert.ok(long[0].snippet.endsWith('…'));
+  assert.equal(searchNoteIndex(nodes, notes, '', 1).length, 1, 'the index is bounded');
+  assert.deepEqual(searchNoteIndex(nodes, notes, ''), searchNoteIndex(nodes, notes, ''), 'deterministic');
+});
+
+test('wave 16 case bundle is a deterministic, versioned envelope', () => {
+  const bundle = caseBundle({
+    notes: { b: 'zwei', a: '  eins  ', leer: '   ' },
+    views: [
+      { name: 'Zeta', query: 'mode=list', saved: '2026-10-20T10:00:00Z' },
+      { name: 'alpha', query: 'mode=network', saved: '2026-10-19' },
+      { name: '', query: 'mode=map', saved: '2026-10-19' },
+    ],
+    report: '# Fallbericht\n',
+    generated: '2026-10-20T12:00:00.000Z',
+  });
+  const parsed = JSON.parse(bundle);
+  assert.equal(parsed.format, 'puppetnet-case');
+  assert.equal(parsed.version, 1);
+  assert.equal(parsed.generated, '2026-10-20T12:00:00.000Z');
+  assert.deepEqual(Object.keys(parsed.notes), ['a', 'b'], 'notes are sorted and empty ones drop out');
+  assert.equal(parsed.notes.a, 'eins', 'notes stay normalized');
+  assert.deepEqual(parsed.views.map((view: { name: string }) => view.name), ['alpha', 'Zeta'], 'sessions are sorted and unnamed ones drop out');
+  assert.equal(parsed.views[1].saved, '2026-10-20', 'dates normalize');
+  assert.equal(parsed.report, '# Fallbericht\n');
+  assert.equal(caseBundle({
+    notes: { b: 'zwei', a: '  eins  ', leer: '   ' }, report: '# Fallbericht\n', generated: '2026-10-20T12:00:00.000Z',
+    views: [{ name: 'alpha', query: 'mode=network', saved: '2026-10-19' }, { name: 'Zeta', query: 'mode=list', saved: '2026-10-20T10:00:00Z' }],
+  }), bundle, 'key and session order never change the bytes');
+  assert.equal(JSON.parse(caseBundle({ notes: {}, views: [], report: '', generated: '2026-10-20' })).format, 'puppetnet-case', 'an empty case still produces a valid bundle');
 });

@@ -915,6 +915,74 @@ export function mergeNotes(current: Record<string, string>, imported: Record<str
   return { notes, added, unchanged, skipped };
 }
 
+/** Wave 16: one note hit in the case-wide note index. */
+export interface NoteHit { id: string; label: string; snippet: string; where: 'label' | 'note' | 'both' }
+
+/**
+ * Wave 16: searches the research notes, not just the graph. An investigator who
+ * recorded twenty observations needs to find "where did I write about X" without
+ * clicking every entity: label matches, note-text matches and the lines around
+ * them. Empty query lists every annotated entity (sorted by label) so the index
+ * doubles as a case overview. Deterministic ranking, bounded output, and notes
+ * whose entity vanished keep their raw id instead of disappearing.
+ */
+export function searchNoteIndex(nodes: GraphNode[], notes: Record<string, string>, query: string, limit = 20): NoteHit[] {
+  const labels = new Map(nodes.map(node => [node.id, node.label]));
+  const q = query.trim().toLowerCase().slice(0, 120);
+  const hits: { hit: NoteHit; rank: number }[] = [];
+  for (const [rawId, rawNote] of Object.entries(notes)) {
+    const id = text(rawId, 200), note = normalizeNote(rawNote);
+    if (!id || !note) continue;
+    const label = labels.get(id) ?? id;
+    const inLabel = !!q && label.toLowerCase().includes(q);
+    const inNote = !!q && note.toLowerCase().includes(q);
+    if (q && !inLabel && !inNote) continue;
+    const lines = note.split('\n').map(line => line.trim()).filter(Boolean);
+    const matchLine = inNote ? lines.find(line => line.toLowerCase().includes(q)) ?? lines[0] : lines[0];
+    const snippet = (matchLine ?? '').length > 140 ? `${(matchLine ?? '').slice(0, 139).trimEnd()}…` : matchLine ?? '';
+    hits.push({
+      hit: { id, label, snippet, where: inLabel && inNote ? 'both' : inLabel ? 'label' : 'note' },
+      rank: inLabel && inNote ? 3 : inLabel ? 2 : 1,
+    });
+  }
+  hits.sort((a, b) => b.rank - a.rank
+    || (a.hit.label.toLowerCase() < b.hit.label.toLowerCase() ? -1 : a.hit.label.toLowerCase() > b.hit.label.toLowerCase() ? 1
+      : a.hit.id < b.hit.id ? -1 : a.hit.id > b.hit.id ? 1 : 0));
+  return hits.slice(0, Math.max(1, limit)).map(entry => entry.hit);
+}
+
+export interface CaseBundleInput {
+  notes: Record<string, string>;
+  views: { name: string; query: string; saved: string }[];
+  report: string;
+  generated: string;
+}
+/**
+ * Wave 16: the whole case in one portable file — notes, saved sessions and the
+ * Markdown report, wrapped in a versioned envelope. Deterministic (the caller
+ * passes the timestamp, notes are sorted), so the same case produces the same
+ * bytes. The bundle is plain JSON: readable in any editor, no server involved.
+ */
+export function caseBundle(input: CaseBundleInput): string {
+  const notes = Object.keys(input.notes).sort().reduce<Record<string, string>>((out, id) => {
+    const note = normalizeNote(input.notes[id]);
+    if (note) out[id] = note;
+    return out;
+  }, {});
+  const views = [...input.views]
+    .map(view => ({ name: normalizeSavedName(view.name), query: view.query.slice(0, 600), saved: isoDate(view.saved) ?? '' }))
+    .filter(view => view.name && view.query && view.saved)
+    .sort((a, b) => (a.name.toLowerCase() < b.name.toLowerCase() ? -1 : a.name.toLowerCase() > b.name.toLowerCase() ? 1 : 0));
+  return JSON.stringify({
+    format: 'puppetnet-case',
+    version: 1,
+    generated: input.generated,
+    notes,
+    views,
+    report: input.report,
+  }, null, 2) + '\n';
+}
+
 export interface CaseReportInput {
   stats: View['stats'];
   nodes: GraphNode[];

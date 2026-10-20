@@ -375,6 +375,26 @@ Funktionen), Import-Steuerung im Filter-Panel (DE/EN, Statusansage), token-only 
 1 neuer Datenlagen-Test mit vollständigem Roundtrip in beiden Sprachen (dashboard 38) +
 1 neuer Release-Pin (release 21) — `ci:pages` grün, 0 zusätzliche Actions-Minuten.
 
+### Welle 16 — Fallarbeit skalenfest (Notiz-Suche + Fallakte) — ✅ umgesetzt (2026-10-20)
+
+- **Notiz-Suche (Fallindex)**: Sobald Notizen existieren, durchsucht ein Index im
+  Filter-Panel **Bezeichnungen und Notiztexte** — ein leeres Suchfeld listet alle
+  annotierten Entitäten als Fallübersicht, eine Suche zeigt je Treffer die **passende
+  Zeile** als Snippet (nicht die erste) und springt per Klick in den Graphen.
+  Treffer, die Bezeichnung *und* Notiz betreffen, stehen vor reinen Label-Treffern,
+  davor reine Notiztreffer; Notizen zu Entitäten, die im Ausschnitt fehlen, bleiben mit
+  ihrer rohen ID sichtbar statt zu verschwinden. Deterministisch, begrenzt, Snippets
+  auf 140 Zeichen gekürzt.
+- **Fallakte (JSON)**: Notizen, gespeicherte Ansichten und der Markdown-Bericht in einem
+  versionierten Umschlag (`format: puppetnet-case`, `version: 1`) — sortiert,
+  normalisiert, ohne verstecktes `Date.now()`, damit dieselbe Fallakte dieselben Bytes
+  ergibt. Plain JSON, in jedem Editor lesbar, ohne Server.
+
+**Geliefert (Welle 16)**: `searchNoteIndex()` + `caseBundle()` (reine, getestete
+Funktionen), Notiz-Index + Fallakte-Export (DE/EN, Statusansage, Anzahl je Treffer),
+token-only CSS, 2 neue Datenlagen-Tests (dashboard 40) + 1 neuer Release-Pin (release 22)
+— `ci:pages` grün, 0 zusätzliche Actions-Minuten.
+
 ## 4. Budget-Zusammenfassung
 
 | Welle | Ort | Zusätzliche Actions-Minuten | Status |
@@ -394,6 +414,7 @@ Funktionen), Import-Steuerung im Filter-Panel (DE/EN, Statusansage), token-only 
 | 13 Direktvergleich/Mehrfachausfall | Browser/Web Worker | **0** | ✅ umgesetzt |
 | 14 Fallsitzungen/Provenienz-Export | Browser/Web Worker | **0** | ✅ umgesetzt |
 | 15 Fallbericht-Roundtrip | Browser | **0** | ✅ umgesetzt |
+| 16 Notiz-Index/Fallakte | Browser | **0** | ✅ umgesetzt |
 
 Kein Schritt erzeugt neue Workflows, neue Cron-Jobs, längere Jobs oder bezahlte
 Dienste. Die einzigen verbrauchsrelevanten Grenzen sind die bestehenden: 3
@@ -767,6 +788,24 @@ import control in the filter panel (DE/EN, status announcement), token-only CSS,
 data-layer test with a full roundtrip in both languages (dashboard 38) + 1 new release
 pin (release 21) — `ci:pages` green, 0 extra Actions minutes.
 
+### Wave 16 — case work that scales (note index + case bundle) — ✅ implemented (2026-10-20)
+
+- **Note index**: as soon as notes exist, a panel searches **labels and note text** — an
+  empty field lists every annotated entity as a case overview, a query shows the
+  **matching line** as the snippet (not the first one) and jumps into the graph on click.
+  Hits matching label *and* note rank first, then label-only, then note-only; notes whose
+  entity is missing from the slice stay visible under their raw id instead of vanishing.
+  Deterministic, bounded, snippets capped at 140 characters.
+- **Case bundle (JSON)**: notes, saved views and the Markdown report in a versioned
+  envelope (`format: puppetnet-case`, `version: 1`) — sorted, normalized, without a
+  hidden `Date.now()`, so the same case produces the same bytes. Plain JSON, readable in
+  any editor, no server involved.
+
+**Delivered (Wave 16)**: `searchNoteIndex()` + `caseBundle()` (pure, tested functions),
+note index + case-bundle export (DE/EN, status announcement, hit counts), token-only CSS,
+2 new data-layer tests (dashboard 40) + 1 new release pin (release 22) — `ci:pages`
+green, 0 extra Actions minutes.
+
 ## 4. Budget summary
 
 | Wave | Location | Additional Actions minutes | Status |
@@ -786,6 +825,7 @@ pin (release 21) — `ci:pages` green, 0 extra Actions minutes.
 | 13 comparison/multi-failure | browser/web worker | **0** | ✅ implemented |
 | 14 sessions/provenance export | browser/web worker | **0** | ✅ implemented |
 | 15 notes roundtrip | browser | **0** | ✅ implemented |
+| 16 note index/case bundle | browser | **0** | ✅ implemented |
 
 No step creates new workflows, new cron jobs, longer jobs or paid services. The only
 consumption-relevant limits remain the existing ones: 3 reservations/UTC day, 5-minute

@@ -294,3 +294,15 @@ test('wave 15: case-report notes round-trip locally, conflicts are never overwri
   assert.ok(dashboard.includes("t('dash.notesImported'"), 'the import summary is announced');
   assert.ok(dashboard.includes("t('dash.notesImportEmpty')"), 'a foreign file is answered honestly');
 });
+
+test('wave 16: the note index and the case bundle stay local and reproducible', () => {
+  const data = read('apps/web/app/dashboard/graph-data.ts');
+  assert.match(data, /export function searchNoteIndex\(nodes: GraphNode\[\], notes: Record<string, string>, query: string, limit = 20\)/, 'the note index is pure and bounded');
+  assert.match(data, /export function caseBundle\(input: CaseBundleInput\): string/, 'the bundle is a pure function');
+  assert.match(data, /format: 'puppetnet-case'/, 'the bundle carries a versioned format marker');
+  assert.doesNotMatch(data.match(/export function caseBundle[\s\S]*?\n}/)?.[0] ?? '', /Date\.now|Math\.random/, 'no hidden nondeterminism in the bundle');
+  const dashboard = read('apps/web/app/dashboard/Dashboard.tsx');
+  assert.ok(dashboard.includes("t('dash.notesSearch')"), 'the note index is dictionary-driven');
+  assert.ok(dashboard.includes("t('dash.caseBundleAria')"), 'the bundle export is labelled');
+  assert.ok(!/fetch\([^)]*caseBundle/i.test(dashboard), 'the bundle is generated locally, never uploaded');
+});
