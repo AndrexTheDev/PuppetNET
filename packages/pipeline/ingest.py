@@ -50,7 +50,7 @@ fetcher carries; it is declared on the registry spec, not hard-coded here.
 Environment
 -----------
 All configuration comes from the environment (see ``.env.example``):
-``NEO4J_URI``, ``NEO4J_USERNAME``, ``NEO4J_PASSWORD``, ``PROXY_WORKER_URL``,
+``NEO4J_URI``, ``NEO4J_USER``, ``NEO4J_PASSWORD``, ``PROXY_WORKER_URL``,
 ``PROXY_AUTH_TOKEN``, ``OPENCORPORATES_API_TOKEN``, ``COMPANIES_HOUSE_API_KEY``,
 ``WIKIDATA_USER_AGENT``, ``ADSBEXCHANGE_API_KEY``, ``AIRCRAFT_TAIL_NUMBERS``,
 ``FLIGHT_LOG_URLS``, ``SPACY_MODELS``, ``ENABLED_SOURCES``, ``DRY_RUN`` …

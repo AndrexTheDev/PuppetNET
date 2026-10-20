@@ -9,7 +9,7 @@ let generation = 0, version = 0;
 let graph: MultiDirectedGraph | null = null, view: View | null = null;
 let members = new Map<string, string>(), focus: Set<string> | null = null;
 let timer: ReturnType<typeof setTimeout> | undefined;
-let passes = 0, started = 0, layoutWanted = true;
+let passes = 0, started = 0, layoutWanted = false;
 const send = (value: WorkerResponse, transfer?: Transferable[]) => scope.postMessage(value, transfer);
 function stop() { clearTimeout(timer); timer = undefined; send({ kind: 'layout', running: false }); }
 function tick() {

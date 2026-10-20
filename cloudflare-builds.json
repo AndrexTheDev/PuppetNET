@@ -11,6 +11,9 @@
       "NODE_VERSION": "22",
       "NEXT_TELEMETRY_DISABLED": "1"
     },
+    "productionEnvironment": {
+      "SITE_ORIGIN": "https://puppetnet-web.pages.dev"
+    },
     "watchPaths": [
       "apps/web/*",
       "package.json",
@@ -19,7 +22,14 @@
       "tests/web_smoke.mjs",
       "tests/helpers/*",
       "apps/worker/worker.js",
-      "tests/dashboard.test.ts"
+      "tests/dashboard.test.ts",
+      "tests/data_fetcher.test.ts",
+      "scripts/generate-seo.js",
+      "scripts/generate-seo-data.ts",
+      "scripts/generate-sitemap.mjs",
+      "scripts/emit-og-images.mjs",
+      "tests/release.test.mjs",
+      "scripts/finalize-static-export.mjs"
     ]
   },
   "worker": {
@@ -38,7 +48,9 @@
       "scripts/worker-build.mjs",
       "tests/worker_smoke.mjs",
       "tests/helpers/*",
-      "tests/test_robots.py"
+      "tests/test_robots.py",
+      "tests/search_worker.test.ts",
+      "scripts/provision-search-worker.mjs"
     ]
   }
 }

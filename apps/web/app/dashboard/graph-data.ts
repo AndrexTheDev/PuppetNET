@@ -1,7 +1,8 @@
+import palette from '../../src/styles/palette.json';
 /** Shared, deterministic data contract. Executed by the data/layout worker, also unit-tested offline. */
 export const TYPES = ['Person', 'Organization', 'Location', 'Craft', 'Document', 'Other'] as const;
 export type EntityType = typeof TYPES[number];
-export const COLORS: Record<EntityType, string> = { Person: '#60dfd0', Organization: '#a397ff', Location: '#f3c773', Craft: '#ff9e91', Document: '#7daeff', Other: '#9bacc5' };
+export const COLORS: Record<EntityType, string> = { Person: palette.green, Organization: palette.gold, Location: palette['green-muted'], Craft: palette.danger, Document: palette['gold-muted'], Other: palette.muted };
 export interface Evidence { id: string; title: string; url?: string; source?: string; date?: string }
 export interface GraphNode {
   id: string; label: string; type: EntityType; confidence: number; x: number; y: number;

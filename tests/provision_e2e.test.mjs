@@ -16,7 +16,21 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const SCRIPT = resolve(ROOT, 'scripts/provision-worker.mjs');
-const TOML = resolve(ROOT, 'apps/worker/wrangler.toml');
+const LEGACY_TOML = `name = "historical-provisioner-test"
+main = "worker.js"
+[[kv_namespaces]]
+binding = "RATE_LIMIT_KV"
+id = "${'0'.repeat(32)}"
+preview_id = "${'0'.repeat(32)}"
+
+[[kv_namespaces]]
+binding = "RESULT_KV"
+id = "${'0'.repeat(32)}"
+preview_id = "${'0'.repeat(32)}"
+
+[triggers]
+crons = ["0 */12 * * *", "23 */3 * * *"]
+`;
 
 const STUB = `#!/usr/bin/env node
 const { appendFileSync, readFileSync } = require('node:fs');
@@ -65,7 +79,7 @@ test('provisioning patches the toml, uploads secrets and deploys against a stub'
   mkdirSync(join(dir, 'scripts'), { recursive: true });
   mkdirSync(join(dir, 'bin'), { recursive: true });
   copyFileSync(SCRIPT, join(dir, 'scripts/provision-worker.mjs'));
-  writeFileSync(join(dir, 'apps/worker/wrangler.toml'), readFileSync(TOML, 'utf8'));
+  writeFileSync(join(dir, 'apps/worker/wrangler.toml'), LEGACY_TOML);
 
   const bin = join(dir, 'bin/npx');
   writeFileSync(bin, STUB);
@@ -82,7 +96,7 @@ test('provisioning patches the toml, uploads secrets and deploys against a stub'
       PATH: `${join(dir, 'bin')}:${process.env.PATH}`,
       STUB_LOG: logPath,
       NEO4J_URI: 'neo4j+s://example.databases.neo4j.io:7687',
-      NEO4J_USERNAME: 'neo4j',
+      NEO4J_USER: 'neo4j',
       NEO4J_PASSWORD: 'test-password',
       CF_ACCOUNT_ID: 'a'.repeat(32),
       CF_API_TOKEN: 'analytics-token',
@@ -117,7 +131,7 @@ test('provisioning patches the toml, uploads secrets and deploys against a stub'
   const names = secrets.map((line) => line.split(' ')[1]).sort();
   assert.deepEqual(names, [
     'CF_ACCOUNT_ID', 'CF_API_TOKEN', 'GRAPH_API_TOKEN', 'NEO4J_PASSWORD', 'NEO4J_URI',
-    'NEO4J_USERNAME', 'PROXY_AUTH_TOKEN', 'STATUS_TOKEN', 'TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID',
+    'NEO4J_USER', 'PROXY_AUTH_TOKEN', 'STATUS_TOKEN', 'TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID',
   ]);
   for (const name of ['PROXY_AUTH_TOKEN', 'GRAPH_API_TOKEN', 'STATUS_TOKEN']) {
     const line = secrets.find((entry) => entry.startsWith(`SECRET ${name} `));
@@ -149,7 +163,7 @@ test('a second run keeps the existing namespaces and tokens', (t) => {
   const zeros = '0'.repeat(32);
   const prod = 'c'.repeat(32);
   const preview = 'd'.repeat(32);
-  const seeded = readFileSync(TOML, 'utf8')
+  const seeded = LEGACY_TOML
     .replace(`id = "${zeros}"\npreview_id = "${zeros}"\n\n[[kv_namespaces]]\nbinding = "RESULT_KV"`,
              `id = "${prod}"\npreview_id = "${preview}"\n\n[[kv_namespaces]]\nbinding = "RESULT_KV"`);
   assert.equal((seeded.match(/"0{32}"/g) || []).length, 2);
@@ -178,10 +192,10 @@ test('a second run keeps the existing namespaces and tokens', (t) => {
   assert.equal(calls.filter((line) => line.includes('kv namespace create')).length, 2,
     'only the untouched RESULT_KV pair is created');
   assert.ok(calls.some((line) => line.includes('kv namespace create PUPPETNET_RESULTS')));
-  // Only NEO4J_USERNAME is new: the other secrets already exist and are kept.
+  // Only NEO4J_USER is new: the other secrets already exist and are kept.
   assert.deepEqual(
     calls.filter((line) => line.startsWith('SECRET ')).map((line) => line.split(' ')[1]),
-    ['NEO4J_USERNAME'],
+    ['NEO4J_USER'],
     'existing secrets are kept; nothing is re-uploaded without --rotate'
   );
   const toml = readFileSync(join(dir, 'apps/worker/wrangler.toml'), 'utf8');

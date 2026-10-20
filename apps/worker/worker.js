@@ -45,7 +45,7 @@
  *   - RESULT_KV     : KV namespace  (response cache, queued task results)
  *   - FETCH_QUEUE   : Queue producer (deferred requests)
  *   - Secrets       : PROXY_AUTH_TOKEN / PROXY_AUTH_TOKENS,
- *                     NEO4J_URI / NEO4J_USERNAME / NEO4J_PASSWORD,
+ *                     NEO4J_URI / NEO4J_USER / NEO4J_PASSWORD,
  *                     CF_API_TOKEN / CF_ACCOUNT_ID (optional analytics),
  *                     TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID (optional alerts)
  *   - Cron Triggers : keep-alive (every 12 h) and health snapshot (every 3 h)
@@ -2426,7 +2426,7 @@ async function neo4jQuery(env, gcfg, statements, ctx) {
   if (endpointProblem) {
     throw graphError("neo4j_unconfigured", `Neo4j endpoint rejected: ${endpointProblem}`, 503);
   }
-  const user = String(env.NEO4J_USERNAME || env.NEO4J_USER || "neo4j");
+  const user = String(env.NEO4J_USER || env.NEO4J_USER || "neo4j");
 
   const url = `${base}/db/${encodeURIComponent(gcfg.database)}/tx/commit`;
   const controller = new AbortController();

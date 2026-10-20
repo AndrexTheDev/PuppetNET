@@ -2,7 +2,7 @@
 /**
  * emit-seo-files.mjs — write the SEO artefacts that need a hostname.
  *
- *   npm run emit:seo -- --origin https://puppetnet-console.pages.dev
+ *   npm run emit:seo -- --origin https://puppetnet-web.pages.dev
  *   SITE_ORIGIN=https://console.example node scripts/emit-seo-files.mjs
  *   node scripts/emit-seo-files.mjs --build-gate      # run by scripts/pages-build.mjs
  *
@@ -96,7 +96,7 @@ try {
   origin = url.origin;
 } catch (error) {
   const message = `"${rawOrigin}" is not a usable deployment origin (${error.message}). `
-    + "Expected something like https://puppetnet-console.pages.dev";
+    + "Expected something like https://puppetnet-web.pages.dev";
   if (buildGate) {
     console.warn(`emit-seo: ${message} — continuing the build without SEO artefacts.`);
     process.exit(0);

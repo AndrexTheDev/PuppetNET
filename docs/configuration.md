@@ -28,7 +28,7 @@ direct fallback must be available; `MAX_RUNTIME_SECONDS ≥ 60`; `NEO4J_BATCH_SI
 | Env var | Field | Default | Notes |
 | --- | --- | --- | --- |
 | `NEO4J_URI` | `neo4j_uri` | `neo4j+s://localhost:7687` | AuraDB Free only speaks the encrypted `+s` scheme. |
-| `NEO4J_USERNAME` / `NEO4J_USER` | `neo4j_username` | `neo4j` | Both spellings are accepted. |
+| `NEO4J_USER` / `NEO4J_USER` | `neo4j_username` | `neo4j` | Both spellings are accepted. |
 | `NEO4J_PASSWORD` | `neo4j_password` | *(empty)* | Empty ⇒ dry run only. Redacted everywhere. |
 | `NEO4J_DATABASE` | `neo4j_database` | `neo4j` | |
 | `NEO4J_MAX_CONNECTION_POOL_SIZE` | `neo4j_max_connection_pool_size` | `8` | Free tier tolerates small pools. |

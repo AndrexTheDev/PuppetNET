@@ -1,19 +1,89 @@
 # PuppetNET 2.0 — decoupled hybrid CI/CD
 
-Open-source OSINT ingestion, entity recognition and graph analysis. The baseline history
-through `arena/01a0df64-puppetnet` commit `127ab47` is on `main`: PR #1 merged the
-monorepo, the decoupled hybrid CI/CD and the WebGL dashboard as `54cdd3b` (2026-10-19).
-Follow-up work is authored on the current session branch `arena/dbc5fb0c-puppetnet` and
-integrated into `main` through a pull request, never pushed directly.
+> **Aktueller Architekturstand (Zero-KV-Umstellung):** Der aktive Worker startet
+> jetzt über `apps/worker/src/index.ts`. Er verarbeitet nur authentifizierte
+> Rechercheaufträge und optionale öffentliche JSON-Weiterleitungen mit Cache API.
+> Er hat keine KV-Bindings, Neo4j-Graph-API, Cron-Heartbeats oder Status-Snapshots.
+> Dashboard, Legacy und Profile verwenden primär `graph_latest.json`. Ältere
+> Graph-/KV-Beschreibungen unten gelten nur noch für die aufbewahrte historische
+> Implementierung. Migration: [Zero-KV-Runbook](docs/zero-kv-worker.md).
+
+Open-source OSINT ingestion, entity recognition and graph analysis.
+Aktuelle Entwicklung: `arena/5fb0fe0b-puppetnet`; Codefreigabe über Pull Request nach
+`main`. Der auf `main` aktivierte tägliche Ingestion-Workflow publiziert neue
+Daten anschließend direkt auf `main` mit `GH_PAT`, ohne zusätzliche Daten-PRs.
+
+## Release & Zero-Budget-Betrieb
+
+Aktueller Drei-Phasen-Vertrag und Betriebsgrenzen: [Ressourcenmodus](docs/resource-saving-mode.md).
+
+- **Frontend:** Cloudflare Pages Git Integration, Repository-Root als Build-Root,
+  Build `npm run ci:pages`, Ausgabeverzeichnis `apps/web/out`, Node.js 22.
+- **SEO:** `SITE_ORIGIN=https://puppetnet-web.pages.dev` (oder eigene Domain).
+  Auch direktes `next build` erzeugt Sitemap, Robots, OG-Bilder und
+  `data/seo-metadata.json`; Entitäts-HTML enthält Canonicals, OG und Schema.org.
+  Ungültige Origins brechen den Build ab, statt falsche URLs auszuliefern.
+- **Design:** gemeinsame Tokens in `apps/web/src/styles/globals.css`, gespeist aus
+  `palette.json` (auch für WebGL/Leaflet); der Build
+  kopiert sie für Legacy nach `/styles/globals.css`. Keine externen Fonts/Ad-Skripte.
+- **Betrieb:** Pages liefert statische JSONs. Der optionale authentifizierte
+  Zero-KV-Worker stößt nur Recherche an. GitHub Actions verarbeitet lokal
+  (Regex → spaCy), Cloud-Modell standardmäßig aus; höchstens zwei reservierte
+  Pipeline-Läufe pro UTC-Tag, fünf Minuten Job-Limit. Daten werden nach der automatischen
+  Freigabepolicy exportiert und durch einen Pages-Neubuild veröffentlicht.
+- **Kostenkontrolle:** Free-Tier-orientiert, keine Nullkosten-Garantie. Provider-
+  Kontingente und Abrechnung beobachten; Cloud-Fallback und optionale Dienste
+  nur bewusst aktivieren. Operator-Token nie als `NEXT_PUBLIC_*` veröffentlichen.
+- **Release-Checkliste:** [docs/release-checklist.md](docs/release-checklist.md).
+  Architektur und Einrichtung: [Zero-KV](docs/zero-kv-worker.md),
+  [Ingestion](docs/daily-ingestion.md).
+
+### Aktuelle Secrets und harte Grenzen
+
+- GitHub Actions: `NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD`; `GEMINI_API_KEY`
+  nur bei bewusst aktiviertem Cloud-Fallback. Keine alten Secret-Aliasse.
+- Worker: `GH_PAT` **separat als Worker-Secret hinterlegen** (GitHub-Actions-Secrets
+  werden nicht automatisch nach Cloudflare übertragen). Dazu ein unabhängiges
+  `SEARCH_AUTH_TOKEN` (>=32 zufällige Zeichen) für berechtigte Betreiber.
+  Keine alten Secret-Aliasse; niemals `GH_PAT` im Browser nutzen.
+- 5 Minuten Job-Limit, 90 Sekunden Ingestion intern / 105 Sekunden Prozesslimit,
+  45 Sekunden Export. Kalter Modell-Download kann trotzdem zum Timeout führen.
+- Keine NLP-/Modell-Inferenz im Browser. Parsing, Filter und Rendering bleiben
+  Browserarbeit; **0 % CPU** für eine interaktive Website ist nicht möglich.
+  Tabellenmodus und ausgeschaltete Physik reduzieren die Standardlast. Legacy
+  nutzt für neue Einstellungen ein nicht animiertes Grid statt Force-Layout.
+- **95 % lokale NER** ist kein gemessener Qualitätswert. NER läuft vollständig
+  lokal; nur ausgewählte unklare Relationen dürfen optional in die Cloud.
+- **~100 Actions-Minuten/Monat** ist ein Planungsziel, kein hartes Monatsbudget.
+  31 tägliche Jobs à maximal 5 Minuten können bereits 155 Minuten benötigen;
+  manuelle Jobs und CI kommen hinzu. Es gelten maximal 2 Reservierungen/UTC-Tag.
+  Bei aktivierter neuer Pipeline werden redundante tägliche Legacy-Tests und
+  Keep-alive-Jobs übersprungen. Geplante Ausführungen sind nicht minutengenau.
+- Statische Pages-Dateien bleiben ohne laufende Pipeline abrufbar, jedoch ohne
+  24/7-SLA. Abrechnung/Free-Tier-Limits beim jeweiligen Anbieter überwachen.
+
+Datencommits des produktiven Workflows erfolgen direkt nach `main` mit dem
+Repository-Secret `GH_PAT`. Checkout und alle Quota-/Daten-Pushes verwenden dieses
+Token. Kein Force-Push und keine Umgehung von Branch-Schutzregeln. Cloudflare Pages
+muss `main` als Produktionsbranch beobachten und `apps/web/*` im Build-Watch haben.
+
+**Auto-Approval:** Confidence >=0.75 ODER exakte, konfigurierte RSS-Provenienz in
+`VERIFIED_RSS_FEEDS` genügt für `public_released: true` im Export. `private`,
+`noindex`, `release_blocked`, Negation, Hedging und berechnete Verdachtsbeziehungen
+bleiben ausgeschlossen; `public_released: false` ist eine explizite Rücknahme.
+Ein hoher Extraktionsscore beweist nicht die Wahrheit einer Aussage. Wer diese
+Policy aktiviert, akzeptiert automatische öffentliche Publikation, inklusive
+möglicher Extraktionsfehler. Verifizierte Feeds nur bewusst einzeln zulassen.
 
 | Component | Source | Build / execution owner |
 | --- | --- | --- |
 | Next.js 15 static frontend | `apps/web` | Cloudflare Pages Git Integration |
-| Relay and read-only graph API | `apps/worker` | Cloudflare Workers Builds |
-| Python tests, GLiNER NLP, Neo4j ingestion | `packages/pipeline` | GitHub Actions standard Linux runner |
+| Authenticated search relay (Zero-KV) | `apps/worker` | Cloudflare Workers Builds |
+| Python tests, local spaCy NLP, optional Neo4j ingestion | `packages/pipeline` | GitHub Actions standard Linux runner |
 
 The new `/dashboard/` frontend uses Sigma.js 4, Graphology, an off-thread ForceAtlas2
-layout and opt-in Leaflet/OpenStreetMap. The previous analyst console is retained at
+layout and opt-in Leaflet/OpenStreetMap. The dashboard opens in the table view;
+WebGL is loaded only when selected and physics is never started automatically. The previous analyst console is retained at
 `/legacy/index.html`. See [dashboard guide](docs/webgl-dashboard.md). `output: 'export'` generates
 `apps/web/out` during `next build` (Next 15 does not use the old `next export` command).
 There are no Pages Functions, SSR routes or hosted model APIs.
@@ -25,10 +95,10 @@ npm ci
 npm run dev
 npm run ci:pages                  # console regression gate + static Next build
 npm run ci:worker                 # Worker regression gate, no deployment
-npm run provision:worker -- --dry-run   # Cloudflare KV/secrets/deploy plan (no account calls)
+npm run provision:worker -- --dry-run   # Cloudflare Zero-KV/secrets/deploy plan (no account calls)
 npm run audit                     # static, offline repository consistency ledger
 npm run emit:entities -- --input graph-export.json   # publish profile data (or --input -)
-npm run emit:seo -- --origin https://<your-pages-origin>   # sitemaps + Sitemap: lines
+SITE_ORIGIN=https://<your-pages-origin> npm run emit:seo   # sitemaps + Sitemap: lines
 npm run test:scaffold             # monorepo/build configuration contracts
 npm run test:dashboard            # filters, LoD, evidence, 120k-element fixture
 npm run test:seo                  # publication rules, JSON-LD, metadata, sitemap
@@ -104,3 +174,12 @@ cached between runs and the stage is capped per run.
 Older docs and workflows under `docs/legacy-*` describe the v1 architecture only.
 The historical static audit is not a v2 certification. Current runtime regressions,
 Python CI and the Cloudflare build gates are the active checks.
+
+## Bounded German daily publication (opt-in)
+
+The new local-first path uses `NLP_BACKEND=token_saver`, `de_core_news_sm` and an
+optional, explicitly budgeted Gemini fallback. `graph_latest.json` is shared by
+the dashboard, legacy console, profiles and sitemap. See
+[setup, review rules and deployment limitations](docs/daily-ingestion.md) before
+enabling `ENABLE_DAILY_STATIC`. The new workflow has a five-minute timeout and
+publishes changed data directly to production `main` using `GH_PAT`.

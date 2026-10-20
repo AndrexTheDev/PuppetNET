@@ -1,6 +1,6 @@
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
@@ -27,8 +27,10 @@ import {
   renderUrlset,
 } from '../scripts/generate-sitemap.mjs';
 
-const DATA = path.join('apps', 'web', 'public', 'data');
-const ORIGIN = 'https://puppetnet-console.pages.dev';
+const DATA = mkdtempSync(path.join(tmpdir(), 'puppetnet-seo-fixture-'));
+writeFileSync(path.join(DATA, 'entities.sample.json'), readFileSync('apps/web/public/data/entities.sample.json'));
+after(() => rmSync(DATA, { recursive: true, force: true }));
+const ORIGIN = 'https://puppetnet-web.pages.dev';
 
 function sample() {
   return loadEntityDataset(DATA);
@@ -173,9 +175,9 @@ test('siteOrigin ignores invalid deployment values instead of emitting them', ()
     process.env.NEXT_PUBLIC_SITE_ORIGIN = 'https://example.org/';
     assert.equal(siteOrigin(), 'https://example.org');
     process.env.NEXT_PUBLIC_SITE_ORIGIN = 'https://example.org/path';
-    assert.equal(siteOrigin(), 'https://puppetnet-console.pages.dev');
+    assert.equal(siteOrigin(), 'https://puppetnet-web.pages.dev');
     process.env.NEXT_PUBLIC_SITE_ORIGIN = 'javascript:alert(1)';
-    assert.equal(siteOrigin(), 'https://puppetnet-console.pages.dev');
+    assert.equal(siteOrigin(), 'https://puppetnet-web.pages.dev');
   } finally {
     if (previous === undefined) delete process.env.NEXT_PUBLIC_SITE_ORIGIN;
     else process.env.NEXT_PUBLIC_SITE_ORIGIN = previous;
@@ -246,7 +248,7 @@ test('a small site is one sitemap and a large one is an index plus children', ()
   });
   assert.equal(small.files.length, 1);
   assert.equal(small.files[0].name, 'sitemap.xml');
-  assert.match(small.files[0].xml, /<loc>https:\/\/puppetnet-console\.pages\.dev\/entity\/a-1\/<\/loc>/);
+  assert.match(small.files[0].xml, /<loc>https:\/\/puppetnet-web\.pages\.dev\/entity\/a-1\/<\/loc>/);
 
   const large = renderSitemaps({
     origin: ORIGIN,
@@ -258,7 +260,7 @@ test('a small site is one sitemap and a large one is an index plus children', ()
   assert.match(large.files[0].xml, /<sitemapindex/);
   assert.equal(large.files.length, 4);
   assert.deepEqual(large.files.slice(1).map((file: { name: string }) => file.name), ['sitemap-1.xml', 'sitemap-2.xml', 'sitemap-3.xml']);
-  assert.match(large.files[1].xml, /<loc>https:\/\/puppetnet-console\.pages\.dev\/entity\/e-0\/<\/loc>/);
+  assert.match(large.files[1].xml, /<loc>https:\/\/puppetnet-web\.pages\.dev\/entity\/e-0\/<\/loc>/);
   for (const file of large.files) assert.equal(file.xml.includes('&'), false, 'no unescaped ampersand');
 });
 

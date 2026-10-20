@@ -64,6 +64,10 @@ class RssAdapter(SourceAdapter):
 
     # ------------------------------------------------------------------ #
     def _feed_urls(self) -> Iterable[str]:
+        # A German-only bounded run must not silently prepend the English registry feeds.
+        if (getattr(self.settings, "nlp_backend", "") == "token_saver"
+                and self.spec.id == "news_world" and self.settings.rss_feeds):
+            return list(dict.fromkeys(self.settings.rss_feeds))
         urls: list[str] = []
         for candidate in list(self.option("feeds", []) or []):
             if isinstance(candidate, dict):

@@ -1,4 +1,5 @@
 'use client';
+import palette from '../../src/styles/palette.json';
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import Sigma from 'sigma';
 import { MultiDirectedGraph } from 'graphology';
@@ -64,8 +65,8 @@ const NetworkGraph = forwardRef<NetworkHandle, Props>(function NetworkGraph({ vi
       renderer = new Sigma(new MultiDirectedGraph(), host.current, {
         settings: { hideEdgesOnMove: true, hideLabelsOnMove: true, labelDensity: .35, labelRenderedSizeThreshold: 8, minCameraRatio: .015, maxCameraRatio: 8, enableNodeDrag: false, allowInvalidContainer: true, itemSizesReference: 'screen' },
         styles: {
-          nodes: { x: { attribute: 'x' }, y: { attribute: 'y' }, size: { whenState: 'isHovered', then: 7, else: { attribute: 'size', defaultValue: 3 } }, color: { attribute: 'color', defaultValue: '#60dfd0' }, label: { attribute: 'label' }, labelColor: '#dbe7f7', labelSize: 12, labelFont: 'sans-serif' },
-          edges: { color: { attribute: 'color', defaultValue: '#243b50' }, size: { attribute: 'size', defaultValue: .5 } },
+          nodes: { x: { attribute: 'x' }, y: { attribute: 'y' }, size: { whenState: 'isHovered', then: 7, else: { attribute: 'size', defaultValue: 3 } }, color: { attribute: 'color', defaultValue: palette.green }, label: { attribute: 'label' }, labelColor: palette.white, labelSize: 12, labelFont: 'sans-serif' },
+          edges: { color: { attribute: 'color', defaultValue: palette['forest-700'] }, size: { attribute: 'size', defaultValue: .5 } },
         },
       });
       sigma.current = renderer;
@@ -97,7 +98,7 @@ const NetworkGraph = forwardRef<NetworkHandle, Props>(function NetworkGraph({ vi
     if (focused && graph.hasNode(focused)) {
       const attributes = graph.getNodeAttributes(focused);
       highlight.current = { id: focused, size: attributes.size, color: attributes.color };
-      graph.mergeNodeAttributes(focused, { size: Number(attributes.size ?? 3) * 2.4, color: '#ffffff' });
+      graph.mergeNodeAttributes(focused, { size: Number(attributes.size ?? 3) * 2.4, color: palette.white });
     }
     renderer.refresh();
   }, [focused]);
@@ -121,7 +122,7 @@ const NetworkGraph = forwardRef<NetworkHandle, Props>(function NetworkGraph({ vi
       }
       for (let i = 0; i < view.edges.length; i += 4000) {
         if (cancelled) return;
-        for (const e of view.edges.slice(i, i + 4000)) graph.addDirectedEdgeWithKey(e.id, e.source, e.target, { size: .25 + e.weight * .5, color: e.type === 'EVIDENCED_BY' ? '#7769c3' : '#243b50', label: e.type });
+        for (const e of view.edges.slice(i, i + 4000)) graph.addDirectedEdgeWithKey(e.id, e.source, e.target, { size: .25 + e.weight * .5, color: e.type === 'EVIDENCED_BY' ? palette['gold-muted'] : palette['forest-700'], label: e.type });
         await nextFrame();
       }
       if (cancelled || !sigma.current) return;

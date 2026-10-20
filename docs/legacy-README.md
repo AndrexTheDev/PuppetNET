@@ -103,7 +103,7 @@ forwarder with per-isolate rate limiting. See [docs/edge-relay.md](docs/edge-rel
 ### 4. Point it at Neo4j AuraDB
 
 Create a free AuraDB instance, then set `NEO4J_URI` (keep the `+s` scheme),
-`NEO4J_USERNAME`, `NEO4J_PASSWORD`. Constraints, indexes and fulltext indexes are
+`NEO4J_USER`, `NEO4J_PASSWORD`. Constraints, indexes and fulltext indexes are
 created on boot (`NEO4J_ENSURE_SCHEMA=true`), and the writer respects the free tier's
 200k node ceiling (`AURA_NODE_CAP`).
 
@@ -112,7 +112,7 @@ created on boot (`NEO4J_ENSURE_SCHEMA=true`), and the writer respects the free t
 Add these repository secrets and the cron workflow does the rest:
 
 ```
-NEO4J_URI  NEO4J_USERNAME  NEO4J_PASSWORD          (required to persist)
+NEO4J_URI  NEO4J_USER  NEO4J_PASSWORD          (required to persist)
 PROXY_WORKER_URL  PROXY_AUTH_TOKEN                  (required for edge relay)
 OPENCORPORATES_API_TOKEN  COMPANIES_HOUSE_API_KEY   (optional)
 WIKIDATA_USER_AGENT  ICIJ_QUERY_TERMS  RSS_FEEDS    (optional)

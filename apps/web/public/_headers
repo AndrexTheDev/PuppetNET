@@ -107,3 +107,9 @@
 
 /legacy/modals.js
   Cache-Control: public, max-age=3600, must-revalidate
+
+/media/*
+  Cache-Control: public, max-age=86400, must-revalidate
+
+/data/*
+  Cache-Control: public, max-age=60, s-maxage=60, must-revalidate

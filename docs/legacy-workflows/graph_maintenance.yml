@@ -13,7 +13,7 @@
 #      failed centrality pass should not silence the bridge alerts.
 #
 #  Required repository secrets:
-#      NEO4J_URI, NEO4J_USERNAME, NEO4J_PASSWORD
+#      NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD
 #  Optional (alerting is skipped entirely without them):
 #      TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_IDS
 #  Optional tuning:
@@ -192,7 +192,7 @@ jobs:
         env:
           MAINTENANCE_ARGS: ${{ steps.args.outputs.args }}
           NEO4J_URI: ${{ secrets.NEO4J_URI }}
-          NEO4J_USERNAME: ${{ secrets.NEO4J_USERNAME }}
+          NEO4J_USER: ${{ secrets.NEO4J_USER }}
           NEO4J_PASSWORD: ${{ secrets.NEO4J_PASSWORD }}
           NEO4J_DATABASE: ${{ secrets.NEO4J_DATABASE }}
           LOG_JSON: "true"

@@ -346,7 +346,7 @@ npx wrangler kv namespace create PUPPETNET_RESULTS
 npx wrangler secret put PROXY_AUTH_TOKEN
 npx wrangler secret put STATUS_TOKEN          # or reuse GRAPH_API_TOKEN
 npx wrangler secret put NEO4J_URI
-npx wrangler secret put NEO4J_USERNAME
+npx wrangler secret put NEO4J_USER
 npx wrangler secret put NEO4J_PASSWORD
 npx wrangler secret put GRAPH_API_TOKEN
 # optional, for the Workers-requests card:

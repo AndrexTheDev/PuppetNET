@@ -549,8 +549,8 @@ class Settings:
 
     def validate(self) -> None:
         problems: list[str] = []
-        if self.nlp_backend not in {"spacy", "gliner"}:
-            problems.append("NLP_BACKEND must be spacy or gliner")
+        if self.nlp_backend not in {"spacy", "gliner", "token_saver"}:
+            problems.append("NLP_BACKEND must be spacy, gliner or token_saver")
         if not 0 < self.gliner_threshold <= 1:
             problems.append("GLINER_THRESHOLD must be in (0, 1]")
         if not self.gliner_model.strip():
@@ -712,10 +712,8 @@ def load_settings(env: dict[str, str] | None = None, *, validate: bool = True) -
 
         settings = Settings(
             neo4j_uri=_env_str("NEO4J_URI", "neo4j+s://localhost:7687"),
-            # NEO4J_USER is accepted as an alias: the Aura console and most
-            # driver docs use the two names interchangeably, and guessing wrong
-            # surfaces as an opaque authentication failure.
-            neo4j_username=_env_str("NEO4J_USERNAME", _env_str("NEO4J_USER", "neo4j")),
+            # NEO4J_USER is the only supported environment variable.
+            neo4j_username=_env_str("NEO4J_USER", "neo4j"),
             neo4j_password=_env_str("NEO4J_PASSWORD", ""),
             neo4j_database=_env_str("NEO4J_DATABASE", "neo4j"),
             neo4j_max_connection_pool_size=_env_int("NEO4J_MAX_CONNECTION_POOL_SIZE", 8),

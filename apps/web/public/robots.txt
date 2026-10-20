@@ -16,7 +16,7 @@
 #
 #  A `Sitemap:` line has to be absolute, and this repository is committed long
 #  before anybody knows which domain will serve it. `npm run emit:seo --
-#  --origin https://puppetnet-console.pages.dev` (or `SITE_ORIGIN` in the Pages
+#  --origin https://puppetnet-web.pages.dev` (or `SITE_ORIGIN` in the Pages
 #  build environment) rewrites that line here and writes a `sitemap.xml` that
 #  lists the landing page, the dashboard and every published profile;
 #  `next build` copies it into `out/`. The committed file therefore never
@@ -29,3 +29,5 @@
 
 User-agent: *
 Allow: /
+
+Sitemap: https://puppetnet-web.pages.dev/sitemap.xml

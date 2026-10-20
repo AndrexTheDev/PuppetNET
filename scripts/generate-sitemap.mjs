@@ -3,7 +3,7 @@
  * generate-sitemap.mjs — the sitemap for the static export, including the
  * public entity profiles.
  *
- *   npm run emit:sitemap -- --origin https://puppetnet-console.pages.dev
+ *   npm run emit:sitemap -- --origin https://puppetnet-web.pages.dev
  *   SITE_ORIGIN=https://console.example node scripts/generate-sitemap.mjs
  *
  * The sitemap is generated, never committed: every `<loc>` must be absolute and
@@ -39,6 +39,7 @@ export function escapeXml(value) {
 export function normalizeOrigin(raw) {
   const url = new URL(String(raw));
   if (!/^https?:$/.test(url.protocol)) throw new Error('origin must be http(s)');
+  if (url.username || url.password) throw new Error('origin must not contain credentials');
   if (url.pathname !== '/' || url.search || url.hash) throw new Error('origin must not have a path, query or fragment');
   return url.origin;
 }
@@ -149,7 +150,7 @@ export function renderSitemaps({ origin, entries, lastmod, limit = SITEMAP_LIMIT
 /** Pipeline publication first, committed demo second. */
 export function loadEntityExport(root = ROOT, explicit) {
   const directory = path.join(root, 'apps', 'web', 'public', 'data');
-  const candidates = explicit ? [explicit] : [path.join(directory, 'entities.json'), path.join(directory, 'entities.sample.json')];
+  const candidates = explicit ? [explicit] : [path.join(directory, 'graph_latest.json'), path.join(directory, 'entities.json'), path.join(directory, 'entities.sample.json')];
   for (const file of candidates) {
     if (!existsSync(file)) continue;
     const raw = JSON.parse(readFileSync(file, 'utf8'));
@@ -157,7 +158,7 @@ export function loadEntityExport(root = ROOT, explicit) {
       file,
       demo: raw.demo === true || file.endsWith('.sample.json'),
       generatedAt: isoDate(raw.generatedAt ?? raw.generated_at, new Date().toISOString().slice(0, 10)),
-      entities: Array.isArray(raw.entities) ? raw.entities : [],
+      entities: Array.isArray(raw.entities) ? raw.entities : Array.isArray(raw.nodes) ? raw.nodes : [],
     };
   }
   return { file: '', demo: true, generatedAt: new Date().toISOString().slice(0, 10), entities: [] };

@@ -16,7 +16,7 @@
  *   2. Sets the Worker secrets. PROXY_AUTH_TOKEN / GRAPH_API_TOKEN /
  *      STATUS_TOKEN are generated with 32 random bytes (64 hex chars) when they
  *      do not exist yet; the rest come from the environment:
- *        NEO4J_URI, NEO4J_USERNAME, NEO4J_PASSWORD,
+ *        NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD,
  *        CF_API_TOKEN (Account Analytics: Read), CF_ACCOUNT_ID,
  *        TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID (optional).
  *      Values are passed to `wrangler secret put` on stdin, never on the command
@@ -89,7 +89,7 @@ function parseArgs() {
   --help                    this text
 
 Required environment for a real run: NEO4J_URI, NEO4J_PASSWORD,
-CF_API_TOKEN, CF_ACCOUNT_ID. Optional: NEO4J_USERNAME, TELEGRAM_BOT_TOKEN,
+CF_API_TOKEN, CF_ACCOUNT_ID. Optional: NEO4J_USER, TELEGRAM_BOT_TOKEN,
 TELEGRAM_CHAT_ID. Generated and existing values are never printed.`);
   process.exit(0);
 }
@@ -111,7 +111,7 @@ const REQUIRED_ENV = [
   { name: 'CF_API_TOKEN', hint: 'API token with Account Analytics: Read', required: !ALLOW_MISSING_ANALYTICS },
 ];
 const OPTIONAL_ENV = [
-  { name: 'NEO4J_USERNAME', fallback: 'neo4j' },
+  { name: 'NEO4J_USER', fallback: 'neo4j' },
   { name: 'TELEGRAM_BOT_TOKEN' },
   { name: 'TELEGRAM_CHAT_ID' },
 ];
@@ -600,7 +600,7 @@ function neo4jBase(uri) {
 async function neo4jQuery(statement, values = null) {
   const pick = (name) => (values && values.get(name)) || process.env[name] || '';
   const uri = pick('NEO4J_URI');
-  const user = pick('NEO4J_USERNAME') || 'neo4j';
+  const user = pick('NEO4J_USER') || 'neo4j';
   const password = pick('NEO4J_PASSWORD');
   const database = process.env.NEO4J_DATABASE || 'neo4j';
   const base = neo4jBase(uri);
@@ -668,8 +668,8 @@ function writeDevVars(values) {
 
 async function testCrons(values) {
   step('Local scheduled() smoke');
-  if (!values.has('NEO4J_URI') || !values.has('NEO4J_PASSWORD') || !values.has('NEO4J_USERNAME')) {
-    warn('the local cron test needs NEO4J_URI / NEO4J_USERNAME / NEO4J_PASSWORD exported in this shell — skipped');
+  if (!values.has('NEO4J_URI') || !values.has('NEO4J_PASSWORD') || !values.has('NEO4J_USER')) {
+    warn('the local cron test needs NEO4J_URI / NEO4J_USER / NEO4J_PASSWORD exported in this shell — skipped');
     warn('manual: export them, then `npx wrangler dev --test-scheduled` and curl the two /__scheduled URLs');
     return;
   }
@@ -732,6 +732,15 @@ function assertAuthenticated() {
 }
 
 async function main() {
+  if (/main\s*=\s*"src\/index\.ts"/.test(readFileSync(CONFIG_PATH, 'utf8'))) {
+    log('KV-free configuration detected. Legacy KV provisioning is disabled.');
+    if (DRY) {
+      log('No account calls, no writes or deployments. Use scripts/provision-search-worker.mjs.');
+      log('Required secrets: GH_PAT and SEARCH_AUTH_TOKEN. No KV namespaces or database secrets.');
+      return;
+    }
+    fatal('Use scripts/provision-search-worker.mjs for the active zero-KV Worker.');
+  }
   log('PuppetNET Worker provisioning');
   log(`config: ${CONFIG_PATH}${DRY ? '  [dry run]' : ''}`);
   if (DRY) log('No account calls, no writes, no deployment are performed in this mode.');

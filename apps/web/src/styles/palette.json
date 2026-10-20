@@ -1,0 +1,17 @@
+{
+  "black": "#080d09",
+  "forest-950": "#0b100d",
+  "forest-900": "#101911",
+  "forest-850": "#141e17",
+  "forest-800": "#1b291e",
+  "forest-700": "#2c3c2e",
+  "forest-600": "#436b46",
+  "green": "#8cdb9e",
+  "green-muted": "#76bb83",
+  "gold": "#e5c367",
+  "gold-muted": "#857137",
+  "white": "#edf1e8",
+  "muted": "#b0bbae",
+  "muted-dark": "#809578",
+  "danger": "#e89b92"
+}

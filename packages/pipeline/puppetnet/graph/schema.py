@@ -167,6 +167,7 @@ UNWIND $rows AS row
 MERGE (d:Document {doc_id: row.doc_id})
 ON CREATE SET
     d.source_id = row.source_id,
+    d.feed_url = row.feed_url,
     d.url = row.url,
     d.title = row.title,
     d.author = row.author,
@@ -183,6 +184,7 @@ ON CREATE SET
     d.ingest_count = 1
 ON MATCH SET
     d.title = CASE WHEN size(coalesce(row.title,'')) > size(coalesce(d.title,'')) THEN row.title ELSE d.title END,
+    d.feed_url = CASE WHEN coalesce(row.feed_url,'') <> '' THEN row.feed_url ELSE d.feed_url END,
     d.word_count = row.word_count,
     d.content_hash = row.content_hash,
     d.published_at = coalesce(d.published_at, row.published_at),

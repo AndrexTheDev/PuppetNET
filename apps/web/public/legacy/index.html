@@ -35,6 +35,7 @@
 <meta name="twitter:image" content="assets/og-cover.jpg">
 <meta name="twitter:image:alt" content="PuppetNET — a dark graph of glowing nodes and the bridge ties between clusters.">
 
+<link rel="icon" href="/media/logo-icon.webp" type="image/webp">
 <title>PuppetNET · OSINT Graph Visualizer &amp; Network Analysis Console</title>
 
 <!-- Structured data. A type="application/ld+json" block is a data block, never
@@ -109,7 +110,6 @@
 }
 </script>
 
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2305070d'/%3E%3Ccircle cx='16' cy='9' r='3.2' fill='%2322d3ee'/%3E%3Ccircle cx='8' cy='23' r='2.8' fill='%2310b981'/%3E%3Ccircle cx='24' cy='23' r='2.8' fill='%23a855f7'/%3E%3Cpath d='M16 12.2 9 20.6M16 12.2l7 8.4M10.8 23h10.4' stroke='%2322d3ee' stroke-width='1.3' fill='none' opacity='.75'/%3E%3C/svg%3E">
 
 <!-- Vendored, self-hosted: no CDN, no third-party request, no webfont fetch.
      An OSINT console that loads assets from someone else's origin leaks its
@@ -137,15 +137,7 @@
   <!-- ---------------------------------------------------------------- header -->
   <header class="app-header">
     <div class="brand">
-      <span class="brand-mark" aria-hidden="true">
-        <svg viewBox="0 0 32 32" width="26" height="26">
-          <circle cx="16" cy="8" r="3.4" fill="currentColor" opacity=".95"/>
-          <circle cx="7" cy="24" r="3" fill="#10b981"/>
-          <circle cx="25" cy="24" r="3" fill="#a855f7"/>
-          <path d="M16 11.4 8.4 21.4M16 11.4l7.6 10M10 24h12" stroke="currentColor"
-                stroke-width="1.4" fill="none" opacity=".7"/>
-        </svg>
-      </span>
+      <img class="brand-art" src="/media/logo.webp" width="46" height="46" alt="" />
       <!-- The document's single h1. It is the wordmark rather than a hidden
            string of keywords: crawlers and screen readers get the same heading a
            person sees, and the outline stays h1 → h2 (panels, dialogs) → h3. -->
@@ -598,10 +590,10 @@
             <label class="field-label" for="cfg-mode">Data source</label>
             <select id="cfg-mode" class="select">
               <option value="demo">Demo dataset (offline, bundled)</option>
-              <option value="worker">Cloudflare Worker <code>/graph</code> API</option>
+              <option value="worker">Historical Graph API (not the search relay)</option>
               <option value="neo4j">Neo4j HTTP API (direct — local dev only)</option>
             </select>
-            <p class="field-help" id="cfg-mode-help">The demo dataset is a synthetic 68-node offshore network. Nothing leaves the browser.</p>
+            <p class="field-help" id="cfg-mode-help">CDN mode: loads the reviewed public snapshot first. If unavailable, an explicitly fictional demo is shown. The new search relay is not a Graph API.</p>
           </div>
           <div class="field" id="row-base" hidden>
             <label class="field-label" for="cfg-base">API base URL</label>

@@ -151,12 +151,12 @@
     hideCalculated: false,
     hideWeak: false,
     sizeMetric: "betweenness",
-    layout: "fcose",
+    layout: "grid",
     edgeStyle: "bezier",
     showLabels: true,
     colourClusters: false,
     glow: true,
-    animateLayout: true,
+    animateLayout: false,
     repulsion: 1,
     pageSize: 50,
     requestTimeout: 15000,
@@ -467,12 +467,12 @@
 
     render: {
       sizeMetric: "betweenness",
-      layout: "fcose",
+      layout: "grid",
       edgeStyle: "bezier",
       showLabels: true,
       colourClusters: false,
       glow: true,
-      animate: true,
+      animate: false,
       repulsion: 1,
     },
 
@@ -993,8 +993,10 @@
     return { nodes: nodes, edges: edges, docs: docs, sources: sources, byCluster: byCluster };
   }
 
+  let publishedDataset = null;
   let demoCache = null;
   function demoDataset() {
+    if (publishedDataset) return publishedDataset;
     if (!demoCache) demoCache = buildDemoDataset();
     return demoCache;
   }
@@ -1086,6 +1088,56 @@
       return localTable(data.nodes, data.edges, data.docs, opts || {});
     },
   };
+
+  // Same approved graph_latest.json as the modern dashboard and static profiles.
+  async function loadPublishedDataset() {
+    const controller = new AbortController();
+    const timer = setTimeout(function () { controller.abort(); }, 5000);
+    try {
+      const response = await fetch("/data/graph_latest.json", { signal: controller.signal, credentials: "omit" });
+      if (response.status === 404) return;
+      if (!response.ok) throw new Error("Static graph HTTP " + response.status);
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let text = "", bytes = 0;
+      try {
+        while (true) {
+          const chunk = await reader.read();
+          if (chunk.done) break;
+          bytes += chunk.value.byteLength;
+          if (bytes > 64 * 1024 * 1024) throw new Error("Static graph exceeds 64 MiB");
+          text += decoder.decode(chunk.value, { stream: true });
+        }
+        text += decoder.decode();
+      } catch (error) { await reader.cancel(); throw error; }
+      finally { reader.releaseLock(); }
+      const raw = JSON.parse(text);
+      if (!Array.isArray(raw.nodes) || !Array.isArray(raw.edges) || raw.nodes.length > 5000 || raw.edges.length > 20000) throw new Error("Invalid static graph");
+      const nodes = raw.nodes.map(normalizeNode).filter(Boolean);
+      const keys = new Set(nodes.map(function (node) { return node.key; }));
+      const edges = raw.edges.map(normalizeEdge).filter(function (edge) { return edge && keys.has(edge.source) && keys.has(edge.target); });
+      publishedDataset = { nodes: nodes, edges: edges, docs: (raw.evidence || []).map(normalizeDoc).filter(Boolean), demo: raw.demo === true };
+    } catch (error) {
+      console.warn("[static graph] unavailable; using explicitly labelled demo", error.message);
+    } finally { clearTimeout(timer); }
+  }
+
+  function staticProvider() {
+    const provider = { name: "static", label: publishedDataset.demo ? "published demo" : "published snapshot", isLive: false };
+    Object.keys(DemoProvider).forEach(function (key) {
+      if (typeof DemoProvider[key] !== "function") return;
+      provider[key] = async function () {
+        const result = await DemoProvider[key].apply(DemoProvider, arguments);
+        result.source = "static";
+        if (key === "health") {
+          result.note = publishedDataset.demo ? "Synthetic published demo." : "Reviewed public snapshot, not a live database connection.";
+          result.graph.engine = "static snapshot";
+        }
+        return result;
+      };
+    });
+    return provider;
+  }
 
   /* ------------------------------------------------------------- network ---- */
 
@@ -1424,6 +1476,7 @@
 
   /** Resolve the provider the current configuration asks for. */
   function resolveProvider() {
+    if (publishedDataset) return staticProvider();
     if (config.mode === "worker") return createWorkerProvider();
     if (config.mode === "neo4j") return createNeo4jProvider();
     return DemoProvider;
@@ -1445,7 +1498,7 @@
     const labels = Array.isArray(raw.labels) ? raw.labels.filter(Boolean).map(String)
       : typeof raw.labels === "string" ? raw.labels.split(",").map(function (s) { return s.trim(); }).filter(Boolean)
       : [];
-    const type = raw.entity_type || pickTypeFromLabels(labels) || "Unknown";
+    const type = raw.entity_type || raw.type || pickTypeFromLabels(labels) || "Unknown";
     const props = raw.props && typeof raw.props === "object" ? raw.props : {};
     ["reg_number", "imo", "mmsi", "tail_number", "transponder", "icao24", "lei", "wikidata_id", "wikipedia_id",
      "address_key", "jurisdiction", "shell_risk", "flag", "nationality"].forEach(function (name) {
@@ -5265,6 +5318,7 @@
 
   async function switchProvider(reload) {
     state.provider = resolveProvider();
+      state.providerName = state.provider.name;
     state.providerName = state.provider.name;
     state.cache.clear();
     setConnection(state.provider.isLive ? "idle" : "demo", state.provider.label, "");
@@ -5281,6 +5335,7 @@
 
   async function probeConnection(verbose) {
     if (!state.provider) state.provider = resolveProvider();
+      state.providerName = state.provider.name;
     setBusy(true, "probing");
     try {
       const health = await state.provider.health();
@@ -5292,7 +5347,7 @@
       if (graph.nodes !== undefined) {
         state.stats.caps = { node_cap: 200000, edge_cap: 400000, nodes: graph.nodes, edges: graph.edges };
       }
-      setConnection(live ? "live" : "demo", state.provider.label,
+      setConnection(live ? "live" : state.provider.name === "static" ? "static" : "demo", state.provider.label,
         (graph.database ? "db " + graph.database + " · " : "") +
         (graph.nodes !== undefined ? graph.nodes + " nodes / " + graph.edges + " edges · " : "") +
         (health && health.note ? health.note : ""));
@@ -5302,7 +5357,9 @@
           ? '<span class="good">✓ reachable</span> — ' + escapeHtml(state.provider.label) +
             (graph.database ? " · database <code>" + escapeHtml(graph.database) + "</code>" : "") +
             (graph.nodes !== undefined ? " · " + escapeHtml(String(graph.nodes)) + " entities" : "")
-          : '<span class="warn">▲ demo mode</span> — ' + escapeHtml(health && health.note || "synthetic dataset loaded");
+          : state.provider.name === "static"
+            ? '<span class="good">✓ published snapshot</span> — ' + escapeHtml(health && health.note || "")
+            : '<span class="warn">▲ demo mode</span> — ' + escapeHtml(health && health.note || "synthetic dataset loaded");
         toast("Connection OK", state.provider.label + (graph.nodes !== undefined ? " · " + graph.nodes + " entities" : ""), "success");
       }
       return true;
@@ -5316,6 +5373,7 @@
         toast("Falling back to demo data", "The configured API is unreachable, so the console loaded the bundled synthetic dataset.", "warn", 7000);
         config.mode = "demo";
         state.provider = resolveProvider();
+      state.providerName = state.provider.name;
         setConnection("demo", state.provider.label, "fallback: configured API unreachable");
         await state.provider.health().catch(function () { return null; });
       }
@@ -5548,6 +5606,7 @@
       state.table.pageSize = clamp(toNumber(config.pageSize, 50), 10, 500);
       state.table.sort = "score-desc";
       applyConfigToUi();
+      await loadPublishedDataset();
 
       if (typeof cytoscape !== "function") {
         fatal("Graph engine failed to load", "vendor/cytoscape.min.js is missing. The Data and Handshake views still work from the API.");
@@ -5555,6 +5614,7 @@
         $("#app").classList.add("is-ready");
         wireSearch(); bindControls(); bindKeyboard(); bindModals(); startClock();
         state.provider = resolveProvider();
+      state.providerName = state.provider.name;
         await probeConnection(false);
         return;
       }
@@ -5574,6 +5634,7 @@
 
       bootStatus.textContent = "connecting to data source…";
       state.provider = resolveProvider();
+      state.providerName = state.provider.name;
       await probeConnection(false);
 
       $("#app").hidden = false;

@@ -584,7 +584,7 @@ wrangler secret put COMPANIES_HOUSE_API_KEY
 # The graph read API (the analyst console). These stay on the Worker: the browser
 # is given GRAPH_API_TOKEN and never sees the database credentials.
 wrangler secret put NEO4J_URI             # neo4j+s://<instance>.databases.neo4j.io:7687
-wrangler secret put NEO4J_USERNAME
+wrangler secret put NEO4J_USER
 wrangler secret put NEO4J_PASSWORD
 wrangler secret put GRAPH_API_TOKEN       # openssl rand -hex 32 (64 hex chars)
 wrangler secret put STATUS_TOKEN          # openssl rand -hex 32; optional, falls back to the graph/relay token

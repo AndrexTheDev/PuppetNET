@@ -35,7 +35,7 @@ const BASE_ENV = {
   GRAPH_API_TOKEN: "graph-token-xyz789",
   STATUS_TOKEN: "status-token-555",
   NEO4J_URI: NEO4J.uri,
-  NEO4J_USERNAME: NEO4J.user,
+  NEO4J_USER: NEO4J.user,
   NEO4J_PASSWORD: NEO4J.password,
   NEO4J_DATABASE: "neo4j",
   GRAPH_CACHE_TTL_SECONDS: "0",

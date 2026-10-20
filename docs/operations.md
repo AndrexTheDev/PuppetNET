@@ -123,7 +123,7 @@ Safeguards built into the job:
 
 | Secret | Required | Used for |
 | --- | --- | --- |
-| `NEO4J_URI`, `NEO4J_USERNAME`, `NEO4J_PASSWORD` | yes (for graph writes) | AuraDB connection; `NEO4J_USER` is accepted as an alias for the username |
+| `NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD` | yes (for graph writes) | AuraDB connection; `NEO4J_USER` is accepted as an alias for the username |
 | `NEO4J_DATABASE` | no | non-default database name |
 | `PROXY_WORKER_URL`, `PROXY_AUTH_TOKEN` | yes (for edge routing) | relay base URL + bearer token |
 | `OPENCORPORATES_API_TOKEN`, `COMPANIES_HOUSE_API_KEY` | no | higher rate limits on those sources |
@@ -190,7 +190,7 @@ Steps, in order:
 `DRY_RUN` is derived from the credential: `${{ secrets.NEO4J_PASSWORD == '' && 'true' ||
 'false' }}`, so a fork produces a report instead of a red X.
 
-**Secrets** — required: `NEO4J_URI`, `NEO4J_USERNAME`, `NEO4J_PASSWORD`. Optional:
+**Secrets** — required: `NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD`. Optional:
 `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_IDS`, `NEO4J_DATABASE`.
 
 **Artefacts** — `graph-maintenance-${{ github.run_id }}` containing `reports/`,
