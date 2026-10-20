@@ -1,0 +1,72 @@
+{
+  "generated_at": "2026-10-20T15:22:59+00:00",
+  "github_ref": "arena/888ab36c-puppetnet",
+  "github_run_id": "39447784898",
+  "stages": {
+    "export": {
+      "detail": "graph_latest.json + manifest + 2 slices generated",
+      "edges": 1,
+      "nodes": 2,
+      "revision": "56d6c7bd5da3",
+      "status": "ok"
+    },
+    "gemini": {
+      "answer": "1",
+      "attempts": [
+        {
+          "http_status": null,
+          "kind": "ok",
+          "model": "gemini-flash-lite-latest",
+          "ok": true
+        }
+      ],
+      "detail": "'gemini-flash-lite-latest' answered with 110 total tokens",
+      "model_answered": "gemini-flash-lite-latest",
+      "model_configured": "gemini-flash-lite-latest",
+      "over_production_budget": false,
+      "served_models": [],
+      "status": "ok",
+      "usage": {
+        "candidates": 1,
+        "prompt": 109,
+        "total": 110
+      }
+    },
+    "neo4j": {
+      "detail": "authentication rejected (NEO4J_USER/NEO4J_PASSWORD invalid): {neo4j_code: Neo.ClientError.Security.Unauthorized} {message: The client is unauthorized due to authentication failure.} {gql_status: 42NFF} {gql_status_description: error: syntax error or access rule violation - permission/access denied. Access denied, see the security logs for details.}",
+      "status": "fail"
+    },
+    "secrets": {
+      "detail": "all 5 secrets present",
+      "missing": [],
+      "status": "ok"
+    },
+    "spacy": {
+      "detail": "3 entities extracted",
+      "entities": [
+        {
+          "label": "PER",
+          "text": "Olaf Scholz"
+        },
+        {
+          "label": "LOC",
+          "text": "Berlin"
+        },
+        {
+          "label": "MISC",
+          "text": "Acme GmbH."
+        }
+      ],
+      "model_version": "3.8.0",
+      "status": "ok"
+    }
+  },
+  "summary": {
+    "status_export": "OK",
+    "status_gemini_api": "OK",
+    "status_neo4j": "FAIL",
+    "status_secrets": "OK",
+    "status_spacy": "OK"
+  },
+  "workflow": "daily_ingestion.yml / verify-connections (temporary QA dry run)"
+}
