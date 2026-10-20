@@ -37,11 +37,16 @@ def atomic_json(path: Path, data: Any) -> None:
 
 
 def reserve_run(path: Path, event: str, day: str | None = None) -> bool:
-    """Durable quota shared by scheduled/manual runs: TOTAL <=2/day, cron <=1.
+    """Durable quota shared by scheduled/manual runs: TOTAL <=3/day = cron <=2 + manual <=1.
 
-    Caller MUST serialize writers and persist this file even on ingestion failure.
-    This is not a distributed database lock. A missing file starts a new ledger;
-    a corrupt file raises and fails closed instead of silently replenishing quota.
+    Two cron slots (03:00 and 15:00 UTC) guarantee the twice-daily publication;
+    one manual slot keeps a dispatch/research run possible without eating a cron
+    slot. Caller MUST serialize writers and persist this file even on ingestion
+    failure. This is not a distributed database lock. A missing file starts a
+    new ledger; a corrupt file raises and fails closed instead of silently
+    replenishing quota. Ledgers written by the older 2-total/1-cron policy stay
+    valid within these bounds; a legacy same-day ledger with 2 manual entries
+    fails closed for the rest of that UTC day.
     """
     day = day or datetime.now(timezone.utc).date().isoformat()
     state = json.loads(path.read_text()) if path.exists() else {}
@@ -49,12 +54,13 @@ def reserve_run(path: Path, event: str, day: str | None = None) -> bool:
         state = {"day": day, "total": 0, "scheduled": 0, "manual": 0}
     if event not in {"schedule", "repository_dispatch", "workflow_dispatch"}:
         raise ValueError("Unsupported run trigger")
-    if any(type(state.get(k)) is not int or not 0 <= state[k] <= 2 for k in ("total", "scheduled", "manual")):
+    bounds = {"total": 3, "scheduled": 2, "manual": 1}
+    if any(type(state.get(k)) is not int or not 0 <= state[k] <= cap for k, cap in bounds.items()):
         raise ValueError("Invalid daily quota ledger")
-    if state["scheduled"] > 1 or state["manual"] + state["scheduled"] != state["total"]:
+    if state["manual"] + state["scheduled"] != state["total"]:
         raise ValueError("Inconsistent daily quota ledger")
     kind = "scheduled" if event == "schedule" else "manual"
-    if state["total"] >= 2 or (kind == "scheduled" and state["scheduled"] >= 1):
+    if state["total"] >= bounds["total"] or state[kind] >= bounds[kind]:
         return False
     state["total"] += 1
     state[kind] += 1

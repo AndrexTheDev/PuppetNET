@@ -1,7 +1,11 @@
 name: Bounded daily ingestion and static publication
 on:
   schedule:
+    # Two bounded runs per UTC day, twelve hours apart. GitHub may delay
+    # scheduled workflows under high load; the Git-persisted quota ledger
+    # (2 cron + 1 manual reservations per UTC day) stays the authority.
     - cron: '0 3 * * *'
+    - cron: '0 15 * * *'
   repository_dispatch:
     types: [puppetnet-refresh]
   workflow_dispatch:

@@ -87,14 +87,33 @@ def test_duplicate_node_rejected_and_limits_closed():
 
 def test_daily_quota_is_durable_and_shared(tmp_path):
     path = tmp_path / "budget.json"
+    # Two cron slots per UTC day guarantee the twice-daily publication ...
+    assert reserve_run(path, "schedule", "2026-10-19")
     assert reserve_run(path, "schedule", "2026-10-19")
     assert not reserve_run(path, "schedule", "2026-10-19")
+    # ... plus exactly one manual slot; afterwards the day is closed.
     assert reserve_run(path, "repository_dispatch", "2026-10-19")
-    assert not reserve_run(path, "repository_dispatch", "2026-10-19")
+    assert not reserve_run(path, "workflow_dispatch", "2026-10-19")
+    assert json.loads(path.read_text()) == {"day": "2026-10-19", "total": 3, "scheduled": 2, "manual": 1}
+    # A new UTC day replenishes; a corrupt ledger still fails closed.
     assert reserve_run(path, "schedule", "2026-10-20")
     path.write_text("CORRUPT")
     with pytest.raises(ValueError):
         reserve_run(path, "schedule")
+
+
+def test_daily_quota_accepts_legacy_two_total_ledger_and_rejects_manual_overflow(tmp_path):
+    path = tmp_path / "budget.json"
+    # Old policy shape (total 2 = 1 cron + 1 manual) stays valid: the second
+    # cron slot may still be taken, the manual slot is already spent.
+    path.write_text(json.dumps({"day": "2026-10-19", "total": 2, "scheduled": 1, "manual": 1}))
+    assert not reserve_run(path, "workflow_dispatch", "2026-10-19")
+    assert reserve_run(path, "schedule", "2026-10-19")
+    # A legacy ledger with 2 manual entries exceeds the new manual bound and
+    # fails closed instead of silently rebalancing.
+    path.write_text(json.dumps({"day": "2026-10-19", "total": 2, "scheduled": 0, "manual": 2}))
+    with pytest.raises(ValueError, match="Invalid"):
+        reserve_run(path, "schedule", "2026-10-19")
 
 
 def test_cleanup_removes_boilerplate_and_deduplicates():
@@ -251,7 +270,8 @@ def test_workflow_is_five_minutes_opt_in_serialized_and_no_payload_shell():
     data = yaml.safe_load(text)
     # YAML 1.1 treats 'on' as bool; GitHub uses YAML 1.2.
     triggers = data.get("on", data.get(True))
-    assert triggers["schedule"][0]["cron"] == "0 3 * * *"
+    # Two bounded cron runs per UTC day, twelve hours apart (since 2026-10-20).
+    assert [entry["cron"] for entry in triggers["schedule"]] == ["0 3 * * *", "0 15 * * *"]
     job = data["jobs"]["publish"]
     assert job["timeout-minutes"] == 5
     assert job["env"]["MAX_RUNTIME_SECONDS"] == "90"
