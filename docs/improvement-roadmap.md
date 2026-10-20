@@ -163,11 +163,29 @@ Verbindung (`clickEdge` → Worker-`edgeDetail` → `evidenceForEdge`), LoD-Grup
 erklären ehrlich ihre Grenze statt Quellen zu erfinden; der Dashboard-Footer verlinkt
 die Rechtsseite. 0 zusätzliche Actions-Minuten (statische Seite + Browser-Code).
 
-### Welle 6 — Reichweite (optional, Operator-Entscheidung)
+### Welle 6 — Reichweite (UI-i18n + PWA/Offline) — ✅ umgesetzt (2026-10-20)
 
-UI-i18n Deutsch/Englisch (Build-Zeit, verdoppelt die Zielgruppe), PWA/Offline
-(Service-Worker-Cache für `graph_latest.json` → Analyse ohne Netz). Beides ohne
-Actions-Kosten, aber größerer Testaufwand → bewusst ans Ende priorisiert.
+- **UI-Internationalisierung DE/EN**: Der gesamte App-Chrome (Dashboard, Inspector,
+  Tabelle, Boot-Zustände, Karte, Tastatur-Ansagen, Intro-/Anzeigen-Platzhalter) kommt
+  aus einem byte-gepinnten Wörterbuch (`apps/web/lib/i18n-strings.ts`, ~200 Schlüssel);
+  Sprachumschalter im Workspace-Header (localStorage `puppetnet-lang`), EN-Teilbaum mit
+  `lang="en"`. Daten-Schicht-Meldungen (Standby-Gründe, Quellenlabels, Insights) bleiben
+  bewusst Deutsch — sie sind Teil des Datenvertrags, keine UI-Chrome.
+- **Englische Landing `/en/`**: vollständig statisch, hreflang-verlinkt (DE↔EN↔x-default),
+  in allen drei Sitemap-Generatoren, mit Sprachlink im Footer; Entitätsdaten bleiben
+  unübersetzt (Übersetzungen von Quelldaten werden niemals erfunden).
+- **PWA/Offline**: Service-Worker (`sw.js`) mit stale-while-revalidate für `/data/*`
+  (Workspace öffnet sofort, Datensatz wird im Hintergrund revalidiert — niemals werden
+  Daten erfunden), cache-first für `/_next/static/*`, network-first für Dokumente mit
+  App-Shell-Fallback (`/dashboard/`) und ehrlicher 503; Web-App-Manifest (installierbar,
+  standalone), feature-geguardete Registrierung, `no-store` für den Worker selbst.
+
+**Geliefert (Welle 6)**: Wörterbuch + Sprach-Provider (`app/dashboard/i18n.tsx`),
+Umschalter im Workspace-Header, `/en/`-Landing, hreflang-Metadaten auf beiden Landings,
+`sw.js`/`manifest.webmanifest`/`OfflineService`, `_headers`-Ergänzung, 7 neue i18n-Tests
+(Schlüssel-/Platzhalter-Parität, gepinnte DE-Strings, EN-Render-Smoke, zweisprachiges
+Tastaturmodell) + 2 neue Release-Pins (PWA-Sicherheit, EN-Publikation) — `ci:pages` grün,
+0 zusätzliche Actions-Minuten (statischer Build + Browser-Code).
 
 ## 4. Budget-Zusammenfassung
 
@@ -178,7 +196,7 @@ Actions-Kosten, aber größerer Testaufwand → bewusst ans Ende priorisiert.
 | 3 Entitätsseiten | Pages-Build | **0** | ✅ umgesetzt |
 | 4 Ingestion-Qualität | bestehende ≤5-min-Jobs | **0** | ✅ umgesetzt |
 | 5 Compliance/Trust | statische Seiten + Doku | **0** | ✅ umgesetzt |
-| 6 i18n/PWA | Pages-Build/Browser | **0** | optional |
+| 6 i18n/PWA | Pages-Build/Browser | **0** | ✅ umgesetzt |
 
 Kein Schritt erzeugt neue Workflows, neue Cron-Jobs, längere Jobs oder bezahlte
 Dienste. Die einzigen verbrauchsrelevanten Grenzen sind die bestehenden: 3
@@ -350,11 +368,30 @@ edge opens the inspector with exactly the documents behind that one connection
 explain their limitation instead of inventing sources; the dashboard footer links the
 legal page. 0 extra Actions minutes (static page + browser code).
 
-### Wave 6 — reach (optional, operator decision)
+### Wave 6 — reach (UI i18n + PWA/offline) — ✅ implemented (2026-10-20)
 
-UI i18n German/English (build time, doubles the audience), PWA/offline (service-worker
-cache for `graph_latest.json` → analysis without network). Both cost zero Actions
-minutes but carry a larger testing burden → deliberately prioritized last.
+- **UI internationalization DE/EN**: all app chrome (dashboard, inspector, table, boot
+  states, map, keyboard announcements, intro/ad placeholders) comes from a byte-pinned
+  dictionary (`apps/web/lib/i18n-strings.ts`, ~200 keys); language toggle in the
+  workspace header (localStorage `puppetnet-lang`), EN subtree tagged `lang="en"`.
+  Data-layer messages (standby reasons, source labels, insights) deliberately stay
+  German — they are part of the data contract, not UI chrome.
+- **English landing `/en/`**: fully static, hreflang-linked (DE↔EN↔x-default), listed in
+  all three sitemap generators, with a language link in the footer; entity data stays
+  untranslated (translations of source data are never fabricated).
+- **PWA/offline**: service worker (`sw.js`) with stale-while-revalidate for `/data/*`
+  (the workspace opens instantly while the dataset revalidates in the background — data
+  is never fabricated), cache-first for `/_next/static/*`, network-first for documents
+  with an app-shell fallback (`/dashboard/`) and an honest 503; web app manifest
+  (installable, standalone), feature-guarded registration, `no-store` for the worker
+  itself via `_headers`.
+
+**Delivered (Wave 6)**: dictionary + language provider (`app/dashboard/i18n.tsx`),
+toggle button in the workspace header, `/en/` landing, hreflang metadata on both
+landings, `sw.js`/`manifest.webmanifest`/`OfflineService`, `_headers` addition, 7 new
+i18n tests (key/placeholder parity, pinned German strings, EN render smoke, bilingual
+keyboard model) + 2 new release pins (PWA safety, EN publication) — `ci:pages` green,
+0 extra Actions minutes (static build + browser code).
 
 ## 4. Budget summary
 
@@ -365,7 +402,7 @@ minutes but carry a larger testing burden → deliberately prioritized last.
 | 3 Entity pages | Pages build | **0** | ✅ implemented |
 | 4 Ingestion quality | existing ≤5-min jobs | **0** | ✅ implemented |
 | 5 Compliance/trust | static pages + docs | **0** | ✅ implemented |
-| 6 i18n/PWA | Pages build/browser | **0** | optional |
+| 6 i18n/PWA | Pages build/browser | **0** | ✅ implemented |
 
 No step creates new workflows, new cron jobs, longer jobs or paid services. The only
 consumption-relevant limits remain the existing ones: 3 reservations/UTC day, 5-minute

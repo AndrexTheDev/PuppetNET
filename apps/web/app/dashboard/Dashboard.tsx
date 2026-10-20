@@ -9,10 +9,12 @@ import { loadStaticGraph, requestResearch, type Standby } from '../../src/lib/da
 import StandbyPanel, { LoadingStage } from './BootState';
 import SidePanel from './SidePanel';
 import { downloadText } from './download';
-const NetworkGraph = dynamic(() => import('./NetworkGraph'), { ssr: false, loading: () => <div className="stage-loading">WebGL-Modul laden …</div> });
-const MapModule = dynamic(() => import('./MapModule'), { ssr: false, loading: () => <div className="stage-loading">Kartenmodul laden …</div> });
+import { useLanguage, useT } from './i18n';
+import { NUMBER_LOCALE } from '../../lib/i18n-strings';
+function DynamicStage({ k }: { k: 'webgl' | 'map' }) { const t = useT(); return <div className="stage-loading">{k === 'webgl' ? t('dash.loadingWebgl') : t('dash.loadingMap')}</div>; }
+const NetworkGraph = dynamic(() => import('./NetworkGraph'), { ssr: false, loading: () => <DynamicStage k="webgl" /> });
+const MapModule = dynamic(() => import('./MapModule'), { ssr: false, loading: () => <DynamicStage k="map" /> });
 const initialFilters: Filters = { confidence: 0, weight: 0, types: [...TYPES], lod: true, ratio: 1 };
-const number = (n = 0) => n.toLocaleString('de-DE');
 interface PathResult { ids: string[]; labels: string[]; types: string[]; edgeIds: string[]; hops: number }
 export default function Dashboard() {
   const worker = useRef<Worker | null>(null), network = useRef<NetworkHandle>(null), version = useRef(0), selectedId = useRef<string | null>(null), selectedEdgeId = useRef<string | null>(null);
@@ -43,12 +45,18 @@ export default function Dashboard() {
   const pendingSource = useRef('Bereitschaftsmodus'), committedSource = useRef('Bereitschaftsmodus');
   const [notice, setNotice] = useState('');
   const initialFocus = useRef(initialUrl.current.focus ?? null);
+  // Wave 6 i18n: refs keep the mount-effect and worker-handler closures stable
+  // while the visible strings follow the active language.
+  const { lang, setLang } = useLanguage(); const t = useT();
+  const number = (n = 0) => n.toLocaleString(NUMBER_LOCALE[lang]);
+  const tRef = useRef(t); tRef.current = t;
+  const langRef = useRef(lang); langRef.current = lang;
   const changeMode = useCallback((next: 'network' | 'map' | 'list') => {
     setMode(next);
     if (next !== 'network') worker.current?.postMessage({ kind: 'layout', running: false });
     setAnnouncement(next === 'list'
-      ? 'Tabellenansicht geöffnet. Jeder Knoten ist als Zeile mit Aktionen verfügbar.'
-      : next === 'map' ? 'Kartenansicht geöffnet.' : 'Netzwerkansicht geöffnet. Pfeiltasten bewegen den Fokus.');
+      ? tRef.current('dash.annList')
+      : next === 'map' ? tRef.current('dash.annMap') : tRef.current('dash.annNetwork'));
   }, []);
   const clearSelected = useCallback(() => { selectedId.current = null; setSelected(null); setEvidence([]); selectedEdgeId.current = null; setSelectedEdge(null); setEdgeEvidence([]); loadingDetail.current?.abort(); setDetailError(''); }, []);
   const send = useCallback((request: WorkerRequest) => worker.current?.postMessage(request), []);
@@ -64,31 +72,31 @@ export default function Dashboard() {
       if (data.kind === 'path') {
         if (!data.nodes || !data.edges) {
           setPathResult(null);
-          setPathError('Kein Pfad zwischen den gewählten Entitäten im aktuellen Ausschnitt (maximal 6 Hops). Das ist eine ehrliche Auskunft über den veröffentlichten Ausschnitt, kein Beweis, dass keine Verbindung existiert.');
-          setAnnouncement('Kein Pfad im aktuellen Ausschnitt gefunden.');
+          setPathError(tRef.current('dash.pathNone'));
+          setAnnouncement(tRef.current('dash.annPathNone'));
           return;
         }
         const labelOf = (id: string) => viewLatest.current?.nodes.find(n => n.id === id)?.label ?? id;
         setPathResult({ ids: data.nodes, labels: data.nodes.map(labelOf), types: data.edges.map(e => e.type), edgeIds: data.edges.map(e => e.id), hops: data.hops });
         setPathError('');
-        setAnnouncement(`Pfad gefunden: ${data.hops} Verbindungen von ${labelOf(data.nodes[0])} nach ${labelOf(data.nodes[data.nodes.length - 1])}.`);
+        setAnnouncement(tRef.current('dash.annPathFound', { hops: data.hops, from: labelOf(data.nodes[0]), to: labelOf(data.nodes[data.nodes.length - 1]) }));
         return;
       }
       if (data.kind === 'broker') {
         if (data.version !== version.current) return; // stale answer for an older slice
         setBrokers(data.brokers); setAnalysisNotice(data.notice ?? '');
-        setAnnouncement(data.notice ? `Broker-Analyse begrenzt: ${data.notice}` : `Broker-Analyse fertig: ${data.brokers.length} Vermittler gefunden.`);
+        setAnnouncement(data.notice ? tRef.current('dash.annBrokerLimited', { notice: data.notice }) : tRef.current('dash.annBrokerDone', { count: data.brokers.length }));
         return;
       }
       if (data.kind === 'louvain') {
         setLouvainActive(data.active); setLouvainCount(data.communities);
         if (data.notice) setAnalysisNotice(data.notice);
-        setAnnouncement(data.active ? `Louvain-Partition aktiv: ${data.communities} Communities im geladenen Datensatz.` : 'Export-Communities wiederhergestellt.');
+        setAnnouncement(data.active ? tRef.current('dash.annLouvainOn', { count: data.communities }) : tRef.current('dash.annLouvainOff'));
         return;
       }
       if (data.kind === 'error' && data.version === version.current) { setError(data.message); setBusy(false); pendingSource.current = committedSource.current; }
     };
-    instance.onerror = event => { setError(`Daten-Worker: ${event.message || 'konnte nicht gestartet werden'}`); setBusy(false); };
+    instance.onerror = event => { setError(tRef.current('dash.workerError', { message: event.message || tRef.current('dash.workerFallback') })); setBusy(false); };
     const loadPublished = () => {
       staticRequest.current?.abort();
       const controller = new AbortController(); staticRequest.current = controller;
@@ -98,7 +106,7 @@ export default function Dashboard() {
       loadStaticGraph({ signal: controller.signal }).then(data => {
         if (controller.signal.aborted || version.current !== bootVersion || worker.current !== instance) return;
         if (data.source === 'static') {
-          pendingSource.current = data.message; setNotice('Hochleistungs-CDN-Modus: veröffentlichter Datensatz, keine Live-Datenbankverbindung.');
+          pendingSource.current = data.message; setNotice(tRef.current('dash.cdnNotice'));
           instance.postMessage({ kind: 'import', text: JSON.stringify(data.graph), version: bootVersion, filters: filtersRef.current } satisfies WorkerRequest);
         } else {
           // No usable publication (missing/offline/invalid or an empty dataset
@@ -107,7 +115,7 @@ export default function Dashboard() {
           setStandby({ reason: data.reason, message: data.message });
           setBusy(false); setNotice('');
           setSourceLabel('Bereitschaftsmodus'); pendingSource.current = committedSource.current = 'Bereitschaftsmodus';
-          setAnnouncement('Bereitschaftsmodus: kein auswertbarer Datensatz geladen. Demonstrationsdaten können explizit geladen werden.');
+          setAnnouncement(tRef.current('dash.annStandby'));
         }
       }).catch(() => { /* caller cancellation/unmount: no replacement of newer user data */ });
     };
@@ -131,7 +139,7 @@ export default function Dashboard() {
     selectedEdgeId.current = null; setSelectedEdge(null); setEdgeEvidence([]);
     const node = view?.nodes.find(n => n.id === id);
     setSelected(node ?? null);
-    setAnnouncement(node ? `Details geöffnet: ${node.label}.` : 'Details geöffnet.');
+    setAnnouncement(node ? tRef.current('dash.annDetailsOpened', { label: node.label }) : tRef.current('network.detailsOpenedPlain'));
     if (group) return;
     send({ kind: 'detail', id });
 
@@ -146,10 +154,10 @@ export default function Dashboard() {
     selectedEdgeId.current = id; setSelectedEdge(edge); setEdgeEvidence([]);
     const labelOf = (key: string) => view?.nodes.find(n => n.id === key)?.label ?? key;
     if (edge.type === 'AGGREGATED') {
-      setAnnouncement(`Aggregierte Gruppenkante geöffnet: ${edge.count?.toLocaleString('de-DE') ?? 0} gebündelte Verbindungen ohne eigene Quellenliste.`);
+      setAnnouncement(tRef.current('dash.annEdgeAggregated', { count: edge.count?.toLocaleString(NUMBER_LOCALE[langRef.current]) ?? 0 }));
       return;
     }
-    setAnnouncement(`Kantendetails geöffnet: ${edge.type} von ${labelOf(edge.source)} nach ${labelOf(edge.target)}. Escape schließt die Details.`);
+    setAnnouncement(tRef.current('dash.annEdge', { type: edge.type, source: labelOf(edge.source), target: labelOf(edge.target) }));
     send({ kind: 'edgeDetail', id });
   }, [view, send]);
   function demo(count: number) {
@@ -157,7 +165,7 @@ export default function Dashboard() {
     clearSelected(); setBusy(true); setError(''); setNotice(''); setStandby(null); setPathResult(null); setPathError(''); setBrokers(null); setAnalysisNotice(''); setLouvainActive(false); setLouvainCount(0); send({ kind: 'demo', count, version: ++version.current, filters: filtersRef.current });
   }
   function importFile(file: File) {
-    if (file.size > LIMITS.bytes) { setError('Importlimit: 64 MiB JSON.'); return; }
+    if (file.size > LIMITS.bytes) { setError(t('dash.errImportSize')); return; }
     staticRequest.current?.abort(); pendingSource.current = file.name; setBusy(true); setError(''); clearSelected(); setPathResult(null); setPathError(''); setBrokers(null); setAnalysisNotice(''); setLouvainActive(false); setLouvainCount(0);
     send({ kind: 'import', file, version: ++version.current, filters: filtersRef.current });
   }
@@ -167,9 +175,9 @@ export default function Dashboard() {
     setResearchBusy(true);
     try {
       await requestResearch({ workerUrl: base, token, query: researchQuery, signal: controller.signal });
-      setNotice('Recherche angenommen. GitHub prüft das Tageskontingent. Neue Daten erscheinen erst nach erfolgreicher Verarbeitung, Freigabe und Veröffentlichung. Du kannst die CDN-Daten später neu laden.');
+      setNotice(t('dash.researchAccepted'));
     } catch (cause) {
-      if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : 'Recherche nicht angenommen.');
+      if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : t('dash.errResearchRejected'));
     } finally { if (loadingApi.current === controller) setResearchBusy(false); }
   }
   // Fuzzy-ranked search: exact substring first, then subsequence matches, stable order.
@@ -183,10 +191,10 @@ export default function Dashboard() {
   const requestPath = useCallback(() => {
     setPathError(''); setPathResult(null);
     const nodes = viewLatest.current?.nodes ?? [];
-    if (viewLatest.current?.stats.grouped) { setPathError('Pfadfinder benötigt die Einzelknoten-Ansicht: LoD deaktivieren oder näher zoomen.'); return; }
+    if (viewLatest.current?.stats.grouped) { setPathError(tRef.current('dash.pathNeedsSingle')); return; }
     const source = resolveNodeRef(nodes, pathSource), target = resolveNodeRef(nodes, pathTarget);
-    if (!source || !target) { setPathError('Start oder Ziel im aktuellen Ausschnitt nicht gefunden.'); return; }
-    if (source.id === target.id) { setPathError('Start und Ziel sind dieselbe Entität.'); return; }
+    if (!source || !target) { setPathError(tRef.current('dash.pathNotFound')); return; }
+    if (source.id === target.id) { setPathError(tRef.current('dash.pathSame')); return; }
     send({ kind: 'path', source: source.id, target: target.id });
   }, [pathSource, pathTarget, send]);
   const pageSize = 50;
@@ -209,50 +217,50 @@ export default function Dashboard() {
       requestAnimationFrame(() => network.current?.focus(wanted));
     }
   }, [view, select]);
-  return <main id="main-content" tabIndex={-1} className="dashboard-shell" aria-busy={busy}>
+  return <main id="main-content" tabIndex={-1} className="dashboard-shell" aria-busy={busy} lang={lang === 'de' ? undefined : 'en'}>
     <p className="visually-hidden" role="status" aria-live="polite" aria-atomic="true">{announcement}</p>
-    <header className="dashboard-header"><a className="brand" href="/"><img className="brand-art" src="/media/logo.webp" width="52" height="52" alt="" /><div>PUPPET<span>NET</span><small>INTELLIGENCE WORKSPACE</small></div></a><div className="header-path">Workspace <span>/</span> <strong>Netzwerkanalyse</strong></div><div className="header-status"><span className="status-dot" /> LOKALE VISUALISIERUNG <span className="version-tag">2.0</span></div></header>
-    <section className="workspace-intro"><div><span className="eyebrow">VERBINDUNGEN SICHTBAR MACHEN</span><h1>Hinter den Verbindungen.</h1><p>Entitäten erkunden. Muster hinterfragen. Quellen überprüfen.</p></div><button onClick={() => setSourceForm(s => !s)} className="outline-button">On-Demand-Recherche ↗</button></section>
-    <div className="source-strip"><span className="source-pill">{sourceLabel.includes('Fiktiv') ? 'DEMO' : 'DATEN'}</span><strong>{sourceLabel}</strong><span>Keine erfundenen Daten als Live-Ergebnisse.</span><button onClick={() => demo(900)}>Demo</button><button disabled={busy} onClick={() => demo(30_000)}>120.000 Elemente testen</button><label className="import-button">JSON importieren<input type="file" accept="application/json,.json" onChange={e => { const file = e.target.files?.[0]; if (file) importFile(file); e.target.value = ''; }} /></label></div>
-    <p className="cdn-mode" role="note">Hochleistungs-CDN-Modus · Dashboard, Profile und Analystenkonsole verwenden den veröffentlichten statischen Datensatz. Zum Lesen ist kein Cloudflare-Worker nötig. Standardmäßig wird die sparsame Tabelle geöffnet; GPU-Netzwerk und Layout sind optional. <button type="button" disabled={busy} onClick={() => reloadStatic.current?.()}>CDN-Daten neu laden</button></p>
+    <header className="dashboard-header"><a className="brand" href="/"><img className="brand-art" src="/media/logo.webp" width="52" height="52" alt="" /><div>PUPPET<span>NET</span><small>INTELLIGENCE WORKSPACE</small></div></a><div className="header-path">Workspace <span>/</span> <strong>{t('dash.headerSection')}</strong></div><div className="header-status"><span className="status-dot" /> {t('dash.headerStatus')} <span className="version-tag">2.0</span></div></header>
+    <section className="workspace-intro"><div><span className="eyebrow">{t('dash.introEyebrow')}</span><h1>{t('dash.introTitle')}</h1><p>{t('dash.introText')}</p></div><div className="intro-controls"><button type="button" className="outline-button lang-toggle" onClick={() => setLang(lang === 'de' ? 'en' : 'de')} aria-label={t('dash.langSwitchAria')}>{t('dash.langSwitch')}</button><button onClick={() => setSourceForm(s => !s)} className="outline-button">{t('boot.researchButton')}</button></div></section>
+    <div className="source-strip"><span className="source-pill">{sourceLabel.includes('Fiktiv') ? t('dash.pillDemo') : t('dash.pillData')}</span><strong>{sourceLabel}</strong><span>{t('dash.stripNote')}</span><button onClick={() => demo(900)}>{t('dash.demoShort')}</button><button disabled={busy} onClick={() => demo(30_000)}>{t('dash.stressTest')}</button><label className="import-button">{t('dash.importJson')}<input type="file" accept="application/json,.json" onChange={e => { const file = e.target.files?.[0]; if (file) importFile(file); e.target.value = ''; }} /></label></div>
+    <p className="cdn-mode" role="note">{t('dash.cdnText')} <button type="button" disabled={busy} onClick={() => reloadStatic.current?.()}>{t('dash.cdnReload')}</button></p>
     {sourceForm && <form className="connection-form" onSubmit={e => { e.preventDefault(); startResearch(); }}>
-      <p>Optional: Eine On-Demand-Recherche durchsucht die konfigurierten Quellen im Hintergrund. Das ist keine sofortige Live-Suche und keine Graph-API.</p>
-      <label>Suchbegriff<input required maxLength={120} value={researchQuery} onChange={e => setResearchQuery(e.target.value)} /></label>
-      <label>Worker-URL für On-Demand-Recherche<input required type="url" value={base} onChange={e => setBase(e.target.value)} placeholder="https://dein-suchrelay.workers.dev" /></label>
-      <label>Suchzugangstoken<input required type="password" autoComplete="off" value={token} onChange={e => setToken(e.target.value)} /></label>
-      <button className="primary-button" disabled={researchBusy} type="submit">{researchBusy ? 'Wird angefragt …' : 'Recherche anfordern'}</button>
-      <p>Eine Worker-URL ist ausschließlich für Rechercheaufträge erforderlich. Token bleiben im Arbeitsspeicher; niemals einen GitHub-Token hier eingeben. Der Worker muss diesen Website-Ursprung per CORS erlauben.</p>
+      <p>{t('dash.formIntro')}</p>
+      <label>{t('dash.searchTerm')}<input required maxLength={120} value={researchQuery} onChange={e => setResearchQuery(e.target.value)} /></label>
+      <label>{t('dash.workerUrlLabel')}<input required type="url" value={base} onChange={e => setBase(e.target.value)} placeholder="https://dein-suchrelay.workers.dev" /></label>
+      <label>{t('dash.tokenLabel')}<input required type="password" autoComplete="off" value={token} onChange={e => setToken(e.target.value)} /></label>
+      <button className="primary-button" disabled={researchBusy} type="submit">{researchBusy ? t('dash.submitting') : t('dash.requestResearch')}</button>
+      <p>{t('dash.formFoot')}</p>
     </form>}
 
-    {(error || notice || view?.stats.truncated) && <div className={`dashboard-alert ${error ? 'error' : ''}`} role={error ? 'alert' : 'status'}>{error || notice || 'API-Antwort ist begrenzt; dargestellt wird nur der geladene Ausschnitt.'}</div>}
+    {(error || notice || view?.stats.truncated) && <div className={`dashboard-alert ${error ? 'error' : ''}`} role={error ? 'alert' : 'status'}>{error || notice || t('dash.alertTruncated')}</div>}
     {standby
       ? <StandbyPanel standby={standby} busy={busy} onDemo={() => demo(900)} onResearch={() => setSourceForm(true)} onReload={() => reloadStatic.current?.()} />
       : !view ? <LoadingStage />
       : <div className="workspace-grid">
-      <aside className="filter-panel"><span className="eyebrow">ANSICHT EINGRENZEN / 01</span><div className="section-heading"><h2>Filter</h2><button className="text-button" onClick={() => { filtersRef.current = initialFilters; setFilters(initialFilters); requestView('reset'); }}>Zurücksetzen</button></div>
-        <label className="slider-label" htmlFor="confidence"><span>Confidence <strong>{filters.confidence.toFixed(2)}</strong></span><input id="confidence" disabled={busy} type="range" min="0" max="1" step="0.01" value={filters.confidence} onChange={e => setFilters(f => ({ ...f, confidence: Number(e.target.value) }))} /><small>Mindestens erforderliches Vertrauen</small></label>
-        <label className="slider-label" htmlFor="weight"><span>Beziehungsgewicht <strong>{filters.weight.toFixed(2)}</strong></span><input id="weight" disabled={busy} type="range" min="0" max="1" step="0.01" value={filters.weight} onChange={e => setFilters(f => ({ ...f, weight: Number(e.target.value) }))} /><small>Fachliche Stärke einer Verbindung</small></label>
-        <h3>Entitätstypen</h3><div className="type-filters">{TYPES.map(type => <label key={type}><input type="checkbox" disabled={busy} checked={filters.types.includes(type)} onChange={e => setFilters(f => ({ ...f, types: e.target.checked ? [...f.types, type] : f.types.filter(t => t !== type) }))} /><span className="type-dot" style={{ background: COLORS[type] }} />{type}</label>)}</div>
+      <aside className="filter-panel"><span className="eyebrow">{t('dash.filterEyebrow')}</span><div className="section-heading"><h2>{t('dash.filtersTitle')}</h2><button className="text-button" onClick={() => { filtersRef.current = initialFilters; setFilters(initialFilters); requestView('reset'); }}>{t('dash.resetButton')}</button></div>
+        <label className="slider-label" htmlFor="confidence"><span>Confidence <strong>{filters.confidence.toFixed(2)}</strong></span><input id="confidence" disabled={busy} type="range" min="0" max="1" step="0.01" value={filters.confidence} onChange={e => setFilters(f => ({ ...f, confidence: Number(e.target.value) }))} /><small>{t('dash.confidenceHint')}</small></label>
+        <label className="slider-label" htmlFor="weight"><span>{t('dash.weightLabel')} <strong>{filters.weight.toFixed(2)}</strong></span><input id="weight" disabled={busy} type="range" min="0" max="1" step="0.01" value={filters.weight} onChange={e => setFilters(f => ({ ...f, weight: Number(e.target.value) }))} /><small>{t('dash.weightHint')}</small></label>
+        <h3>{t('dash.typesTitle')}</h3><div className="type-filters">{TYPES.map(type => <label key={type}><input type="checkbox" disabled={busy} checked={filters.types.includes(type)} onChange={e => setFilters(f => ({ ...f, types: e.target.checked ? [...f.types, type] : f.types.filter(t => t !== type) }))} /><span className="type-dot" style={{ background: COLORS[type] }} />{type}</label>)}</div>
         {communities.length > 0 && <div className="community-filter"><h3>Community</h3>
-          <label className="visually-hidden" htmlFor="community-select">Nach Community filtern</label>
+          <label className="visually-hidden" htmlFor="community-select">{t('dash.communityFilterLabel')}</label>
           <select id="community-select" disabled={busy} value={filters.community ?? ''} onChange={e => setFilters(f => ({ ...f, community: e.target.value || undefined }))}>
-            <option value="">Alle Communities</option>
+            <option value="">{t('dash.allCommunities')}</option>
             {communities.map(name => <option key={name} value={name}>{name}</option>)}
           </select>
-          <p>Analysierte Communities aus dem Export. Farbmodus „Community" in der Netzwerkansicht.</p></div>}
-        <div className="timeline-filter"><h3>Zeitraum (Erwähnungen)</h3>
+          <p>{t('dash.communityText')}</p></div>}
+        <div className="timeline-filter"><h3>{t('dash.timeTitle')}</h3>
           <div className="timeline-row">
-            <label htmlFor="time-from">Von<input id="time-from" type="date" disabled={busy} value={filters.from ?? ''} max={filters.to} onChange={e => setFilters(f => ({ ...f, from: e.target.value || undefined }))} /></label>
-            <label htmlFor="time-to">Bis<input id="time-to" type="date" disabled={busy} value={filters.to ?? ''} min={filters.from} onChange={e => setFilters(f => ({ ...f, to: e.target.value || undefined }))} /></label>
+            <label htmlFor="time-from">{t('dash.fromLabel')}<input id="time-from" type="date" disabled={busy} value={filters.from ?? ''} max={filters.to} onChange={e => setFilters(f => ({ ...f, from: e.target.value || undefined }))} /></label>
+            <label htmlFor="time-to">{t('dash.toLabel')}<input id="time-to" type="date" disabled={busy} value={filters.to ?? ''} min={filters.from} onChange={e => setFilters(f => ({ ...f, to: e.target.value || undefined }))} /></label>
           </div>
-          {(filters.from || filters.to) && <button type="button" className="text-button" onClick={() => setFilters(f => ({ ...f, from: undefined, to: undefined }))}>Zeitfilter löschen</button>}
-          <p>Nur Entitäten mit datierten Quellnachweisen (erste/letzte Erwähnung aus dem Export). Undatierte fallen bei aktivem Filter heraus.</p></div>
-        <div className="lod-setting"><label><input type="checkbox" disabled={busy} checked={filters.lod} onChange={e => { if (!e.target.checked && (view?.stats.filteredNodes ?? 0) > 20_000 && !window.confirm('Alle Knoten einzeln auf der GPU darstellen? Dies kann auf schwachen Geräten langsam sein.')) return; setFilters(f => ({ ...f, lod: e.target.checked })); }} /> Adaptives Detailniveau</label><p>Über 5.000 Knoten: zoomabhängige Darstellungsgruppen. Ausschalten zeigt einzelne Knoten.</p></div>
-        {view?.analytics && <div className="analytics-panel"><div className="section-heading"><h3>Analytik (Export)</h3></div>
-          <dl className="analytics-facts"><div><dt>Communities</dt><dd>{number(view.analytics.communities)}</dd></div><div><dt>Dichte</dt><dd>{(view.analytics.density * 100).toFixed(2)} %</dd></div>{view.analytics.temporalRange && <div><dt>Zeitraum</dt><dd>{view.analytics.temporalRange.first} → {view.analytics.temporalRange.last}</dd></div>}</dl>
-          {view.analytics.hubs.length > 0 && <><h4 className="hub-heading">Top-Hubs (PageRank)</h4><ol className="hub-list">{view.analytics.hubs.map(hub => <li key={hub.id}><button type="button" className="text-button" onClick={() => { if (mode !== 'network') changeMode('network'); select(hub.id); requestAnimationFrame(() => network.current?.focus(hub.id)); }}>{hub.name}</button><span className="hub-rank">{(hub.rank * 100).toFixed(1)} %</span></li>)}</ol></>}
+          {(filters.from || filters.to) && <button type="button" className="text-button" onClick={() => setFilters(f => ({ ...f, from: undefined, to: undefined }))}>{t('dash.clearTimeFilter')}</button>}
+          <p>{t('dash.timeNote')}</p></div>
+        <div className="lod-setting"><label><input type="checkbox" disabled={busy} checked={filters.lod} onChange={e => { if (!e.target.checked && (view?.stats.filteredNodes ?? 0) > 20_000 && !window.confirm(tRef.current('dash.lodConfirm'))) return; setFilters(f => ({ ...f, lod: e.target.checked })); }} /> {t('dash.lodLabel')}</label><p>{t('dash.lodNote')}</p></div>
+        {view?.analytics && <div className="analytics-panel"><div className="section-heading"><h3>{t('dash.analyticsTitle')}</h3></div>
+          <dl className="analytics-facts"><div><dt>Communities</dt><dd>{number(view.analytics.communities)}</dd></div><div><dt>{t('dash.density')}</dt><dd>{(view.analytics.density * 100).toFixed(2)} %</dd></div>{view.analytics.temporalRange && <div><dt>{t('dash.rangeLabel')}</dt><dd>{view.analytics.temporalRange.first} → {view.analytics.temporalRange.last}</dd></div>}</dl>
+          {view.analytics.hubs.length > 0 && <><h4 className="hub-heading">{t('dash.topHubs')}</h4><ol className="hub-list">{view.analytics.hubs.map(hub => <li key={hub.id}><button type="button" className="text-button" onClick={() => { if (mode !== 'network') changeMode('network'); select(hub.id); requestAnimationFrame(() => network.current?.focus(hub.id)); }}>{hub.name}</button><span className="hub-rank">{(hub.rank * 100).toFixed(1)} %</span></li>)}</ol></>}
           {view.insights && view.insights.length > 0 && <>
-            <h4 className="hub-heading">Korrelations-Insights (Export)</h4>
+            <h4 className="hub-heading">{t('dash.insightsTitle')}</h4>
             <ul className="insight-list">{view.insights.map((insight, index) => (
               <li key={`${insight.rule}-${index}`}>
                 <span className="insight-rule">{insight.rule}</span>
@@ -263,52 +271,58 @@ export default function Dashboard() {
                 ))}</span>
               </li>
             ))}</ul>
-            <p className="muted">Deterministische Regeln auf dem veröffentlichten Graphen (Strohmann-Ketten, Sternstrukturen, Community-Brücken, Personenverflechtungen), jede mit Kanten-Evidenz im Export — Strukturhinweise, keine Schuldzuweisungen.</p>
+            <p className="muted">{t('dash.insightsNote')}</p>
           </>}
         </div>}
-        <div className="algorithm-panel"><div className="section-heading"><h3>Graph-Algorithmen</h3></div>
-          <p className="muted">Betweenness und Louvain laufen im Web Worker auf deinen geladenen Daten — freie Browser-Rechenzeit, keine CI-Minuten, keine Cloud.</p>
+        <div className="algorithm-panel"><div className="section-heading"><h3>{t('dash.algoTitle')}</h3></div>
+          <p className="muted">{t('dash.algoText')}</p>
           <div className="algorithm-actions">
-            <button type="button" disabled={busy} onClick={() => { setAnalysisNotice(''); setBrokers(null); send({ kind: 'broker' }); }}>Broker-Analyse</button>
-            <button type="button" aria-pressed={louvainActive} disabled={busy} onClick={() => { setAnalysisNotice(''); send({ kind: 'louvain', active: !louvainActive }); }}>{louvainActive ? 'Louvain zurücksetzen' : 'Communities nachschärfen'}</button>
+            <button type="button" disabled={busy} onClick={() => { setAnalysisNotice(''); setBrokers(null); send({ kind: 'broker' }); }}>{t('dash.brokerRun')}</button>
+            <button type="button" aria-pressed={louvainActive} disabled={busy} onClick={() => { setAnalysisNotice(''); send({ kind: 'louvain', active: !louvainActive }); }}>{louvainActive ? t('dash.louvainReset') : t('dash.louvainRun')}</button>
           </div>
           {analysisNotice && <p className="inline-warning" role="status">{analysisNotice}</p>}
-          {louvainActive && <p className="muted" role="status">Louvain-Partition aktiv: {louvainCount} Communities im geladenen Datensatz (deterministisch, `randomWalk:false`). Ersetzt die Export-Communities in Filter und Farbmodus, bis du zurücksetzt.</p>}
-          {brokers !== null && brokers.length > 0 && <><h4 className="hub-heading">Top-Broker (Betweenness-Anteil)</h4><ol className="hub-list">{brokers.map(broker => <li key={broker.id}><button type="button" className="text-button" onClick={() => { if (mode !== 'network') changeMode('network'); select(broker.id); requestAnimationFrame(() => network.current?.focus(broker.id)); }}>{broker.label}</button><span className="hub-rank">{(broker.share * 100).toFixed(1)} %</span></li>)}</ol><p className="muted">Broker verbinden sonst getrennte Gruppen (Vermittler/Engpässe). Hohe Betweenness ist ein Strukturhinweis, keine Bewertung.</p></>}
-          {brokers !== null && brokers.length === 0 && !analysisNotice && <p className="muted" role="status">Keine Broker mit Betweenness &gt; 0 im aktuellen Ausschnitt — zum Beispiel, weil er nur aus getrennten Paaren besteht.</p>}
+          {louvainActive && <p className="muted" role="status">{t('dash.louvainStatus', { count: louvainCount })}</p>}
+          {brokers !== null && brokers.length > 0 && <><h4 className="hub-heading">{t('dash.topBrokers')}</h4><ol className="hub-list">{brokers.map(broker => <li key={broker.id}><button type="button" className="text-button" onClick={() => { if (mode !== 'network') changeMode('network'); select(broker.id); requestAnimationFrame(() => network.current?.focus(broker.id)); }}>{broker.label}</button><span className="hub-rank">{(broker.share * 100).toFixed(1)} %</span></li>)}</ol><p className="muted">{t('dash.brokerNote')}</p></>}
+          {brokers !== null && brokers.length === 0 && !analysisNotice && <p className="muted" role="status">{t('dash.noBrokers')}</p>}
         </div>
-        <div className="pathfinder"><div className="section-heading"><h3>Pfadfinder</h3></div>
-          <p className="muted">Kürzeste Verbindung zwischen zwei Entitäten im sichtbaren Ausschnitt (maximal 6 Hops, deterministische Breitensuche).</p>
-          <label htmlFor="path-source">Von<input id="path-source" list="pathfinder-options" autoComplete="off" value={pathSource} onChange={e => setPathSource(e.target.value)} placeholder="Name oder ID …" /></label>
-          <label htmlFor="path-target">Nach<input id="path-target" list="pathfinder-options" autoComplete="off" value={pathTarget} onChange={e => setPathTarget(e.target.value)} placeholder="Name oder ID …" /></label>
+        <div className="pathfinder"><div className="section-heading"><h3>{t('dash.pathTitle')}</h3></div>
+          <p className="muted">{t('dash.pathText')}</p>
+          <label htmlFor="path-source">{t('dash.fromLabel')}<input id="path-source" list="pathfinder-options" autoComplete="off" value={pathSource} onChange={e => setPathSource(e.target.value)} placeholder={t('dash.pathPlaceholder')} /></label>
+          <label htmlFor="path-target">{t('dash.pathTo')}<input id="path-target" list="pathfinder-options" autoComplete="off" value={pathTarget} onChange={e => setPathTarget(e.target.value)} placeholder={t('dash.pathPlaceholder')} /></label>
           <datalist id="pathfinder-options">{(view?.nodes ?? []).slice(0, 200).map(n => <option key={n.id} value={n.label}>{n.id}</option>)}</datalist>
-          <button type="button" className="primary-button" disabled={busy} onClick={requestPath}>Pfad berechnen</button>
+          <button type="button" className="primary-button" disabled={busy} onClick={requestPath}>{t('dash.pathCompute')}</button>
           {pathError && <p className="inline-warning" role="status">{pathError}</p>}
-          {pathResult && <div className="path-result" role="status" aria-label="Gefundener Pfad">
-            <strong>{pathResult.hops} Hop{pathResult.hops === 1 ? '' : 's'}</strong>
+          {pathResult && <div className="path-result" role="status" aria-label={t('dash.pathFoundLabel')}>
+            <strong>{t('dash.hopCount', { hops: pathResult.hops, s: pathResult.hops === 1 ? '' : 's' })}</strong>
             <ol className="path-hops">{pathResult.labels.map((label, index) => <li key={`${pathResult.ids[index]}:${index}`}>
               <button type="button" className="text-button" onClick={() => { select(pathResult.ids[index]); requestAnimationFrame(() => network.current?.focus(pathResult.ids[index])); }}>{label}</button>
-              {index < pathResult.types.length && <span className="hop-edge" aria-label={`über ${pathResult.types[index]}`}> —{pathResult.types[index]}→</span>}
+              {index < pathResult.types.length && <span className="hop-edge" aria-label={t('dash.viaAria', { type: pathResult.types[index] })}> —{pathResult.types[index]}→</span>}
             </li>)}</ol>
-            {view?.stats.grouped && <p className="muted">Graph-Hervorhebung erst in der Einzelknoten-Ansicht (LoD-Gruppen aktiv).</p>}
-            <button type="button" className="text-button" onClick={() => { setPathResult(null); setPathError(''); }}>Pfad löschen</button>
+            {view?.stats.grouped && <p className="muted">{t('dash.pathGroupedNote')}</p>}
+            <button type="button" className="text-button" onClick={() => { setPathResult(null); setPathError(''); }}>{t('dash.pathClear')}</button>
           </div>}
         </div>
-        <div className="filter-foot"><span>○</span><p>Gemeinsame Erwähnung ist kein Beweis für Kontrolle oder Fehlverhalten.</p></div>
+        <div className="filter-foot"><span>○</span><p>{t('dash.footNote')}</p></div>
       </aside>
-      <section className="visualization-panel" aria-label="Visualisierung"><div className="visualization-toolbar"><div className="view-tabs" role="group" aria-label="Darstellung"><button aria-pressed={mode === 'network'} aria-controls="visualization-stage" onClick={() => changeMode('network')}>◈ Netzwerk</button><button aria-pressed={mode === 'map'} aria-controls="visualization-stage" onClick={() => changeMode('map')}>◎ Karte</button><button aria-pressed={mode === 'list'} aria-controls="visualization-stage" onClick={() => changeMode('list')}>☷ Tabelle</button></div><button type="button" className="outline-button color-toggle" aria-pressed={colorMode === 'community'} disabled={mode !== 'network'} onClick={() => setColorMode(c => c === 'type' ? 'community' : 'type')}>Farbe: {colorMode === 'community' ? 'Community' : 'Typ'}</button><span className="live-indicator" role="status">{busy ? 'Verarbeitung …' : layoutRunning ? 'Layout aktiv' : 'Bereit'}</span></div>
-        <div className="stats-bar"><div><strong>{number(view?.stats.filteredNodes)}</strong><span>Knoten im Filter</span></div><div><strong>{number(view?.stats.filteredEdges)}</strong><span>Beziehungen</span></div><div><strong>{number(view?.nodes.length)}</strong><span>GPU-Knoten / Gruppen</span></div><span className="lod-pill">{view?.stats.level ?? 'Laden'}</span></div>
-        <details className="keyboard-help"><summary>Tastaturbedienung</summary><ul><li><kbd>Tab</kbd> springt in den Graphen, die Tabelle und den Inspector.</li><li><kbd>Pfeiltasten</kbd> bewegen den Fokus zwischen Knoten; <kbd>Pos1</kbd>/<kbd>Ende</kbd> springen an den Anfang oder das Ende.</li><li><kbd>Eingabe</kbd> oder <kbd>Leertaste</kbd> öffnet die Details, <kbd>Escape</kbd> schließt sie.</li><li><kbd>+</kbd>/<kbd>−</kbd> zoomen, <kbd>0</kbd> setzt die Ansicht zurück.</li><li>Die Registerkarte <strong>Tabelle</strong> ist die vollständige Textalternative zum WebGL-Canvas.</li></ul></details>
-        <div id="visualization-stage" className={mode === 'network' ? 'graph-pane' : 'graph-pane hidden-pane'}>{mode === 'network' && <NetworkGraph ref={network} view={view} onSelect={select} onSelectEdge={selectEdge} onRatio={onRatio} onClear={clearSelected} colorMode={colorMode} path={pathHighlight} />}<div className="graph-tools"><button aria-label="Vergrößern" onClick={() => network.current?.zoom(.65)}>+</button><button aria-label="Verkleinern" onClick={() => network.current?.zoom(1.5)}>−</button><button aria-label="Ansicht einpassen" onClick={() => network.current?.reset()}>⌖</button><button onClick={() => send({ kind: 'layout', running: !layoutRunning })}>{layoutRunning ? 'Pause' : 'Layout'}</button></div></div>
-        {mode === 'map' && <><MapModule points={view?.mapPoints ?? []} onSelect={id => select(id)} /><div className="data-footnote">{number(view?.stats.locatedNodes)} Knoten mit gültigen Koordinaten. Räumlich aggregiert, maximal 1.000 Marker.</div></>}
+      <section className="visualization-panel" aria-label={t('dash.vizAria')}><div className="visualization-toolbar"><div className="view-tabs" role="group" aria-label={t('dash.tabsAria')}><button aria-pressed={mode === 'network'} aria-controls="visualization-stage" onClick={() => changeMode('network')}>◈ {t('dash.tabNetwork')}</button><button aria-pressed={mode === 'map'} aria-controls="visualization-stage" onClick={() => changeMode('map')}>◎ {t('dash.tabMap')}</button><button aria-pressed={mode === 'list'} aria-controls="visualization-stage" onClick={() => changeMode('list')}>☷ {t('dash.tabList')}</button></div><button type="button" className="outline-button color-toggle" aria-pressed={colorMode === 'community'} disabled={mode !== 'network'} onClick={() => setColorMode(c => c === 'type' ? 'community' : 'type')}>{t('dash.colorLabel', { mode: colorMode === 'community' ? 'Community' : t('dash.colorType') })}</button><span className="live-indicator" role="status">{busy ? t('dash.liveProcessing') : layoutRunning ? t('dash.liveLayout') : t('dash.liveReady')}</span></div>
+        <div className="stats-bar"><div><strong>{number(view?.stats.filteredNodes)}</strong><span>{t('dash.statNodesFilter')}</span></div><div><strong>{number(view?.stats.filteredEdges)}</strong><span>{t('dash.statEdges')}</span></div><div><strong>{number(view?.nodes.length)}</strong><span>{t('dash.statGpu')}</span></div><span className="lod-pill">{view?.stats.level ?? t('dash.loadingLevel')}</span></div>
+        <details className="keyboard-help"><summary>{t('dash.keyTab')}</summary><ul>
+          <li dangerouslySetInnerHTML={{ __html: t('dash.kbd1') }} />
+          <li dangerouslySetInnerHTML={{ __html: t('dash.kbd2') }} />
+          <li dangerouslySetInnerHTML={{ __html: t('dash.kbd3') }} />
+          <li dangerouslySetInnerHTML={{ __html: t('dash.kbd4') }} />
+          <li dangerouslySetInnerHTML={{ __html: t('dash.kbd5') }} />
+        </ul></details>
+        <div id="visualization-stage" className={mode === 'network' ? 'graph-pane' : 'graph-pane hidden-pane'}>{mode === 'network' && <NetworkGraph ref={network} view={view} onSelect={select} onSelectEdge={selectEdge} onRatio={onRatio} onClear={clearSelected} colorMode={colorMode} path={pathHighlight} />}<div className="graph-tools"><button aria-label={t('dash.zoomInAria')} onClick={() => network.current?.zoom(.65)}>+</button><button aria-label={t('dash.zoomOutAria')} onClick={() => network.current?.zoom(1.5)}>−</button><button aria-label={t('dash.fitAria')} onClick={() => network.current?.reset()}>⌖</button><button onClick={() => send({ kind: 'layout', running: !layoutRunning })}>{layoutRunning ? 'Pause' : 'Layout'}</button></div></div>
+        {mode === 'map' && <><MapModule points={view?.mapPoints ?? []} onSelect={id => select(id)} /><div className="data-footnote">{t('dash.mapFootnote', { count: number(view?.stats.locatedNodes) })}</div></>}
         {mode === 'list' && <EntityTable rows={tableRows} total={list.length} page={listPage} pageSize={pageSize} query={search} onQuery={value => { setSearch(value); setListPage(0); }} onPage={setListPage} onSelect={select} onFocusGraph={id => { changeMode('network'); select(id); requestAnimationFrame(() => network.current?.focus(id)); }} />}
-        <div className="visualization-footer"><span><span className="status-dot" /> {number(view?.stats.totalNodes)} Knoten geladen</span><span className="view-export"><button type="button" onClick={() => downloadText('puppetnet-knoten.csv', nodesToCSV(view?.nodes ?? []), 'text/csv;charset=utf-8')}>Knoten CSV ↓</button><button type="button" onClick={() => downloadText('puppetnet-kanten.csv', edgesToCSV(view?.edges ?? []), 'text/csv;charset=utf-8')}>Kanten CSV ↓</button><button type="button" onClick={() => downloadText('puppetnet-ansicht.json', viewToJSON({ nodes: view?.nodes ?? [], edges: view?.edges ?? [], analytics: view?.analytics, insights: view?.insights }), 'application/json')}>JSON ↓</button></span><span>{view?.stats.focused ? <button onClick={() => requestView('reset')}>← Gesamten Ausschnitt anzeigen</button> : 'Klick: untersuchen · Scroll: zoomen'}</span></div>
+        <div className="visualization-footer"><span><span className="status-dot" /> {t('dash.nodesLoaded', { count: number(view?.stats.totalNodes) })}</span><span className="view-export"><button type="button" onClick={() => downloadText('puppetnet-knoten.csv', nodesToCSV(view?.nodes ?? []), 'text/csv;charset=utf-8')}>{t('dash.nodesCsv')}</button><button type="button" onClick={() => downloadText('puppetnet-kanten.csv', edgesToCSV(view?.edges ?? []), 'text/csv;charset=utf-8')}>{t('dash.edgesCsv')}</button><button type="button" onClick={() => downloadText('puppetnet-ansicht.json', viewToJSON({ nodes: view?.nodes ?? [], edges: view?.edges ?? [], analytics: view?.analytics, insights: view?.insights }), 'application/json')}>JSON ↓</button></span><span>{view?.stats.focused ? <button onClick={() => requestView('reset')}>{t('dash.showAll')}</button> : t('dash.clickHintFoot')}</span></div>
       </section>
       <SidePanel node={selected} evidence={evidence} edge={selectedEdge} edgeEvidence={edgeEvidence} edgeLabels={{
         source: selectedEdge ? view?.nodes.find(n => n.id === selectedEdge.source)?.label ?? selectedEdge.source : '',
         target: selectedEdge ? view?.nodes.find(n => n.id === selectedEdge.target)?.label ?? selectedEdge.target : '',
-      }} detailError={detailError} onClose={() => { clearSelected(); setAnnouncement('Details geschlossen.'); }} onDrill={group => { clearSelected(); setBusy(true); send({ kind: 'drill', group, version: ++version.current, filters: filtersRef.current }); }} />
+      }} detailError={detailError} onClose={() => { clearSelected(); setAnnouncement(t('dash.detailsClosed')); }} onDrill={group => { clearSelected(); setBusy(true); send({ kind: 'drill', group, version: ++version.current, filters: filtersRef.current }); }} />
     </div>}
-    <footer className="dashboard-footer"><span>PUPPETNET / OPEN-SOURCE INTELLIGENCE</span><span>Sigma.js 4 · Graphology · Leaflet · OpenStreetMap</span><a className="footer-legal" href="/legal/">Recht, Löschung &amp; Quellen-Policy</a></footer>
+    <footer className="dashboard-footer"><span>PUPPETNET / OPEN-SOURCE INTELLIGENCE</span><span>Sigma.js 4 · Graphology · Leaflet · OpenStreetMap</span><a className="footer-legal" href="/legal/">{t('dash.legalLink')}</a></footer>
   </main>;
 }

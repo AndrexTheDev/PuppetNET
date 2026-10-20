@@ -47,8 +47,8 @@ const TARGETS = [
     history: "apps/web/app/dashboard/page.tsx",
     // `trailingSlash: true` in next.config.mjs makes /dashboard/ the canonical
     // form; a sitemap that lists /dashboard would redirect to itself.
-    urls: [{ loc: "/", priority: "1.0" }, { loc: "/dashboard/", priority: "0.9" }, { loc: "/legal/", priority: "0.3" }],
-    note: "The landing page, the dashboard, the legal page and one static profile per\n"
+    urls: [{ loc: "/", priority: "1.0" }, { loc: "/en/", priority: "0.8" }, { loc: "/dashboard/", priority: "0.9" }, { loc: "/legal/", priority: "0.3" }],
+    note: "The landing page, the English landing, the dashboard, the legal page and one static profile per\n"
       + "     public entity. Profiles are generated from the same dataset the pages\n"
       + "     are built from, so the sitemap cannot list a URL that does not exist.\n"
       + "     The archived v1 console path `/legacy` is a redirect and is never listed.",

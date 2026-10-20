@@ -2,6 +2,8 @@ import '../src/styles/globals.css';
 import './styles.css';
 import AdContainers from './components/AdContainers';
 import Intro from './components/Intro';
+import OfflineService from './components/OfflineService';
+import { LanguageProvider } from './dashboard/i18n';
 
 const origin = process.env.SITE_ORIGIN || process.env.NEXT_PUBLIC_SITE_ORIGIN || 'https://puppetnet-web.pages.dev';
 const metadataBase = (() => {
@@ -16,6 +18,7 @@ const metadataBase = (() => {
 export const metadata = {
   metadataBase,
   icons: { icon: "/media/logo-icon.webp", apple: "/media/logo.png" },
+  manifest: '/manifest.webmanifest',
   title: { default: 'PuppetNET 2.0 — OSINT-Netzwerkanalyse', template: '%s · PuppetNET' },
   description:
     'Sieh das Netzwerk hinter der Geschichte. Entdecke Verbindungen, erkunde Quellen und entwickle neue Rechercheansätze mit PuppetNET.',
@@ -47,8 +50,11 @@ export default function Layout({ children }) {
     <html lang="de">
       <body>
         <a className="skip-link" href="#main-content">Zum Inhalt springen</a>
-        <AdContainers>{children}</AdContainers>
-        <Intro />
+        <OfflineService />
+        <LanguageProvider>
+          <AdContainers>{children}</AdContainers>
+          <Intro />
+        </LanguageProvider>
       </body>
     </html>
   );

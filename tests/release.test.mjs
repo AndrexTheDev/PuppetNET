@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 
 const read = file => readFileSync(file, 'utf8');
@@ -71,8 +71,14 @@ test('resource defaults avoid unsolicited GPU renderer and force simulation', ()
 test('an unusable publication becomes standby, never a silent demo swap', () => {
   const fetcher = read('apps/web/src/lib/dataFetcher.ts');
   assert.match(fetcher, /source: 'standby'/);
-  assert.match(read('apps/web/app/dashboard/BootState.tsx'), /System im Bereitschaftsmodus/);
-  assert.match(read('apps/web/app/dashboard/BootState.tsx'), /Demo-Datensatz laden/);
+  // Wave 6: the standby strings live in the UI dictionary; the panel must
+  // render exactly those keys (the a11y suite asserts the rendered German).
+  const bootState = read('apps/web/app/dashboard/BootState.tsx');
+  assert.ok(bootState.includes("t('boot.standbyTitle')"), 'the standby heading is dictionary-driven');
+  assert.ok(bootState.includes("t('boot.demoButton')"), 'the demo action is dictionary-driven');
+  const strings = read('apps/web/lib/i18n-strings.ts');
+  assert.match(strings, /System im Bereitschaftsmodus/);
+  assert.match(strings, /Demo-Datensatz laden/);
 });
 
 test('CSS primitives and canvas palette share the same source', () => {
@@ -118,6 +124,48 @@ test('edge provenance reaches the worker contract and the inspector', () => {
   assert.match(read('apps/web/app/dashboard/graph.worker.ts'), /evidenceForEdge\(dataset, data\.id\)/);
   assert.match(read('apps/web/app/dashboard/NetworkGraph.tsx'), /renderer\.on\('clickEdge'/);
   const panel = read('apps/web/app/dashboard/SidePanel.tsx');
-  assert.ok(panel.includes('Quellen dieser Kante'));
+  // Wave 6: the pinned German heading moved into the UI dictionary; the panel
+  // must render that key and the dictionary must carry the exact string.
+  assert.ok(panel.includes("t('inspector.edgeSources')"), 'the edge inspector heading is dictionary-driven');
+  assert.ok(read('apps/web/lib/i18n-strings.ts').includes('Quellen dieser Kante'), 'the pinned German heading survives in the dictionary');
   assert.ok(panel.includes('AGGREGATED'), 'grouped edges explain the LoD limitation instead of inventing sources');
+});
+
+test('the PWA shell is safe: guarded registration, honest offline fallback, fresh worker', () => {
+  const sw = read('apps/web/public/sw.js');
+  assert.match(sw, /const CACHE = 'puppetnet-v1'/);
+  assert.match(sw, /request\.method !== 'GET'/, 'only GET requests are intercepted');
+  assert.match(sw, /url\.origin !== self\.location\.origin/, 'cross-origin requests pass through untouched');
+  assert.match(sw, /url\.pathname\.startsWith\('\/data\/'\)/, 'dataset updates are revalidated (stale-while-revalidate), never pinned stale');
+  assert.match(sw, /caches\.match\('\/dashboard\/'\)/, 'offline navigation falls back to the cached app shell');
+  assert.match(sw, /status: 503/, 'nothing is fabricated when even the shell is missing');
+  assert.match(sw, /skipWaiting/);
+  assert.match(sw, /clients\.claim/);
+  const manifest = JSON.parse(read('apps/web/public/manifest.webmanifest'));
+  assert.equal(manifest.start_url, '/dashboard/');
+  assert.equal(manifest.display, 'standalone');
+  assert.ok(Array.isArray(manifest.icons) && manifest.icons.length >= 2);
+  for (const icon of manifest.icons) assert.ok(existsSync(`apps/web/public${icon.src}`), `manifest icon exists: ${icon.src}`);
+  const offline = read('apps/web/app/components/OfflineService.tsx');
+  assert.ok(offline.includes("'serviceWorker' in navigator"), 'registration is feature-guarded');
+  assert.ok(offline.includes("navigator.serviceWorker.register('/sw.js')"));
+  const layout = read('apps/web/app/layout.js');
+  assert.ok(layout.includes('<OfflineService />'), 'the registrar is mounted once in the root layout');
+  assert.ok(layout.includes("manifest: '/manifest.webmanifest'"), 'the manifest is published via metadata');
+  assert.ok(layout.includes('<LanguageProvider>'), 'the UI language context wraps the app');
+  assert.match(read('apps/web/public/_headers'), /\/sw\.js\n {2}Cache-Control: no-store/, 'the service worker itself is never cached');
+});
+
+test('the English landing is a real, linked, hreflang-annotated publication', () => {
+  const en = read('apps/web/app/en/page.tsx');
+  assert.ok(en.includes('lang="en"'), 'the English subtree is language-tagged');
+  assert.ok(en.includes("canonical: '/en/'"));
+  assert.ok(en.includes("languages: { de: '/', en: '/en/', 'x-default': '/' }"));
+  const de = read('apps/web/app/page.tsx');
+  assert.ok(de.includes("languages: { de: '/', en: '/en/', 'x-default': '/' }"), 'the German landing declares its alternate');
+  assert.ok(de.includes('href="/en/"'), 'the German footer links the English landing');
+  assert.ok(en.includes('href="/"'), 'the English footer links back to the German original');
+  for (const file of ['scripts/generate-sitemap.mjs', 'scripts/generate-seo.js', 'scripts/emit-seo-files.mjs']) {
+    assert.ok(read(file).includes('/en/'), `${file} lists the English landing`);
+  }
 });

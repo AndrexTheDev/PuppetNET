@@ -7,6 +7,7 @@ for (const args of [
   ['--import', 'tsx', '--test', 'tests/dashboard.test.ts', 'tests/data_fetcher.test.ts'],
   ['--import', 'tsx', '--test', 'tests/seo.test.ts'],
   ['--import', 'tsx', '--test', 'tests/a11y.test.tsx'],
+  ['--import', 'tsx', '--test', 'tests/i18n.test.tsx'],
 ]) {
   const result = spawnSync(process.execPath, args, { stdio: 'inherit' });
   if (result.status !== 0) process.exit(result.status ?? 1);

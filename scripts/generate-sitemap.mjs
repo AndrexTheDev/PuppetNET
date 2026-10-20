@@ -206,6 +206,7 @@ if (invokedDirectly) {
   const lastmod = dataset.generatedAt;
   const staticEntries = [
     { loc: '/', lastmod, changefreq: 'weekly', priority: '1.0' },
+    { loc: '/en/', lastmod, changefreq: 'weekly', priority: '0.8' },
     { loc: '/dashboard/', lastmod, changefreq: 'monthly', priority: '0.9' },
     { loc: '/legal/', lastmod, changefreq: 'yearly', priority: '0.3' },
   ];

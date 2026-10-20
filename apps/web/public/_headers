@@ -50,3 +50,22 @@
 
 /data/*
   Cache-Control: public, max-age=60, s-maxage=60, must-revalidate
+
+# -----------------------------------------------------------------------------
+#  Wave 6 (PWA + English landing)
+# -----------------------------------------------------------------------------
+#  The service worker itself must never be cached: a stale worker would pin an
+#  old publication. The manifest may revalidate briefly. /en/ follows the same
+#  HTML-shell rule as every other document (no-cache, cheap revalidation).
+
+/sw.js
+  Cache-Control: no-store
+
+/manifest.webmanifest
+  Cache-Control: public, max-age=3600, must-revalidate
+
+/en
+  Cache-Control: no-cache
+
+/en/*
+  Cache-Control: no-cache

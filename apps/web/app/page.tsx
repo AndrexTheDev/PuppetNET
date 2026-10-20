@@ -6,7 +6,7 @@ import { listPublicEntities, loadEntityDataset } from '../lib/entity-store';
 export const metadata: Metadata = {
   title: 'PuppetNET — Folge der Verbindung.',
   description: 'Ein Name ist erst der Anfang. Entdecke Beziehungen, erkunde Netzwerke und finde deinen nächsten Rechercheansatz. Starte die interaktive Demo.',
-  alternates: { canonical: '/' },
+  alternates: { canonical: '/', languages: { de: '/', en: '/en/', 'x-default': '/' } },
   openGraph: { url: '/', title: 'Ein Name. Ein Netzwerk. Eine neue Perspektive.', description: 'Was verbindet sie? Entdecke es mit PuppetNET. Interaktive Netzwerkanalyse, Quellen und neue Recherchewege.' },
 };
 
@@ -35,6 +35,6 @@ export default function Home() {
       <ul className="profile-grid">{entities.map(entity=><li className="profile-card" key={entity.id}><span className="profile-kind">{ENTITY_TYPE_LABELS[entity.type]}</span><h3>{entity.name}</h3><p>{entity.description}</p><Link href={entityPath(entity.slug)}>Spur entdecken<span className="visually-hidden">: {entity.name}</span> ↗</Link></li>)}</ul>
     </section>
     <section className="closing-cta"><span className="eyebrow">WAS VERBINDET SIE?</span><h2>Die nächste Verbindung<br />wartet auf deinen Blick.</h2><p>Öffne die Demo. Wechsle die Perspektive. Stell die nächste Frage.</p><Link className="cta-primary" href="/dashboard/">Jetzt selbst entdecken ↗</Link></section>
-    <footer className="landing-footer"><Link className="landing-brand" href="/"><img className="brand-art" src="/media/logo.webp" width="56" height="56" alt="" /><strong>PUPPETNET</strong></Link><p>Verbindungen sehen. Behauptungen hinterfragen.</p><div><Link href="/dashboard/">Workspace</Link><Link href="/legal/">Recht &amp; Löschung</Link><a href="/sitemap.xml">Sitemap</a></div></footer>
+    <footer className="landing-footer"><Link className="landing-brand" href="/"><img className="brand-art" src="/media/logo.webp" width="56" height="56" alt="" /><strong>PUPPETNET</strong></Link><p>Verbindungen sehen. Behauptungen hinterfragen.</p><div><Link href="/dashboard/">Workspace</Link><Link href="/legal/">Recht &amp; Löschung</Link><a href="/sitemap.xml">Sitemap</a><a href="/en/" lang="en" hrefLang="en">English</a></div></footer>
   </main>;
 }

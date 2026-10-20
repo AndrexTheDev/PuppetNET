@@ -6,7 +6,12 @@
  * cursor and Escape clears it. Keeping the mapping pure makes it testable
  * without a browser (WCAG 2.1.1 — everything operable by mouse is operable by
  * keyboard, with no keyboard trap).
+ *
+ * Wave 6: announcements are dictionary-driven (`lib/i18n-strings`); the default
+ * language stays German, byte-identical to the pinned a11y contract.
  */
+
+import { translate, type Language } from './i18n-strings';
 
 export interface KeyboardNode {
   id: string;
@@ -64,18 +69,13 @@ export function nextIndex(current: number, delta: number, length: number): numbe
   return (((safe + delta) % length) + length) % length;
 }
 
-export function describeGraphNode(node: KeyboardNode, index: number, total: number): string {
-  const position = `Knoten ${index + 1} von ${total}`;
+export function describeGraphNode(node: KeyboardNode, index: number, total: number, lang: Language = 'de'): string {
+  const position = translate(lang, 'keyboard.position', { index: index + 1, total });
   const confidence = Math.round(node.confidence * 100);
-  const kind = node.type === 'Organization' ? 'Organisation' : node.type;
-  return `${position}: ${node.label}. Typ ${kind}. Confidence ${confidence} Prozent. Eingabe öffnet die Details.`;
+  const kind = node.type === 'Organization' ? translate(lang, 'keyboard.kindOrganization') : node.type;
+  return translate(lang, 'keyboard.describe', { position, label: node.label, kind, confidence });
 }
 
-export function graphInstructions(): string {
-  return (
-    'Interaktiver Netzwerkgraph. Pfeiltasten bewegen den Fokus zwischen Knoten, '
-    + 'Eingabe oder Leertaste öffnet die Details, Escape schließt sie. '
-    + 'Plus und Minus zoomen, Null setzt die Ansicht zurück. '
-    + 'Alle Knoten stehen zusätzlich in der Tabellenansicht.'
-  );
+export function graphInstructions(lang: Language = 'de'): string {
+  return translate(lang, 'keyboard.instructions');
 }
