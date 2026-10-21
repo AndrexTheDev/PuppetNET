@@ -1441,6 +1441,13 @@ export interface DatasetDiff {
   resolvedConflicts: number;
   /** Entities that gained their second independent source since the comparison. */
   corroborated: { id: string; label: string; sources: number }[];
+  /** Wave 28: id sets so a watchlist can be judged without keeping the baseline
+   * around. The display lists above stay short; these stay complete up to
+   * `cap`, and `capped` says honestly when they are not. */
+  watch: {
+    added: string[]; gone: string[]; corroborated: string[]; conflicted: string[];
+    relations: string[]; documented: string[]; cap: number; capped: boolean;
+  };
 }
 
 const relationKey = (edge: GraphEdge) => `${edge.source}|${edge.type}|${edge.target}`;
@@ -1486,6 +1493,39 @@ export function diffDatasets(previous: Dataset, current: Dataset, limit = 6): Da
     && (afterSources.get(node.id)?.sources ?? 0) >= 2)
     .map(node => ({ id: node.id, label: node.label, sources: afterSources.get(node.id)!.sources })).sort(byId);
 
+  // Wave 28: one compact index of *which entities* each change touches. Built
+  // here, where both sides are already in memory, so the watchlist digest never
+  // needs the baseline file again.
+  const cap = 2000;
+  const newDocumentIds = new Set(newDocuments.map(doc => doc.id));
+  // A document attached to a relationship documents both of its ends (the rule
+  // nodeBacking uses since wave 23), so "newly documented" must look there too.
+  const tenants = new Map<string, Set<string>>();
+  const seenBy = (docId: string, nodeIds: string[]) => {
+    if (!newDocumentIds.has(docId)) return;
+    for (const id of nodeIds) {
+      const set = tenants.get(id) ?? new Set<string>();
+      set.add(docId);
+      tenants.set(id, set);
+    }
+  };
+  for (const node of current.nodes) for (const docId of node.evidenceIds) seenBy(docId, [node.id]);
+  for (const edge of current.edges) for (const docId of edge.evidenceIds) seenBy(docId, [edge.source, edge.target]);
+  const rawWatch = {
+    added: newEntities.map(entry => entry.id),
+    gone: goneEntities.map(entry => entry.id),
+    corroborated: corroborated.map(entry => entry.id),
+    conflicted: [...new Set(newConflicts.flatMap(entry => entry.pair))],
+    relations: [...new Set([...newRelations, ...goneRelations].flatMap(entry => [entry.source, entry.target]))],
+    documented: current.nodes.filter(node => !node.group && tenants.has(node.id)).map(node => node.id),
+  };
+  const capIds = (ids: string[]) => [...new Set(ids)].sort().slice(0, cap);
+  const watch = {
+    added: capIds(rawWatch.added), gone: capIds(rawWatch.gone), corroborated: capIds(rawWatch.corroborated),
+    conflicted: capIds(rawWatch.conflicted), relations: capIds(rawWatch.relations), documented: capIds(rawWatch.documented),
+    cap, capped: Object.values(rawWatch).some(ids => new Set(ids).size > cap),
+  };
+
   return {
     entities: { added: newEntities.length, removed: goneEntities.length, unchanged: [...afterNodes.keys()].filter(id => beforeNodes.has(id)).length },
     relations: { added: newRelations.length, removed: goneRelations.length, unchanged: [...afterEdges.keys()].filter(key => beforeEdges.has(key)).length },
@@ -1494,6 +1534,7 @@ export function diffDatasets(previous: Dataset, current: Dataset, limit = 6): Da
     newRelations: newRelations.slice(0, limit), goneRelations: goneRelations.slice(0, limit),
     newDocuments: newDocuments.slice(0, limit),
     newConflicts: newConflicts.slice(0, limit), resolvedConflicts, corroborated: corroborated.slice(0, limit),
+    watch,
   };
 }
 
@@ -1508,6 +1549,66 @@ export function diffToCSV(diff: DatasetDiff): string {
   for (const entry of diff.corroborated) rows.push(['corroboration', 'added', entry.id, entry.label, `${entry.sources} sources`]);
   for (const entry of diff.newConflicts) rows.push(['conflict', 'added', entry.pair.join('|'), entry.labels.join(' ↔ '), entry.kind]);
   return [['kind', 'change', 'ref', 'label', 'detail'].map(csvCell).join(','), ...rows.map(row => row.map(csvCell).join(','))].join('\n') + '\n';
+}
+
+/** Wave 28: what changed *for the entities you watch* — the monitoring question
+ * the diff alone cannot answer, because most of a diff is usually noise. */
+export type WatchChangeKind = 'conflict' | 'gone' | 'added' | 'corroborated' | 'relation' | 'document';
+export interface WatchChange {
+  id: string;
+  label: string;
+  kinds: WatchChangeKind[];
+}
+
+const WATCH_CHANGE_RANK: Record<WatchChangeKind, number> = {
+  conflict: 0, gone: 1, added: 2, corroborated: 3, relation: 4, document: 5,
+};
+
+/**
+ * Wave 28: intersects the watchlist with the change index and reports each
+ * watched entity once, with every kind of change it saw. Ordered by what needs
+ * attention (a new contradiction before a new document), deterministic, bounded,
+ * and only entities that actually changed appear — a digest that lists unchanged
+ * watches is not a digest.
+ */
+export function watchChanges(watch: string[], diff: DatasetDiff, nodes: GraphNode[], limit = 12): WatchChange[] {
+  const index = diff.watch;
+  if (!index) return [];
+  const kinds = new Map<string, Set<WatchChangeKind>>();
+  const add = (ids: string[], kind: WatchChangeKind) => {
+    for (const id of ids) {
+      const set = kinds.get(id) ?? new Set<WatchChangeKind>();
+      set.add(kind);
+      kinds.set(id, set);
+    }
+  };
+  add(index.conflicted, 'conflict');
+  add(index.gone, 'gone');
+  add(index.added, 'added');
+  add(index.corroborated, 'corroborated');
+  add(index.relations, 'relation');
+  add(index.documented, 'document');
+  const labels = new Map(nodes.map(node => [node.id, node.label]));
+  const entries: WatchChange[] = [];
+  for (const id of watch) {
+    const found = kinds.get(id);
+    if (!found) continue;
+    entries.push({
+      id,
+      label: labels.get(id) ?? id,
+      kinds: [...found].sort((a, b) => WATCH_CHANGE_RANK[a] - WATCH_CHANGE_RANK[b]),
+    });
+  }
+  entries.sort((a, b) => WATCH_CHANGE_RANK[a.kinds[0]] - WATCH_CHANGE_RANK[b.kinds[0]]
+    || (a.label < b.label ? -1 : a.label > b.label ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  return entries.slice(0, Math.max(1, limit));
+}
+
+/** Wave 28: the digest as RFC-4180 CSV — "what moved among what I watch". */
+export function watchChangesToCSV(changes: WatchChange[]): string {
+  const header = ['id', 'label', 'changes'].map(csvCell).join(',');
+  const rows = changes.map(entry => [entry.id, entry.label, entry.kinds.join(' | ')].map(csvCell).join(','));
+  return [header, ...rows].join('\n') + '\n';
 }
 
 /** Wave 25: one search over the whole case file. Every hit keeps the kind that

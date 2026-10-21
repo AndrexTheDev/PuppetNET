@@ -2,7 +2,7 @@
 import dynamic from 'next/dynamic';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import EntityTable, { type TableRow } from './EntityTable';
-import { COLORS, TYPES, LIMITS, NOTE_STORAGE_KEY, WATCH_STORAGE_KEY, FRESH_WINDOWS, DEFAULT_FRESH_MONTHS, riskToCSV, watchToCSV, watchReport, readWatchlist, toggleWatch, diffToCSV, searchCase, caseReport, decodeViewState, edgesToCSV, encodeViewState, monthWindow, nextPlaybackMonth, nodesToCSV, caseBundle, compareDuplicates, mergeNotes, parseCaseNotes, provenanceGaps, readCaseBundle, searchNoteIndex, removeSavedView, upsertSavedView, readSavedViews, SAVED_VIEW_STORAGE_KEY, normalizeNote, rankSearch, readNotes, resolveNodeRef, viewToJSON, type Evidence, type Filters, type GraphEdge, type GraphNode, type PathTimeline, type View, type ViewUrlState, type DatasetDiff, type CaseHit } from './graph-data';
+import { COLORS, TYPES, LIMITS, NOTE_STORAGE_KEY, WATCH_STORAGE_KEY, FRESH_WINDOWS, DEFAULT_FRESH_MONTHS, riskToCSV, watchToCSV, watchReport, watchChanges, watchChangesToCSV, readWatchlist, toggleWatch, diffToCSV, searchCase, caseReport, decodeViewState, edgesToCSV, encodeViewState, monthWindow, nextPlaybackMonth, nodesToCSV, caseBundle, compareDuplicates, mergeNotes, parseCaseNotes, provenanceGaps, readCaseBundle, searchNoteIndex, removeSavedView, upsertSavedView, readSavedViews, SAVED_VIEW_STORAGE_KEY, normalizeNote, rankSearch, readNotes, resolveNodeRef, viewToJSON, type Evidence, type Filters, type GraphEdge, type GraphNode, type PathTimeline, type View, type ViewUrlState, type DatasetDiff, type CaseHit } from './graph-data';
 import type { NetworkHandle, PathHighlight } from './NetworkGraph';
 import type { WorkerRequest, WorkerResponse } from './protocol';
 import { loadStaticGraph, requestResearch, type Standby } from '../../src/lib/dataFetcher';
@@ -315,6 +315,7 @@ export default function Dashboard() {
   const watched = useMemo(() => view
     ? watchReport(watch, view.nodes, view.edges, evidence, { risk: view.risk, conflicts: view.conflicts })
     : null, [watch, view, evidence]);
+  const watchDigest = useMemo(() => diff && view ? watchChanges(watch, diff, view.nodes) : [], [diff, watch, view]);
   const communities = useMemo(() => {
     const set = new Set<string>();
     for (const n of view?.nodes ?? []) if (n.community && set.size < 100) set.add(n.community);
@@ -620,6 +621,17 @@ export default function Dashboard() {
               <button type="button" className="text-button" aria-label={t('dash.watchRemoveAria', { label: entry.label })} onClick={() => setWatch(current => toggleWatch(current, entry.id))}>×</button>
             </li>)}</ul>
             <button type="button" className="text-button" onClick={() => downloadText('puppetnet-beobachtung.csv', watchToCSV(watched), 'text/csv;charset=utf-8')}>{t('dash.watchCsv')}</button>
+            {diff && <div className="watch-changes">
+              <h5 className="gaps-heading">{t('dash.watchChangesTitle')}</h5>
+              {watchDigest.length === 0
+                ? <p className="muted" role="status">{t('dash.watchChangesNone')}</p>
+                : <><ul className="hub-list">{watchDigest.map(change => <li key={change.id} className="watch-change">
+                  <button type="button" className="text-button" aria-label={t('dash.watchAria', { label: change.label })} onClick={() => { if (mode !== 'network') changeMode('network'); select(change.id); requestAnimationFrame(() => network.current?.focus(change.id)); }}>{change.label}</button>
+                  <span className="watch-change-kinds">{change.kinds.map(kind => <span key={kind} className={`watch-kind watch-kind-${kind}`}>{t(`dash.watchKind${kind[0].toUpperCase()}${kind.slice(1)}`)}</span>)}</span>
+                </li>)}</ul>
+                  <button type="button" className="text-button" onClick={() => downloadText('puppetnet-beobachtung-aenderungen.csv', watchChangesToCSV(watchDigest), 'text/csv;charset=utf-8')}>{t('dash.watchChangesCsv')}</button></>}
+              {diff.watch.capped && <p className="muted small-text">{t('dash.watchChangesCapped', { cap: number(diff.watch.cap) })}</p>}
+            </div>}
             <p className="muted">{t('dash.watchText')}</p>
           </div>}
           <div className="case-search">

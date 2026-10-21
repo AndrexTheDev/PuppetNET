@@ -249,3 +249,10 @@
 .watch-list li.watch-weak .watch-state,.watch-list li.watch-stale .watch-state{color:var(--color-gold)}
 .watch-disputed{color:var(--color-danger)}
 .watch-toggle.is-watched{border-color:var(--color-gold);font-weight:600}
+.watch-changes{margin:var(--space-2,.5rem) 0}
+.watch-change{display:flex;flex-wrap:wrap;gap:var(--space-1,.25rem);align-items:baseline}
+.watch-change-kinds{display:flex;flex-wrap:wrap;gap:0.2rem}
+.watch-kind{font-size:.72em;text-transform:uppercase;letter-spacing:.03em;border:1px solid var(--line);border-radius:var(--radius-1,4px);padding:0 .3rem;opacity:.85}
+.watch-kind-conflict{border-color:var(--color-danger);color:var(--color-danger)}
+.watch-kind-gone{border-color:var(--color-gold);color:var(--color-gold)}
+.watch-kind-corroborated{border-color:var(--color-green);color:var(--color-green)}

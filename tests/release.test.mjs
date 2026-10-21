@@ -499,3 +499,19 @@ test('wave 27: the watchlist is local case work, not telemetry', () => {
   assert.ok(panel.includes("t('inspector.watchAdd')") && panel.includes("t('inspector.watchRemove')"), 'both states are named');
   assert.doesNotMatch(dashboard, /fetch\([^)]*WATCH/, 'the watchlist is never sent anywhere');
 });
+
+test('wave 28: the watch digest needs no baseline and hides nothing', () => {
+  const data = read('apps/web/app/dashboard/graph-data.ts');
+  assert.match(data, /export function watchChanges\(watch: string\[\], diff: DatasetDiff, nodes: GraphNode\[\], limit = 12\): WatchChange\[\]/,
+    'the digest is pure and takes the current labels only');
+  assert.match(data, /if \(!index\) return \[\];/, 'a diff without an index yields nothing instead of guessing');
+  assert.match(data, /const capIds = \(ids: string\[\]\) => \[\.\.\.new Set\(ids\)\]\.sort\(\)\.slice\(0, cap\);/, 'the index is deduplicated, sorted and capped');
+  assert.match(data, /capped: Object\.values\(rawWatch\)\.some/, 'truncation is reported, not silent');
+  assert.match(data, /for \(const edge of current\.edges\) for \(const docId of edge\.evidenceIds\) seenBy\(docId, \[edge\.source, edge\.target\]\);/,
+    'new documents attached to a relationship document both ends, as nodeBacking does');
+  const dashboard = read('apps/web/app/dashboard/Dashboard.tsx');
+  assert.ok(dashboard.includes("t('dash.watchChangesNone')"), 'an unchanged watchlist is stated honestly');
+  assert.ok(dashboard.includes("t('dash.watchChangesCapped',"), 'a capped index says so in the panel');
+  assert.ok(dashboard.includes('watchChangesToCSV(watchDigest)'), 'the digest is exportable');
+  assert.ok(dashboard.includes('watchChanges(watch, diff, view.nodes)'), 'the digest is recomputed when the watchlist changes');
+});

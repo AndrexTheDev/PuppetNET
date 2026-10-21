@@ -676,6 +676,34 @@ Entfernen je Eintrag, Verschwunden-Hinweis und CSV, 16 neue DE/EN-Schlüssel, to
 2 neue Datenlagen-Tests (dashboard 59) + 1 neuer Release-Pin (release 34) —
 `ci:pages` grün, 0 zusätzliche Actions-Minuten.
 
+### Welle 28 — Beobachtungs-Abgleich — ✅ umgesetzt (2026-10-21)
+
+- **Die eigentliche Monitoring-Frage**: Welle 24 zeigt *alles*, was sich geändert hat —
+  und das ist in der Praxis fast immer Rauschen. Welle 28 schneidet den Vergleich auf die
+  **eigene Beobachtungsliste** zu: *was hat sich bei genau dem geändert, was ich im Blick
+  habe?*
+- **Änderungsindex statt Baseline**: `diffDatasets()` liefert jetzt zusätzlich die
+  **Entitäts-IDs** je Änderungsart (neu, verschwunden, korroboriert, neu widersprüchlich,
+  Beziehung geändert, neu dokumentiert). Damit ist der Abgleich eine reine Funktion auf
+  dem geladenen Vergleich — die 64-MiB-Baseline muss nie erneut gelesen werden, und ein
+  Häkchen in der Beobachtungsliste aktualisiert den Abgleich **sofort**.
+- **Jede Entität einmal, alle Änderungsarten erhalten**, sortiert nach Dringlichkeit
+  (neuer Widerspruch → verschwunden → neu → zweite unabhängige Quelle → Beziehung →
+  neues Dokument). Unveränderte Beobachtungen erscheinen **gar nicht** — ein Abgleich, der
+  alles listet, ist keiner.
+- **Gleiche Regel wie überall**: ein neues Dokument, das an einer Beziehung hängt,
+  dokumentiert **beide Enden** (Welle-23-Regel) — sonst meldete der Abgleich eine Entität
+  als unverändert, obwohl sie neue Belege hat.
+- **Ehrliche Grenzen**: der Index ist je Art auf 2 000 IDs begrenzt (dedupliziert,
+  sortiert) und sagt im Panel, wenn gekürzt wurde. Export als CSV für „was hat sich bei
+  meinen Beobachtungen bewegt".
+
+**Geliefert (Welle 28)**: `DatasetDiff.watch`, `watchChanges()`, `watchChangesToCSV()`,
+`WatchChange`/`WatchChangeKind`, Abgleich-Abschnitt im Beobachtungs-Panel (Dringlichkeits-Reihenfolge,
+Arten-Chips, CSV, gekürzt-Hinweis, ehrlicher „nichts geändert"-Zustand), 10 neue DE/EN-Schlüssel,
+token-only CSS, 2 neue Datenlagen-Tests (dashboard 61) + 1 neuer Release-Pin (release 35) —
+`ci:pages` grün, 0 zusätzliche Actions-Minuten.
+
 ## 4. Budget-Zusammenfassung
 
 | Welle | Ort | Zusätzliche Actions-Minuten | Status |
@@ -707,6 +735,7 @@ Entfernen je Eintrag, Verschwunden-Hinweis und CSV, 16 neue DE/EN-Schlüssel, to
 | 25 Akten-Suche | Browser | **0** | ✅ umgesetzt |
 | 26 Build-Gate ortsunabhängig | Build/CI | **0** | ✅ umgesetzt |
 | 27 Beobachtungsliste | Browser (lokal) | **0** | ✅ umgesetzt |
+| 28 Beobachtungs-Abgleich | Browser | **0** | ✅ umgesetzt |
 
 Kein Schritt erzeugt neue Workflows, neue Cron-Jobs, längere Jobs oder bezahlte
 Dienste. Die einzigen verbrauchsrelevanten Grenzen sind die bestehenden: 3
@@ -1360,6 +1389,31 @@ per-entry removal, vanished hint and CSV, 16 new DE/EN keys, token-only CSS,
 2 new data-layer tests (dashboard 59) + 1 new release pin (release 34) —
 `ci:pages` green, 0 extra Actions minutes.
 
+### Wave 28 — watch digest — ✅ implemented (2026-10-21)
+
+- **The actual monitoring question**: wave 24 shows *everything* that changed — which in
+  practice is mostly noise. Wave 28 narrows the comparison to **your watchlist**: *what
+  changed among exactly the entities I am watching?*
+- **A change index instead of a baseline**: `diffDatasets()` now also returns the
+  **entity ids** per kind of change (new, vanished, corroborated, newly contradictory,
+  relationship changed, newly documented). The digest is therefore a pure function on the
+  loaded comparison — the 64 MiB baseline never has to be read again, and ticking an entry
+  in the watchlist refreshes the digest **immediately**.
+- **One row per entity, every kind kept**, ordered by urgency (new contradiction →
+  vanished → new → second independent source → relationship → new document). Unchanged
+  watches do not appear at all — a digest that lists everything is not a digest.
+- **Same rule as everywhere**: a new document attached to a relationship documents **both
+  ends** (the wave-23 rule) — otherwise the digest would call an entity unchanged although
+  it has new evidence.
+- **Honest limits**: the index is capped at 2 000 ids per kind (deduplicated, sorted) and
+  the panel says so when it was truncated. CSV export for "what moved among my watches".
+
+**Delivered (Wave 28)**: `DatasetDiff.watch`, `watchChanges()`, `watchChangesToCSV()`,
+`WatchChange`/`WatchChangeKind`, digest section in the watch panel (urgency order, kind
+chips, CSV, truncation hint, honest "nothing changed" state), 10 new DE/EN keys,
+token-only CSS, 2 new data-layer tests (dashboard 61) + 1 new release pin (release 35) —
+`ci:pages` green, 0 extra Actions minutes.
+
 ## 4. Budget summary
 
 | Wave | Location | Additional Actions minutes | Status |
@@ -1391,6 +1445,7 @@ per-entry removal, vanished hint and CSV, 16 new DE/EN keys, token-only CSS,
 | 25 case search | browser | **0** | ✅ implemented |
 | 26 location-independent build gate | build/CI | **0** | ✅ implemented |
 | 27 watchlist | browser (local) | **0** | ✅ implemented |
+| 28 watch digest | browser | **0** | ✅ implemented |
 
 No step creates new workflows, new cron jobs, longer jobs or paid services. The only
 consumption-relevant limits remain the existing ones: 3 reservations/UTC day, 5-minute

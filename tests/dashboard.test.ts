@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
-import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, monthWindow, bundleEdges, structuralVulnerability, pathTimeline, normalizeNote, readNotes, caseReport, nextPlaybackMonth, evidenceWindow, compareDuplicates, multiFailureImpact, normalizeSavedName, readSavedViews, upsertSavedView, removeSavedView, evidenceToCSV, parseCaseNotes, mergeNotes, searchNoteIndex, caseBundle, readCaseBundle, provenanceGaps, edgeSources, sharedSourceGroups, normalizeEvidence, edgeSourceStatus, sourceRegistry, pairConflicts, evidenceFreshness, monthsBefore, FRESH_WINDOWS, DEFAULT_FRESH_MONTHS, isFreshWindow, filterDataset, nodeBacking, evidenceRisk, riskToCSV, diffDatasets, diffToCSV, searchCase, noteSnippet, WATCH_LIMIT, readWatchlist, toggleWatch, watchReport, watchToCSV, TYPES, SAVED_VIEW_LIMIT, NOTE_LIMIT, EGO_DEPTH_LIMIT, VULNERABILITY_NODE_LIMIT, normalizeInsights, ANALYSIS_LIMITS, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
+import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, monthWindow, bundleEdges, structuralVulnerability, pathTimeline, normalizeNote, readNotes, caseReport, nextPlaybackMonth, evidenceWindow, compareDuplicates, multiFailureImpact, normalizeSavedName, readSavedViews, upsertSavedView, removeSavedView, evidenceToCSV, parseCaseNotes, mergeNotes, searchNoteIndex, caseBundle, readCaseBundle, provenanceGaps, edgeSources, sharedSourceGroups, normalizeEvidence, edgeSourceStatus, sourceRegistry, pairConflicts, evidenceFreshness, monthsBefore, FRESH_WINDOWS, DEFAULT_FRESH_MONTHS, isFreshWindow, filterDataset, nodeBacking, evidenceRisk, riskToCSV, diffDatasets, diffToCSV, searchCase, noteSnippet, WATCH_LIMIT, readWatchlist, toggleWatch, watchReport, watchToCSV, watchChanges, watchChangesToCSV, TYPES, SAVED_VIEW_LIMIT, NOTE_LIMIT, EGO_DEPTH_LIMIT, VULNERABILITY_NODE_LIMIT, normalizeInsights, ANALYSIS_LIMITS, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
 import { apiBase, readResponse } from '../apps/web/app/dashboard/api';
 const filters: Filters = { confidence: 0, weight: 0, types: [...TYPES], lod: true, ratio: 1 };
 test('normalizes Worker and Graphology nodes without inventing coordinates', () => {
@@ -1308,4 +1308,68 @@ test('wave 27 the watch report judges watched entities like the panels do', () =
   assert.ok(csv.startsWith('id,label,type,state,sources,documents,last,conflicts,visible\n'));
   assert.ok(csv.includes('a,Alpha,Other,,3,4,2026-09-01,OWNS | SOLD,yes'), 'the disputed types are exported, not just a flag');
   assert.ok(csv.includes('gone,gone,Other,,,,,,no'), 'a vanished watch is visible in the export');
+});
+
+test('wave 28 the diff indexes who changed, so a watchlist needs no baseline', () => {
+  const before = normalizeDataset({
+    nodes: [{ key: 'a', name: 'Alpha' }, { key: 'b', name: 'Beta' }, { key: 'c', name: 'Gamma' }],
+    evidence: [{ id: 'd1', title: 'One', source: 'HR', date: '2024-01-01' }],
+    edges: [{ source: 'a', target: 'b', type: 'OWNS', evidenceIds: ['d1'] }],
+  });
+  const after = normalizeDataset({
+    nodes: [{ key: 'a', name: 'Alpha' }, { key: 'b', name: 'Beta' }, { key: 'd', name: 'Delta' }, { key: 'x', name: 'X', evidenceIds: ['d3'] }],
+    evidence: [
+      { id: 'd1', title: 'One', source: 'HR', date: '2024-01-01' },
+      { id: 'd2', title: 'Two', source: 'Presse', date: '2025-02-01' },
+      { id: 'd3', title: 'Three', source: 'Blog', date: '2025-03-01' },
+    ],
+    edges: [{ source: 'a', target: 'b', type: 'OWNS', evidenceIds: ['d1', 'd2'] }, { source: 'b', target: 'a', type: 'SOLD', evidenceIds: ['d2'] }],
+  });
+  const diff = diffDatasets(before, after);
+  assert.deepEqual(diff.watch.added, ['d', 'x'], 'new entities are indexed');
+  assert.deepEqual(diff.watch.gone, ['c'], 'vanished entities are indexed');
+  assert.deepEqual(diff.watch.corroborated, ['a', 'b'], 'the second source is indexed per entity');
+  assert.deepEqual(diff.watch.conflicted, ['a', 'b'], 'both ends of a new contradiction are indexed');
+  assert.deepEqual(diff.watch.relations, ['a', 'b'], 'entities touched by a changed relationship');
+  assert.deepEqual(diff.watch.documented, ['a', 'b', 'x'],
+    'a document attached to a relationship documents both ends, exactly like nodeBacking');
+  assert.equal(diff.watch.capped, false);
+  assert.equal(diff.watch.cap, 2000);
+  assert.deepEqual(diffDatasets(after, after).watch.added, [], 'an identical state indexes nothing');
+});
+
+test('wave 28 the watch digest reports only what changed, worst first', () => {
+  const before = normalizeDataset({
+    nodes: [{ key: 'a', name: 'Alpha' }, { key: 'b', name: 'Beta' }, { key: 'c', name: 'Gamma' }, { key: 'r', name: 'Ruhe' }],
+    evidence: [{ id: 'd1', title: 'One', source: 'HR', date: '2024-01-01' }, { id: 'r1', title: 'R1', source: 'A', date: '2026-01-01' }, { id: 'r2', title: 'R2', source: 'B', date: '2026-02-01' }],
+    edges: [{ source: 'a', target: 'b', type: 'OWNS', evidenceIds: ['d1'] }, { source: 'r', target: 'a', type: 'MET', evidenceIds: ['r1', 'r2'] }],
+  });
+  const after = normalizeDataset({
+    nodes: [{ key: 'a', name: 'Alpha' }, { key: 'b', name: 'Beta' }, { key: 'd', name: 'Delta' }, { key: 'r', name: 'Ruhe' }],
+    evidence: [
+      { id: 'd1', title: 'One', source: 'HR', date: '2024-01-01' },
+      { id: 'd2', title: 'Two', source: 'Presse', date: '2025-02-01' },
+      { id: 'r1', title: 'R1', source: 'A', date: '2026-01-01' },
+      { id: 'r2', title: 'R2', source: 'B', date: '2026-02-01' },
+    ],
+    edges: [{ source: 'a', target: 'b', type: 'OWNS', evidenceIds: ['d1', 'd2'] }, { source: 'b', target: 'a', type: 'SOLD', evidenceIds: ['d2'] }, { source: 'r', target: 'a', type: 'MET', evidenceIds: ['r1', 'r2'] }],
+  });
+  const diff = diffDatasets(before, after);
+  const digest = watchChanges(['a', 'b', 'c', 'd', 'r', 'unbekannt'], diff, after.nodes);
+  assert.deepEqual(digest.map(entry => [entry.label, entry.kinds[0]]), [
+    ['Alpha', 'conflict'], ['Beta', 'conflict'], ['c', 'gone'], ['Delta', 'added'],
+  ], 'worst first: contradictions, then vanished, then new; unchanged watches and unknown ids are absent');
+  assert.deepEqual(digest[0].kinds, ['conflict', 'relation', 'document'],
+    'every kind of change is kept and ranked — Alpha was already corroborated before the comparison');
+  assert.deepEqual(digest[1].kinds, ['conflict', 'corroborated', 'relation', 'document'],
+    'Beta gained its second independent source in the same step');
+  assert.deepEqual(digest[2].label, 'c', 'a vanished watch falls back to its id when the current export cannot name it');
+  assert.deepEqual(watchChanges([], diff, after.nodes), [], 'an empty watchlist has nothing to digest');
+  assert.deepEqual(watchChanges(['a'], diff, after.nodes), watchChanges(['a'], diff, after.nodes), 'deterministic');
+  assert.equal(watchChanges(['a', 'b', 'c', 'x'], diff, after.nodes, 2).length, 2, 'bounded');
+  assert.deepEqual(watchChanges(['a'], { ...diff, watch: undefined as never }, after.nodes), [],
+    'a diff without an index cannot produce a digest instead of guessing');
+  const csv = watchChangesToCSV(digest);
+  assert.ok(csv.startsWith('id,label,changes\n'));
+  assert.ok(csv.includes('b,Beta,conflict | corroborated | relation | document'), 'the CSV carries the full kind list');
 });
