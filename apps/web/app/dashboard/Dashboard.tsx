@@ -21,7 +21,7 @@ export default function Dashboard() {
   // Shareable permalink state: mode, query, focus, community, time window, color mode.
   const initialUrl = useRef<ViewUrlState>(typeof window === 'undefined' ? {} : decodeViewState(window.location.search));
   const [view, setView] = useState<View | null>(null), [busy, setBusy] = useState(true);
-  const [filters, setFilters] = useState<Filters>(() => ({ ...initialFilters, ...(initialUrl.current.community ? { community: initialUrl.current.community } : {}), ...(initialUrl.current.from ? { from: initialUrl.current.from } : {}), ...(initialUrl.current.to ? { to: initialUrl.current.to } : {}) }));
+  const [filters, setFilters] = useState<Filters>(() => ({ ...initialFilters, ...(initialUrl.current.community ? { community: initialUrl.current.community } : {}), ...(initialUrl.current.from ? { from: initialUrl.current.from } : {}), ...(initialUrl.current.to ? { to: initialUrl.current.to } : {}), ...(initialUrl.current.sources ? { sources: initialUrl.current.sources } : {}) }));
   const filtersRef = useRef(filters); filtersRef.current = filters;
   const busyRef = useRef(busy); busyRef.current = busy;
   const viewLatest = useRef<View | null>(null); viewLatest.current = view;
@@ -231,7 +231,7 @@ export default function Dashboard() {
   // URL without adding history entries (bound values only, no free text blobs).
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    const query = encodeViewState({ mode, q: search || undefined, focus: selected?.id || undefined, community: filters.community, from: filters.from, to: filters.to, color: colorMode });
+    const query = encodeViewState({ mode, q: search || undefined, focus: selected?.id || undefined, community: filters.community, from: filters.from, to: filters.to, color: colorMode, sources: filters.sources });
     window.history.replaceState(null, '', query ? `${window.location.pathname}?${query}` : window.location.pathname);
   }, [mode, search, selected, filters.community, filters.from, filters.to, colorMode]);
   const onRatio = useCallback((ratio: number) => { if (busyRef.current) return; const bucket = ratio >= .55 ? 1 : ratio >= .18 ? .35 : .1; setFilters(f => f.ratio === bucket ? f : { ...f, ratio: bucket }); }, []);
@@ -333,7 +333,7 @@ export default function Dashboard() {
   const saveCurrentView = () => {
     const name = viewName.trim();
     if (!name) { setViewsStatus(t('dash.viewsNeedName')); return; }
-    const query = encodeViewState({ mode, q: search || undefined, community: filters.community, from: filters.from, to: filters.to, color: colorMode, focus: selected?.id });
+    const query = encodeViewState({ mode, q: search || undefined, community: filters.community, from: filters.from, to: filters.to, color: colorMode, focus: selected?.id, sources: filters.sources });
     setSavedViews(list => upsertSavedView(list, name, query || 'mode=list', new Date().toISOString()));
     setViewName('');
     setViewsStatus(t('dash.viewsSaved', { name }));
@@ -443,6 +443,14 @@ export default function Dashboard() {
           </div>
           {(filters.from || filters.to) && <button type="button" className="text-button" onClick={() => setFilters(f => ({ ...f, from: undefined, to: undefined }))}>{t('dash.clearTimeFilter')}</button>}
           <p>{t('dash.timeNote')}</p></div>
+        <div className="sources-filter"><h3>{t('dash.sourcesTitle')}</h3>
+          <select id="sources-select" disabled={busy} aria-label={t('dash.sourcesTitle')} value={filters.sources ?? 'any'} onChange={e => { const value = e.target.value; setFilters(f => ({ ...f, sources: value === 'any' ? undefined : value as 'corroborated' | 'thin' })); }}>
+            <option value="any">{t('dash.sourcesAny')}</option>
+            <option value="corroborated">{t('dash.sourcesCorroborated')}</option>
+            <option value="thin">{t('dash.sourcesThin')}</option>
+          </select>
+          {filters.sources && view && <p className="muted small-text">{view.edges.length ? t('dash.sourcesActive', { edges: number(view.edges.length), total: number(view.stats.filteredEdges) }) : t('dash.sourcesEmpty')}</p>}
+          <p>{t('dash.sourcesText')}</p></div>
         <div className="lod-setting"><label><input type="checkbox" disabled={busy} checked={filters.lod} onChange={e => { if (!e.target.checked && (view?.stats.filteredNodes ?? 0) > 20_000 && !window.confirm(tRef.current('dash.lodConfirm'))) return; setFilters(f => ({ ...f, lod: e.target.checked })); }} /> {t('dash.lodLabel')}</label><p>{t('dash.lodNote')}</p></div>
         <div className="lod-setting"><label><input type="checkbox" disabled={busy} checked={!!filters.bundle} onChange={e => setFilters(f => ({ ...f, bundle: e.target.checked }))} /> {t('dash.bundleLabel')}</label><p>{t('dash.bundleNote')}</p>{filters.bundle && view && view.edges.length !== view.stats.filteredEdges && <p className="muted">{t('dash.bundleStats', { shown: number(view.edges.length), total: number(view.stats.filteredEdges) })}</p>}</div>
         {view?.analytics && <div className="analytics-panel"><div className="section-heading"><h3>{t('dash.analyticsTitle')}</h3></div>

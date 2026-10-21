@@ -336,3 +336,16 @@ test('wave 18: source independence is judged, not just counted', () => {
   const dashboard = read('apps/web/app/dashboard/Dashboard.tsx');
   assert.ok(dashboard.includes("t('dash.sharedText')"), 'the shared-document panel carries its no-identity-claim note');
 });
+
+test('wave 19: the evidence-quality filter is shareable, bounded and honest', () => {
+  const data = read('apps/web/app/dashboard/graph-data.ts');
+  assert.match(data, /export type SourceFilter = 'any' \| 'corroborated' \| 'thin'/, 'the filter is a closed vocabulary');
+  assert.match(data, /export function edgeSourceStatus\(edge: GraphEdge, evidence: Evidence\[\]\): SourceIndependence/, 'per-edge status is reusable and pure');
+  assert.match(data, /if \(filters\.sources === 'corroborated'\) edges = edges\.filter/, 'corroboration narrows edges only');
+  assert.match(data, /const SOURCE_FILTERS: SourceFilter\[\] = \['corroborated', 'thin'\]/, 'only known values survive a round trip');
+  assert.match(data, /if \(sources && SOURCE_FILTERS\.includes\(sources\)\) state\.sources = sources/, 'URL junk never reaches the filter');
+  const dashboard = read('apps/web/app/dashboard/Dashboard.tsx');
+  assert.ok(dashboard.includes("t('dash.sourcesText')"), 'the claim-not-entity rule is stated in the UI');
+  assert.ok(dashboard.includes("t('dash.sourcesEmpty')"), 'an empty narrowing is explained, not hidden');
+  assert.match(dashboard, /sources: filters\.sources/, 'permalink state carries the filter');
+});

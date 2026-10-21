@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
-import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, monthWindow, bundleEdges, structuralVulnerability, pathTimeline, normalizeNote, readNotes, caseReport, nextPlaybackMonth, evidenceWindow, compareDuplicates, multiFailureImpact, normalizeSavedName, readSavedViews, upsertSavedView, removeSavedView, evidenceToCSV, parseCaseNotes, mergeNotes, searchNoteIndex, caseBundle, readCaseBundle, provenanceGaps, edgeSources, sharedSourceGroups, normalizeEvidence, SAVED_VIEW_LIMIT, NOTE_LIMIT, EGO_DEPTH_LIMIT, VULNERABILITY_NODE_LIMIT, normalizeInsights, ANALYSIS_LIMITS, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
+import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, monthWindow, bundleEdges, structuralVulnerability, pathTimeline, normalizeNote, readNotes, caseReport, nextPlaybackMonth, evidenceWindow, compareDuplicates, multiFailureImpact, normalizeSavedName, readSavedViews, upsertSavedView, removeSavedView, evidenceToCSV, parseCaseNotes, mergeNotes, searchNoteIndex, caseBundle, readCaseBundle, provenanceGaps, edgeSources, sharedSourceGroups, normalizeEvidence, edgeSourceStatus, SAVED_VIEW_LIMIT, NOTE_LIMIT, EGO_DEPTH_LIMIT, VULNERABILITY_NODE_LIMIT, normalizeInsights, ANALYSIS_LIMITS, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
 import { apiBase, readResponse } from '../apps/web/app/dashboard/api';
 const filters: Filters = { confidence: 0, weight: 0, types: [...TYPES], lod: true, ratio: 1 };
 test('normalizes Worker and Graphology nodes without inventing coordinates', () => {
@@ -798,4 +798,36 @@ test('wave 18 shared documents group the entities they back', () => {
   assert.equal(sharedSourceGroups(grouped, data.evidence)[0].entities.length, 2, 'LoD display groups are not entities');
   assert.equal(sharedSourceGroups(data.nodes, data.evidence, 1).length, 1, 'the list is bounded');
   assert.deepEqual(sharedSourceGroups([], []), []);
+});
+
+test('wave 19 evidence-quality filter narrows claims, never entities', () => {
+  const data = normalizeDataset({
+    nodes: [{ key: 'a', name: 'A' }, { key: 'b', name: 'B' }, { key: 'c', name: 'C' }],
+    evidence: [
+      { id: 'd1', title: 'Register', source: 'HR' },
+      { id: 'd2', title: 'Artikel', source: 'Presse' },
+      { id: 'd3', title: 'Blog' },
+      { id: 'd4', title: 'Blog 2' },
+    ],
+    edges: [
+      { source: 'a', target: 'b', type: 'OWNS', evidenceIds: ['d1', 'd2'] },
+      { source: 'b', target: 'c', type: 'OWNS', evidenceIds: ['d1'] },
+      { source: 'a', target: 'c', type: 'MET', evidenceIds: ['d3', 'd4'] },
+    ],
+  });
+  const base: Filters = { confidence: 0, weight: 0, types: [...TYPES], lod: false, ratio: 1 };
+  const ids = (sources?: 'corroborated' | 'thin') => filterDataset(data, { ...base, sources }).edges.map(edge => edge.id);
+  assert.deepEqual(ids(), ['edge:0', 'edge:1', 'edge:2'], 'no filter keeps every claim');
+  assert.deepEqual(ids('corroborated'), ['edge:0'], 'only distinct named sources count as corroboration');
+  assert.deepEqual(ids('thin'), ['edge:1', 'edge:2'], 'single docs and unnamed pairs are thin, not silent');
+  assert.equal(filterDataset(data, { ...base, sources: 'corroborated' }).nodes.length, 3, 'entities are never removed by the claim filter');
+  assert.equal(edgeSourceStatus(data.edges[0], data.evidence), 'independent');
+  assert.equal(edgeSourceStatus(data.edges[1], data.evidence), 'single');
+  assert.equal(edgeSourceStatus(data.edges[2], data.evidence), 'unknown', 'two unnamed documents are not independent');
+  const nobody = filterDataset(data, base);
+  assert.deepEqual(filterDataset(data, { ...base, sources: 'thin' }).evidence, nobody.evidence, 'the evidence table is never reduced');
+  assert.equal(encodeViewState({ sources: 'thin' }), 'sources=thin');
+  assert.equal(decodeViewState('?sources=corroborated').sources, 'corroborated');
+  assert.equal(decodeViewState('?sources=junk').sources, undefined, 'junk in the URL is ignored');
+  assert.equal(encodeViewState({}), '');
 });

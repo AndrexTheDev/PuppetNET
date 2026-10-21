@@ -200,3 +200,6 @@
 .shared-doc{font-weight:600;overflow-wrap:anywhere}
 .shared-meta{font-size:.8em;opacity:.7;font-variant-numeric:tabular-nums}
 .shared-entities{display:flex;flex-wrap:wrap;gap:var(--space-1,0.25rem)}
+
+/* Wave 19: evidence-quality filter (token-only) */
+.sources-filter select{width:100%;margin:var(--space-1,0.25rem) 0;background:var(--color-forest-900);color:var(--color-white);border:1px solid var(--line);border-radius:var(--radius-1,0.25rem);padding:0.35rem 0.5rem;font:inherit}

@@ -439,6 +439,27 @@ Gemeinsame-Belege-Panel + Berichtszeile (DE/EN), token-only CSS, 2 neue Datenlag
 (dashboard 44) + 1 neuer Release-Pin (release 24) — `ci:pages` grün, 0 zusätzliche
 Actions-Minuten.
 
+### Welle 19 — Quellen-Filter (Belegqualität als Arbeitsmittel) — ✅ umgesetzt (2026-10-20)
+
+- **Netz auf belastbare Aussagen einschränken**: Der Filter „Belegqualität" bietet
+  *Alle Beziehungen*, *Nur mehrfach belegte* (mindestens zwei Belege aus **verschiedenen
+  benannten** Quellen) und *Nur dünn belegte* (Einzelbeleg, gleicher Quellenname oder
+  ohne Quellenname). Damit wird aus der Anzeige aus Welle 18 ein Arbeitsmittel: erst
+  der Korridor, der einer Prüfung standhält, dann die Lücken.
+- **Grundsatz „Aussagen, keine Entitäten"**: Der Filter entfernt ausschließlich Kanten —
+  Entitäten bleiben sichtbar, auch wenn ihre Belege dünn sind. Die Belegtabelle wird nie
+  reduziert, die Statuszeile nennt „x von y Beziehungen entsprechen der Belegqualität",
+  und bei leerem Ergebnis steht das ehrlich da statt eines leeren Netzes ohne Erklärung.
+- **Teilbare Ansicht**: Der Filter liegt im Permalink (`sources=corroborated|thin`),
+  unbekannte Werte werden beim Lesen verworfen — eine manipulierte URL kann den Filter
+  nicht in einen undefinierten Zustand bringen.
+
+**Geliefert (Welle 19)**: `SourceFilter` + `edgeSourceStatus()` (reine, getestete
+Funktionen), Kantenfilter in `filterDataset()`, URL-Roundtrip, Filter-Block im
+Filter-Panel (DE/EN, Statuszeile, Leer-Hinweis), token-only CSS, 1 neuer Datenlagen-Test
+(dashboard 45) + 1 neuer Release-Pin (release 25) — `ci:pages` grün, 0 zusätzliche
+Actions-Minuten.
+
 ## 4. Budget-Zusammenfassung
 
 | Welle | Ort | Zusätzliche Actions-Minuten | Status |
@@ -461,6 +482,7 @@ Actions-Minuten.
 | 16 Notiz-Index/Fallakte | Browser | **0** | ✅ umgesetzt |
 | 17 Provenienz-Lücken/Fallakte-Import | Browser/Web Worker | **0** | ✅ umgesetzt |
 | 18 Belegqualität/gemeinsame Belege | Browser/Web Worker | **0** | ✅ umgesetzt |
+| 19 Quellen-Filter | Browser/Worker | **0** | ✅ umgesetzt |
 
 Kein Schritt erzeugt neue Workflows, neue Cron-Jobs, längere Jobs oder bezahlte
 Dienste. Die einzigen verbrauchsrelevanten Grenzen sind die bestehenden: 3
@@ -895,6 +917,26 @@ shared-document panel + report line (DE/EN), token-only CSS, 2 new data-layer te
 (dashboard 44) + 1 new release pin (release 24) — `ci:pages` green, 0 extra Actions
 minutes.
 
+### Wave 19 — evidence-quality filter (quality as a working tool) — ✅ implemented (2026-10-20)
+
+- **Narrow the network to claims that hold**: the "evidence quality" filter offers *all
+  relationships*, *corroborated only* (at least two documents from **distinct named**
+  sources) and *thinly sourced only* (single document, same source name, or no source
+  name). That turns the Wave-18 display into a tool: first the corridor that survives
+  review, then the gaps.
+- **"Claims, not entities"**: the filter removes edges only — entities stay visible even
+  when their evidence is thin. The evidence table is never reduced, the status line says
+  "x of y relationships match the evidence quality", and an empty result is stated
+  honestly instead of leaving an unexplained empty network.
+- **Shareable view**: the filter lives in the permalink
+  (`sources=corroborated|thin`); unknown values are dropped on read, so a tampered URL
+  cannot put the filter into an undefined state.
+
+**Delivered (Wave 19)**: `SourceFilter` + `edgeSourceStatus()` (pure, tested functions),
+edge filtering in `filterDataset()`, URL round trip, filter block in the filter panel
+(DE/EN, status line, empty hint), token-only CSS, 1 new data-layer test (dashboard 45) +
+1 new release pin (release 25) — `ci:pages` green, 0 extra Actions minutes.
+
 ## 4. Budget summary
 
 | Wave | Location | Additional Actions minutes | Status |
@@ -917,6 +959,7 @@ minutes.
 | 16 note index/case bundle | browser | **0** | ✅ implemented |
 | 17 provenance gaps/bundle import | browser/web worker | **0** | ✅ implemented |
 | 18 evidence quality/shared documents | browser/web worker | **0** | ✅ implemented |
+| 19 evidence-quality filter | browser/worker | **0** | ✅ implemented |
 
 No step creates new workflows, new cron jobs, longer jobs or paid services. The only
 consumption-relevant limits remain the existing ones: 3 reservations/UTC day, 5-minute

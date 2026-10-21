@@ -26,7 +26,7 @@ export interface GraphNode {
 }
 export interface GraphEdge { id: string; source: string; target: string; type: string; confidence: number; weight: number; evidenceIds: string[]; count?: number; types?: string[] }
 export interface Dataset { nodes: GraphNode[]; edges: GraphEdge[]; evidence: Evidence[]; truncated?: boolean; analytics?: GraphAnalytics; insights?: GraphInsight[] }
-export interface Filters { confidence: number; weight: number; types: EntityType[]; lod: boolean; ratio: number; community?: string; from?: string; to?: string; bundle?: boolean }
+export interface Filters { confidence: number; weight: number; types: EntityType[]; lod: boolean; ratio: number; community?: string; from?: string; to?: string; bundle?: boolean; sources?: SourceFilter }
 export interface Vulnerability {
   cutVertices: { id: string; label: string; degree: number; impact: { components: number; largest: number } }[];
   cutEdges: number;
@@ -179,6 +179,17 @@ export function normalizeDataset(input: unknown): Dataset {
   return { nodes, edges, evidence, truncated: raw.truncated === true, ...(analytics ? { analytics } : {}),
     ...(insights.length ? { insights } : {}) };
 }
+/** Wave 19: work on claims that stand up. `corroborated` keeps relationships
+ * with at least two distinct named sources, `thin` keeps the rest — the edges
+ * that still need a second source. Entities are never dropped by this filter:
+ * it narrows *claims*, not people. */
+export type SourceFilter = 'any' | 'corroborated' | 'thin';
+const SOURCE_FILTERS: SourceFilter[] = ['corroborated', 'thin'];
+export function edgeSourceStatus(edge: GraphEdge, evidence: Evidence[]): SourceIndependence {
+  const documents = new Set(edge.evidenceIds);
+  return edgeSources(evidence.filter(doc => documents.has(doc.id))).independence;
+}
+
 export function filterDataset(data: Dataset, filters: Filters): Dataset {
   const types = new Set(filters.types);
   let nodes = data.nodes.filter(n => types.has(n.type) && n.confidence >= filters.confidence);
@@ -196,7 +207,9 @@ export function filterDataset(data: Dataset, filters: Filters): Dataset {
     });
   }
   const keep = new Set(nodes.map(n => n.id));
-  const edges = data.edges.filter(e => e.confidence >= filters.confidence && e.weight >= filters.weight && keep.has(e.source) && keep.has(e.target));
+  let edges = data.edges.filter(e => e.confidence >= filters.confidence && e.weight >= filters.weight && keep.has(e.source) && keep.has(e.target));
+  if (filters.sources === 'corroborated') edges = edges.filter(e => edgeSourceStatus(e, data.evidence) === 'independent');
+  else if (filters.sources === 'thin') edges = edges.filter(e => edgeSourceStatus(e, data.evidence) !== 'independent');
   return { nodes, edges, evidence: data.evidence, ...(data.analytics ? { analytics: data.analytics } : {}),
     ...(data.insights ? { insights: data.insights } : {}) };
 }
@@ -1236,7 +1249,7 @@ export function viewToJSON(view: { nodes: GraphNode[]; edges: GraphEdge[]; analy
 }
 
 /** Shareable permalinks: bounded, validated URL state (no secrets, no free text). */
-export interface ViewUrlState { mode?: 'network' | 'map' | 'list'; q?: string; focus?: string; community?: string; from?: string; to?: string; color?: 'type' | 'community' }
+export interface ViewUrlState { mode?: 'network' | 'map' | 'list'; q?: string; focus?: string; community?: string; from?: string; to?: string; color?: 'type' | 'community'; sources?: SourceFilter }
 export function encodeViewState(state: ViewUrlState): string {
   const params = new URLSearchParams();
   if (state.mode) params.set('mode', state.mode);
@@ -1246,6 +1259,7 @@ export function encodeViewState(state: ViewUrlState): string {
   if (state.color === 'community') params.set('color', 'community');
   if (state.from) params.set('from', state.from);
   if (state.to) params.set('to', state.to);
+  if (state.sources && SOURCE_FILTERS.includes(state.sources)) params.set('sources', state.sources);
   return params.toString();
 }
 export function decodeViewState(search: string): ViewUrlState {
@@ -1260,6 +1274,8 @@ export function decodeViewState(search: string): ViewUrlState {
   const from = isoDate(params.get('from')), to = isoDate(params.get('to'));
   if (from) state.from = from;
   if (to) state.to = to;
+  const sources = params.get('sources') as SourceFilter | null;
+  if (sources && SOURCE_FILTERS.includes(sources)) state.sources = sources;
   return state;
 }
 
