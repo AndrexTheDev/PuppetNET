@@ -2,7 +2,7 @@
 import dynamic from 'next/dynamic';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import EntityTable, { type TableRow } from './EntityTable';
-import { COLORS, TYPES, LIMITS, NOTE_STORAGE_KEY, WATCH_STORAGE_KEY, FRESH_WINDOWS, DEFAULT_FRESH_MONTHS, riskToCSV, watchToCSV, watchReport, watchChanges, watchChangesToCSV, entityBrief, watchBrief, caseArchive, zipStore, evidenceToCSV, readWatchlist, toggleWatch, diffToCSV, searchCase, caseReport, decodeViewState, edgesToCSV, encodeViewState, monthWindow, nextPlaybackMonth, nodesToCSV, caseBundle, compareDuplicates, mergeNotes, parseCaseNotes, provenanceGaps, readCaseBundle, searchNoteIndex, removeSavedView, upsertSavedView, readSavedViews, SAVED_VIEW_STORAGE_KEY, normalizeNote, rankSearch, readNotes, resolveNodeRef, viewToJSON, type Evidence, type Filters, type GraphEdge, type GraphNode, type PathTimeline, type View, type ViewUrlState, type DatasetDiff, type CaseHit } from './graph-data';
+import { COLORS, TYPES, LIMITS, NOTE_STORAGE_KEY, WATCH_STORAGE_KEY, FRESH_WINDOWS, DEFAULT_FRESH_MONTHS, riskToCSV, watchToCSV, watchReport, watchChanges, watchChangesToCSV, entityBrief, watchBrief, caseArchive, zipStore, evidenceToCSV, entityTimeline, readWatchlist, toggleWatch, diffToCSV, searchCase, caseReport, decodeViewState, edgesToCSV, encodeViewState, monthWindow, nextPlaybackMonth, nodesToCSV, caseBundle, compareDuplicates, mergeNotes, parseCaseNotes, provenanceGaps, readCaseBundle, searchNoteIndex, removeSavedView, upsertSavedView, readSavedViews, SAVED_VIEW_STORAGE_KEY, normalizeNote, rankSearch, readNotes, resolveNodeRef, viewToJSON, type Evidence, type Filters, type GraphEdge, type GraphNode, type PathTimeline, type View, type ViewUrlState, type DatasetDiff, type CaseHit, type EntityTimeline } from './graph-data';
 import type { NetworkHandle, PathHighlight } from './NetworkGraph';
 import type { WorkerRequest, WorkerResponse } from './protocol';
 import { loadStaticGraph, requestResearch, type Standby } from '../../src/lib/dataFetcher';
@@ -315,6 +315,12 @@ export default function Dashboard() {
   const watched = useMemo(() => view
     ? watchReport(watch, view.nodes, view.edges, evidence, { risk: view.risk, conflicts: view.conflicts })
     : null, [watch, view, evidence]);
+  // Wave 31: the selected entity's own chronology — computed from the same slice the
+  // panels show, so on-screen timeline and brief can never disagree.
+  const selectedTimeline = useMemo<EntityTimeline | undefined>(() => {
+    if (!view || !selected || selected.group) return undefined;
+    return entityTimeline(selected.id, view.nodes, view.edges, evidence, view.conflicts ?? []);
+  }, [view, selected, evidence]);
   const watchDigest = useMemo(() => diff && view ? watchChanges(watch, diff, view.nodes) : [], [diff, watch, view]);
   const communities = useMemo(() => {
     const set = new Set<string>();
@@ -333,8 +339,10 @@ export default function Dashboard() {
     const context = briefContext();
     const changes = watchDigest.filter(change => change.id === node);
     downloadText(`puppetnet-kurzbericht-${node.replace(/[^\w.-]+/g, '_').slice(0, 60)}.md`,
-      entityBrief({ ...context, id: node, watched: watch.includes(node), changes }, new Date().toISOString(), lang), 'text/markdown;charset=utf-8');
-  }, [briefContext, watch, watchDigest, lang]);
+      entityBrief({ ...context, id: node, watched: watch.includes(node), changes,
+        timeline: viewLatest.current ? entityTimeline(node, viewLatest.current.nodes, viewLatest.current.edges, evidence, viewLatest.current.conflicts ?? []) : undefined },
+        new Date().toISOString(), lang), 'text/markdown;charset=utf-8');
+  }, [briefContext, watch, watchDigest, evidence, lang]);
   const exportWatchBrief = useCallback(() => {
     downloadText('puppetnet-beobachtungen-kurzberichte.md',
       watchBrief(watch, briefContext(), new Date().toISOString(), lang), 'text/markdown;charset=utf-8');
@@ -843,7 +851,7 @@ export default function Dashboard() {
         source: selectedEdge ? view?.nodes.find(n => n.id === selectedEdge.source)?.label ?? selectedEdge.source : '',
         target: selectedEdge ? view?.nodes.find(n => n.id === selectedEdge.target)?.label ?? selectedEdge.target : '',
       }} detailError={detailError} note={selected && !selected.group ? notes[selected.id] ?? '' : ''} onEgo={id => requestEgo(id)}
-      watched={Boolean(selected && watch.includes(selected.id))} onWatch={() => { if (!selected || selected.group) return; setWatch(current => toggleWatch(current, selected.id)); }} onBrief={selected && !selected.group ? exportEntityBrief : undefined} onNote={text => { if (!selected || selected.group) return; const clean = normalizeNote(text); setNotes(current => { const next = { ...current }; if (clean) next[selected.id] = clean; else delete next[selected.id]; return next; }); }} onClose={() => { clearSelected(); setAnnouncement(t('dash.detailsClosed')); }} onDrill={group => { clearSelected(); setBusy(true); send({ kind: 'drill', group, version: ++version.current, filters: filtersRef.current }); }} />
+      watched={Boolean(selected && watch.includes(selected.id))} onWatch={() => { if (!selected || selected.group) return; setWatch(current => toggleWatch(current, selected.id)); }} onBrief={selected && !selected.group ? exportEntityBrief : undefined} timeline={selectedTimeline} onNote={text => { if (!selected || selected.group) return; const clean = normalizeNote(text); setNotes(current => { const next = { ...current }; if (clean) next[selected.id] = clean; else delete next[selected.id]; return next; }); }} onClose={() => { clearSelected(); setAnnouncement(t('dash.detailsClosed')); }} onDrill={group => { clearSelected(); setBusy(true); send({ kind: 'drill', group, version: ++version.current, filters: filtersRef.current }); }} />
     </div>}
     <footer className="dashboard-footer"><span>PUPPETNET / OPEN-SOURCE INTELLIGENCE</span><span>Sigma.js 4 · Graphology · Leaflet · OpenStreetMap</span><a className="footer-legal" href="/legal/">{t('dash.legalLink')}</a></footer>
   </main>;

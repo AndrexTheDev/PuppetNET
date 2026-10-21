@@ -758,6 +758,32 @@ Beobachtungs-Panel, 4 neue DE/EN-Schlüssel, 2 neue Datenlagen-Tests (dashboard 
 2 neue Datenlagen-Tests (dashboard 65) + 1 neuer Release-Pin (release 37) —
 `ci:pages` grün, 0 zusätzliche Actions-Minuten.
 
+### Welle 31 — Chronologie einer Entität — ✅ umgesetzt (2026-10-21)
+
+- **Die „wann"-Frage pro Entität**: bisher gab es nur eine globale Erwähnungskurve. Jetzt
+  bekommt jede Entität eine eigene Chronologie — im Inspektor **und** im Kurzbericht, aus
+  **derselben** Funktion.
+- **Was als Ereignis zählt, ist begründet**: ein Dokument ist ein Ereignis an seinem
+  Datum; eine Beziehung erscheint am Tag ihres **frühesten** Dokuments (spätere Belege
+  sind Korroboration, kein neues Ereignis) und trägt ihre Belegzahl; ein Widerspruch wird
+  auf den Tag datiert, an dem die **zweite** Aussage belegt ist — vorher gibt es keinen
+  Widerspruch, sondern nur eine Behauptung.
+- **Keine erfundenen Daten**: undatiertes Material (Beziehungen ohne datierten Beleg,
+  Dokumente ohne Datum, Widersprüche mit nur einer datierten Seite) landet in einer
+  eigenen Zeile „ohne Datum" — es verschwindet nicht und wird nicht einsortiert. Eine
+  unbekannte Entität liefert eine ehrlich leere Chronologie.
+- **Sortiert und begrenzt**: aufsteigend nach Datum, bei gleichem Tag Beziehung vor
+  Widerspruch vor Dokument, dann Label; die Spanne wird in **echten Tagen** berechnet;
+  Bildschirm zeigt acht Ereignisse mit Hinweis auf den Rest, der Bericht alle.
+- Nur datierte Ereignisse, keine Uhr: die Chronologie ist deterministisch und
+  reproduzierbar.
+
+**Geliefert (Welle 31)**: `entityTimeline()`, `EntityEvent`/`EntityTimeline`/`TimelineKind`,
+Chronologie-Abschnitt im Kurzbericht (DE/EN, inkl. Spanne und „ohne Datum"),
+Chronologie-Block im Inspektor (max. 8 Ereignisse, `<time>`-Elemente, Rest-Hinweis),
+8 neue DE/EN-Schlüssel, token-only CSS, 2 neue Datenlagen-Tests (dashboard 67) +
+1 neuer Release-Pin (release 38) — `ci:pages` grün, 0 zusätzliche Actions-Minuten.
+
 ## 4. Budget-Zusammenfassung
 
 | Welle | Ort | Zusätzliche Actions-Minuten | Status |
@@ -792,6 +818,7 @@ Beobachtungs-Panel, 4 neue DE/EN-Schlüssel, 2 neue Datenlagen-Tests (dashboard 
 | 28 Beobachtungs-Abgleich | Browser | **0** | ✅ umgesetzt |
 | 29 Fallkurzbericht | Browser | **0** | ✅ umgesetzt |
 | 30 Fallakte als ZIP | Browser | **0** | ✅ umgesetzt |
+| 31 Chronologie je Entität | Browser | **0** | ✅ umgesetzt |
 
 Kein Schritt erzeugt neue Workflows, neue Cron-Jobs, längere Jobs oder bezahlte
 Dienste. Die einzigen verbrauchsrelevanten Grenzen sind die bestehenden: 3
@@ -1522,6 +1549,30 @@ panel, 4 new DE/EN keys, 2 new data-layer tests (dashboard 63) + 1 new release p
 (dashboard 65) + 1 new release pin (release 37) — `ci:pages` green, 0 extra Actions
 minutes.
 
+### Wave 31 — entity chronology — ✅ implemented (2026-10-21)
+
+- **The "when" question per entity**: so far there was only a global mention curve. Now
+  every entity gets its own chronology — in the inspector **and** in the brief, from the
+  **same** function.
+- **What counts as an event is justified**: a document is an event on its date; a
+  relationship appears on the day of its **earliest** document (later documents are
+  corroboration, not a new event) and carries its document count; a contradiction is dated
+  on the day its **second** claim is documented — before that it is a claim, not a clash.
+- **No invented dates**: undated material (relationships without a dated document,
+  documents without a date, contradictions with only one dated side) goes to its own
+  "undated" line — it is neither dropped nor slotted in. An unknown entity yields an
+  honestly empty chronology.
+- **Sorted and bounded**: ascending by date, on the same day relationship before
+  contradiction before document, then label; the span is computed in **real days**; the
+  screen shows eight events with a pointer to the rest, the brief shows all.
+- Dated events only, no clock: the chronology is deterministic and reproducible.
+
+**Delivered (Wave 31)**: `entityTimeline()`, `EntityEvent`/`EntityTimeline`/`TimelineKind`,
+chronology section in the brief (DE/EN, including span and "undated"), chronology block in
+the inspector (max. 8 events, `<time>` elements, rest hint), 8 new DE/EN keys, token-only
+CSS, 2 new data-layer tests (dashboard 67) + 1 new release pin (release 38) —
+`ci:pages` green, 0 extra Actions minutes.
+
 ## 4. Budget summary
 
 | Wave | Location | Additional Actions minutes | Status |
@@ -1556,6 +1607,7 @@ minutes.
 | 28 watch digest | browser | **0** | ✅ implemented |
 | 29 entity brief | browser | **0** | ✅ implemented |
 | 30 case archive (ZIP) | browser | **0** | ✅ implemented |
+| 31 entity chronology | browser | **0** | ✅ implemented |
 
 No step creates new workflows, new cron jobs, longer jobs or paid services. The only
 consumption-relevant limits remain the existing ones: 3 reservations/UTC day, 5-minute

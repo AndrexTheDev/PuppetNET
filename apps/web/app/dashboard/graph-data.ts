@@ -1611,6 +1611,81 @@ export function watchChangesToCSV(changes: WatchChange[]): string {
   return [header, ...rows].join('\n') + '\n';
 }
 
+/** Wave 31: one dated step in an entity's history. `document` is a source that
+ * mentions it, `relation` the first document of a relationship, `conflict` a
+ * clash found on that day. Undated material is reported separately instead of
+ * being given an invented date. */
+export type TimelineKind = 'document' | 'relation' | 'conflict';
+export interface EntityEvent {
+  date: string;
+  kind: TimelineKind;
+  label: string;
+  /** How many documents support this step (relationships bundle their evidence). */
+  documents: number;
+}
+export interface EntityTimeline {
+  events: EntityEvent[];
+  undated: { kind: TimelineKind; label: string }[];
+  first?: string;
+  last?: string;
+  /** Days between the first and the last dated step (0 for a single day). */
+  span: number;
+}
+
+/**
+ * Wave 31: when did what happen around this entity? Documents give the dates, a
+ * relationship appears on the day its *earliest* document was published (later
+ * documents are corroboration, not a new event), and a contradiction is dated by
+ * the day both claims are documented. Everything is sorted, de-duplicated and
+ * bounded; undated material is listed apart, never slotted in.
+ */
+export function entityTimeline(id: string, nodes: GraphNode[], edges: GraphEdge[], evidence: Evidence[], conflicts: PairConflict[] = [], limit = 40): EntityTimeline {
+  const dates = new Map(evidence.map(doc => [doc.id, isoDate(doc.date)]));
+  const labels = new Map(nodes.map(node => [node.id, node.label]));
+  const node = nodes.find(entry => entry.id === id);
+  const events: EntityEvent[] = [];
+  const undated: { kind: TimelineKind; label: string }[] = [];
+  const seen = new Set<string>();
+  const push = (event: EntityEvent) => {
+    const key = `${event.date}|${event.kind}|${event.label}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    events.push(event);
+  };
+
+  for (const docId of node?.evidenceIds ?? []) {
+    const date = dates.get(docId);
+    if (!date) { const label = docId; if (!undated.some(entry => entry.kind === 'document' && entry.label === label)) undated.push({ kind: 'document', label }); continue; }
+    push({ date, kind: 'document', label: docId, documents: 1 });
+  }
+  for (const edge of edges) {
+    if (edge.source !== id && edge.target !== id) continue;
+    const other = edge.source === id ? edge.target : edge.source;
+    const arrow = edge.source === id ? '→' : '←';
+    const label = `${arrow} ${labels.get(other) ?? other} · ${edge.type}`;
+    const days = edge.evidenceIds.map(docId => dates.get(docId)).filter((day): day is string => Boolean(day)).sort();
+    if (!days.length) { undated.push({ kind: 'relation', label }); continue; }
+    push({ date: days[0], kind: 'relation', label, documents: edge.evidenceIds.length });
+  }
+  for (const conflict of conflicts) {
+    if (!conflict.pair.includes(id)) continue;
+    const other = conflict.pair[0] === id ? conflict.labels[1] : conflict.labels[0];
+    // A contradiction starts on the day its *second* claim becomes documented.
+    const days = conflict.claims.map(claim => claim.first).filter((day): day is string => Boolean(day)).sort();
+    if (days.length < 2) { undated.push({ kind: 'conflict', label: `${other} · ${conflict.kind}` }); continue; }
+    push({ date: days[days.length - 1], kind: 'conflict', label: `${other} · ${conflict.kind}`, documents: conflict.claims.reduce((sum, claim) => sum + claim.documents, 0) });
+  }
+
+  const order: Record<TimelineKind, number> = { relation: 0, conflict: 1, document: 2 };
+  events.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0)
+    || order[a.kind] - order[b.kind]
+    || (a.label < b.label ? -1 : a.label > b.label ? 1 : 0));
+  const bounded = events.slice(0, Math.max(1, limit));
+  const first = events[0]?.date, last = events[events.length - 1]?.date;
+  const span = first && last ? Math.round((Date.parse(`${last}T00:00:00Z`) - Date.parse(`${first}T00:00:00Z`)) / 86_400_000) : 0;
+  return { events: bounded, undated, ...(first ? { first } : {}), ...(last ? { last } : {}), span };
+}
+
 /** Wave 30: a real ZIP (STORE, no compression) built in the browser — no
  * dependency, no server, and byte-for-byte reproducible for the same input.
  * Stored entries are deliberate: the payload is mostly small text, and an
@@ -1748,6 +1823,8 @@ export interface BriefInput {
   watched?: boolean;
   /** Wave 28 digest entries for this entity, if a comparison is loaded. */
   changes?: WatchChange[];
+  /** Wave 31: the entity's own chronology. */
+  timeline?: EntityTimeline;
 }
 
 const BRIEF_TEXT = {
@@ -1761,6 +1838,8 @@ const BRIEF_TEXT = {
     conflicts: 'Widersprüchliche Aussagen', noConflicts: 'keine — es gibt keinen belegten Widerspruch zu dieser Entität',
     notes: 'Ermittlungsnotizen', noNotes: '_Keine Notiz erfasst._',
     changes: 'Änderungen gegenüber dem Vergleichsstand', noChanges: 'keine Änderung bei dieser Entität',
+    timeline: 'Chronologie', noTimeline: 'keine datierten Ereignisse', undatedItems: 'ohne Datum', span: 'Zeitraum', days: 'Tage',
+    kindDocument: 'Beleg', kindRelation: 'Beziehung', kindConflict: 'Widerspruch',
     kinds: { conflict: 'neuer Widerspruch', gone: 'nicht mehr im Export', added: 'neu', corroborated: 'zweite unabhängige Quelle', relation: 'Beziehung geändert', document: 'neues Dokument' },
     footer: 'Hinweise, keine Beweise: Quellen prüfen; personenbezogene Daten nur mit Rechtsgrundlage verarbeiten.',
   },
@@ -1774,6 +1853,8 @@ const BRIEF_TEXT = {
     conflicts: 'Contradicting claims', noConflicts: 'none — there is no documented contradiction for this entity',
     notes: 'Research notes', noNotes: '_No note recorded._',
     changes: 'Changes against the comparison state', noChanges: 'no change for this entity',
+    timeline: 'Timeline', noTimeline: 'no dated events', undatedItems: 'undated', span: 'Span', days: 'days',
+    kindDocument: 'document', kindRelation: 'relationship', kindConflict: 'contradiction',
     kinds: { conflict: 'new contradiction', gone: 'no longer in the export', added: 'new', corroborated: 'second independent source', relation: 'relationship changed', document: 'new document' },
     footer: 'Hints, not proof: verify sources; process personal data only on a legal basis.',
   },
@@ -1823,6 +1904,16 @@ export function entityBrief(input: BriefInput, generated: string, lang: 'de' | '
     const other = conflict.pair[0] === node.id ? conflict.labels[1] : conflict.labels[0];
     lines.push(`- ${clean(other)} — ${conflict.kind}`);
     for (const claim of conflict.claims) lines.push(`  - ${clean(claim.type)}: ${claim.documents} ${lang === 'en' ? 'doc(s)' : 'Beleg(e)'}${claim.first ? ` · ${claim.first}${claim.last && claim.last !== claim.first ? ` → ${claim.last}` : ''}` : ''}`);
+  }
+
+  if (input.timeline) {
+    const t = input.timeline;
+    lines.push('', `## ${text.timeline}`, '');
+    if (!t.events.length) lines.push(`- ${text.noTimeline}`);
+    if (t.first) lines.push(`- ${text.span}: ${t.first}${t.last && t.last !== t.first ? ` → ${t.last}` : ''} · ${t.span} ${text.days}`);
+    const kindName: Record<TimelineKind, string> = { document: text.kindDocument, relation: text.kindRelation, conflict: text.kindConflict };
+    for (const event of t.events) lines.push(`- ${event.date} · ${kindName[event.kind]} · ${clean(event.label)}${event.documents > 1 ? ` (${event.documents} ${lang === 'en' ? 'docs' : 'Belege'})` : ''}`);
+    if (t.undated.length) lines.push(`- ${text.undatedItems}: ${t.undated.map(entry => `${kindName[entry.kind]} ${clean(entry.label)}`).join(', ')}`);
   }
 
   const note = input.notes?.[node.id];

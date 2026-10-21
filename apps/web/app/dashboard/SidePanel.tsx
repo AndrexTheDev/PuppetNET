@@ -1,10 +1,10 @@
 'use client';
 import { useState } from 'react';
-import { COLORS, NOTE_LIMIT, communityColor, cypherExport, edgeSources, evidenceWindow, normalizeNote, safeUrl, type Evidence, type GraphEdge, type GraphNode } from './graph-data';
+import { COLORS, NOTE_LIMIT, communityColor, cypherExport, edgeSources, evidenceWindow, normalizeNote, safeUrl, type EntityTimeline, type Evidence, type GraphEdge, type GraphNode } from './graph-data';
 import { downloadText as download } from './download';
 import { useLanguage, useT } from './i18n';
 import { NUMBER_LOCALE } from '../../lib/i18n-strings';
-export default function SidePanel({ node, evidence, edge, edgeEvidence, edgeLabels, onDrill, onEgo, onClose, detailError, note = '', onNote, watched = false, onWatch, onBrief }: { node: GraphNode | null; evidence: Evidence[]; edge: GraphEdge | null; edgeEvidence: Evidence[]; edgeLabels: { source: string; target: string }; onDrill: (id: string) => void; onEgo?: (id: string) => void; onClose: () => void; detailError: string; note?: string; onNote?: (text: string) => void; watched?: boolean; onWatch?: () => void; onBrief?: () => void }) {
+export default function SidePanel({ node, evidence, edge, edgeEvidence, edgeLabels, onDrill, onEgo, onClose, detailError, note = '', onNote, watched = false, onWatch, onBrief, timeline }: { node: GraphNode | null; evidence: Evidence[]; edge: GraphEdge | null; edgeEvidence: Evidence[]; edgeLabels: { source: string; target: string }; onDrill: (id: string) => void; onEgo?: (id: string) => void; onClose: () => void; detailError: string; note?: string; onNote?: (text: string) => void; watched?: boolean; onWatch?: () => void; onBrief?: () => void; timeline?: EntityTimeline }) {
   const [copied, setCopied] = useState('');
   // Wave 11: the note draft follows the selected entity, never leaks between nodes.
   const [draft, setDraft] = useState('');
@@ -61,6 +61,18 @@ export default function SidePanel({ node, evidence, edge, edgeEvidence, edgeLabe
       <div className="note-actions"><button type="button" className="primary-button" onClick={() => { onNote(normalizeNote(draft)); setNoteStatus(t('inspector.noteSaved')); }}>{t('inspector.noteSave')}</button><button type="button" className="text-button" onClick={() => { setDraft(''); onNote(''); setNoteStatus(t('inspector.noteCleared')); }}>{t('inspector.noteClear')}</button></div>
       <p className="muted small-text">{t('inspector.noteHint')}</p>
       <p className="muted" role="status">{noteStatus}</p>
+    </div>}
+    {!node.group && timeline && <div className="timeline-block">
+      <div className="section-heading"><h3>{t('inspector.timeline')}</h3>{timeline.first && <span className="note-counter">{t('inspector.timelineSpan', { first: timeline.first, last: timeline.last ?? timeline.first, days: timeline.span })}</span>}</div>
+      {timeline.events.length === 0
+        ? <p className="muted">{t('inspector.timelineNone')}</p>
+        : <ol className="entity-timeline">{timeline.events.slice(0, 8).map(event => <li key={`${event.date}|${event.kind}|${event.label}`} className={`timeline-${event.kind}`}>
+          <time dateTime={event.date}>{event.date}</time>
+          <span className="timeline-kind">{t(event.kind === 'document' ? 'inspector.timelineKindDocument' : event.kind === 'relation' ? 'inspector.timelineKindRelation' : 'inspector.timelineKindConflict')}</span>
+          <span className="timeline-label">{event.label}</span>
+        </li>)}</ol>}
+      {timeline.events.length > 8 && <p className="muted small-text">{t('inspector.timelineMore', { count: timeline.events.length - 8 })}</p>}
+      {timeline.undated.length > 0 && <p className="muted small-text">{t('inspector.timelineUndated')}: {timeline.undated.map(entry => entry.label).join(', ')}</p>}
     </div>}
     {node.group ? <><p className="muted">{t('inspector.groupText')}</p><button className="primary-button" onClick={() => onDrill(node.id)}>{t('inspector.drill')}</button><h3>{t('inspector.examples')}</h3><ul className="example-ids">{node.examples?.map(id => <li key={id}>{id}</li>)}</ul></> : <>
       <div className="section-heading"><h3>{t('inspector.nodeSources')}</h3><span>{evidence.length}</span></div><p className="muted small-text">{t('inspector.nodeSourcesSub')}</p>

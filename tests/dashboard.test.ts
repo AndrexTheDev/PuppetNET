@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
-import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, monthWindow, bundleEdges, structuralVulnerability, pathTimeline, normalizeNote, readNotes, caseReport, nextPlaybackMonth, evidenceWindow, compareDuplicates, multiFailureImpact, normalizeSavedName, readSavedViews, upsertSavedView, removeSavedView, evidenceToCSV, parseCaseNotes, mergeNotes, searchNoteIndex, caseBundle, readCaseBundle, provenanceGaps, edgeSources, sharedSourceGroups, normalizeEvidence, edgeSourceStatus, sourceRegistry, pairConflicts, evidenceFreshness, monthsBefore, FRESH_WINDOWS, DEFAULT_FRESH_MONTHS, isFreshWindow, filterDataset, nodeBacking, evidenceRisk, riskToCSV, diffDatasets, diffToCSV, searchCase, noteSnippet, WATCH_LIMIT, readWatchlist, toggleWatch, watchReport, watchToCSV, watchChanges, watchChangesToCSV, entityBrief, watchBrief, caseArchive, zipStore, crc32, TYPES, SAVED_VIEW_LIMIT, NOTE_LIMIT, EGO_DEPTH_LIMIT, VULNERABILITY_NODE_LIMIT, normalizeInsights, ANALYSIS_LIMITS, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
+import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, monthWindow, bundleEdges, structuralVulnerability, pathTimeline, normalizeNote, readNotes, caseReport, nextPlaybackMonth, evidenceWindow, compareDuplicates, multiFailureImpact, normalizeSavedName, readSavedViews, upsertSavedView, removeSavedView, evidenceToCSV, parseCaseNotes, mergeNotes, searchNoteIndex, caseBundle, readCaseBundle, provenanceGaps, edgeSources, sharedSourceGroups, normalizeEvidence, edgeSourceStatus, sourceRegistry, pairConflicts, evidenceFreshness, monthsBefore, FRESH_WINDOWS, DEFAULT_FRESH_MONTHS, isFreshWindow, filterDataset, nodeBacking, evidenceRisk, riskToCSV, diffDatasets, diffToCSV, searchCase, noteSnippet, WATCH_LIMIT, readWatchlist, toggleWatch, watchReport, watchToCSV, watchChanges, watchChangesToCSV, entityBrief, watchBrief, caseArchive, zipStore, crc32, entityTimeline, TYPES, SAVED_VIEW_LIMIT, NOTE_LIMIT, EGO_DEPTH_LIMIT, VULNERABILITY_NODE_LIMIT, normalizeInsights, ANALYSIS_LIMITS, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
 import { apiBase, readResponse } from '../apps/web/app/dashboard/api';
 const filters: Filters = { confidence: 0, weight: 0, types: [...TYPES], lod: true, ratio: 1 };
 test('normalizes Worker and Graphology nodes without inventing coordinates', () => {
@@ -1505,4 +1505,77 @@ test('wave 30 the archive refuses to hide files or escape its folder', () => {
   assert.deepEqual(archive.map(file => file.name), ['fallbericht.md', 'beobachtungen.md', 'knoten.csv', 'kanten.csv', 'beobachtung.csv', 'aenderungen.csv', 'liesmich.txt'],
     'optional documents appear only when they exist');
   assert.ok(archive[archive.length - 1].text.includes('nichts hochgeladen'), 'the archive carries its own provenance note');
+});
+
+test('wave 31 the entity timeline dates what happened, and refuses to invent dates', () => {
+  const data = normalizeDataset({
+    nodes: [{ key: 'a', name: 'Alpha' }, { key: 'b', name: 'Beta' }, { key: 'c', name: 'Gamma' }],
+    evidence: [
+      { id: 'd1', title: 'One', source: 'HR', date: '2020-01-10' },
+      { id: 'd2', title: 'Two', source: 'Presse', date: '2021-06-01' },
+      { id: 'd3', title: 'Three', source: 'Blog', date: '2023-02-01' },
+      { id: 'd4', title: 'Four', source: 'Blog', date: '2024-03-01' },
+      { id: 'd5', title: 'Five' },
+    ],
+    edges: [
+      { source: 'a', target: 'b', type: 'OWNS', evidenceIds: ['d1', 'd2'] },
+      { source: 'b', target: 'a', type: 'SOLD', evidenceIds: ['d3'] },
+      { source: 'c', target: 'a', type: 'OWNS', evidenceIds: ['d5'] },
+    ],
+  });
+  const conflicts = pairConflicts(data.nodes, data.edges, data.evidence);
+  const timeline = entityTimeline('a', data.nodes, data.edges, data.evidence, conflicts);
+  assert.deepEqual(timeline.events.map(event => [event.date, event.kind, event.label]), [
+    ['2020-01-10', 'relation', '→ Beta · OWNS'],
+    ['2023-02-01', 'relation', '← Beta · SOLD'],
+    ['2023-02-01', 'conflict', 'Beta · sequence'],
+  ], 'relationships appear on their earliest document; the contradiction on the day the second claim is documented');
+  assert.equal(timeline.events[0].documents, 2, 'a relationship carries its document count');
+  assert.deepEqual([timeline.first, timeline.last, timeline.span], ['2020-01-10', '2023-02-01', 1118],
+    'the span is real days between the first and last dated step');
+  assert.deepEqual(timeline.undated, [{ kind: 'relation', label: '← Gamma · OWNS' }],
+    'a relationship without any dated document is listed apart instead of being given a date');
+  const documentsOnly = normalizeDataset({
+    nodes: [{ key: 'x', name: 'X', evidenceIds: ['q1', 'q2'] }],
+    evidence: [{ id: 'q1', title: 'Q1', date: '2022-05-05' }, { id: 'q2', title: 'Q2' }],
+    edges: [],
+  });
+  const own = entityTimeline('x', documentsOnly.nodes, documentsOnly.edges, documentsOnly.evidence);
+  assert.deepEqual(own.events.map(event => [event.kind, event.label]), [['document', 'q1']], 'documents attached to the entity are events');
+  assert.deepEqual(own.undated, [{ kind: 'document', label: 'q2' }], 'an undated document is not dropped, it is marked');
+  const empty = entityTimeline('nicht-da', data.nodes, data.edges, data.evidence, conflicts);
+  assert.deepEqual([empty.events, empty.undated, empty.first, empty.last, empty.span], [[], [], undefined, undefined, 0],
+    'an unknown entity has an honestly empty timeline, not a fabricated one');
+  assert.equal(entityTimeline('a', data.nodes, data.edges, data.evidence, conflicts, 1).events.length, 1, 'bounded');
+  assert.deepEqual(entityTimeline('a', data.nodes, data.edges, data.evidence, conflicts),
+    entityTimeline('a', data.nodes, data.edges, data.evidence, conflicts), 'deterministic');
+  assert.deepEqual(entityTimeline('a', data.nodes, data.edges, data.evidence).events.map(event => event.kind),
+    ['relation', 'relation'], 'without a conflict report nothing is claimed about contradictions');
+});
+
+test('wave 31 the brief carries the chronology in both languages', () => {
+  const data = normalizeDataset({
+    nodes: [{ key: 'a', name: 'Alpha' }, { key: 'b', name: 'Beta' }],
+    evidence: [{ id: 'd1', title: 'One', source: 'HR', date: '2020-01-10' }, { id: 'd2', title: 'Two', source: 'Presse', date: '2021-06-01' }],
+    edges: [{ source: 'a', target: 'b', type: 'OWNS', evidenceIds: ['d1'] }, { source: 'b', target: 'a', type: 'SOLD', evidenceIds: ['d2'] }],
+  });
+  const context = {
+    nodes: data.nodes, edges: data.edges, evidence: data.evidence,
+    conflicts: pairConflicts(data.nodes, data.edges, data.evidence),
+    timeline: entityTimeline('a', data.nodes, data.edges, data.evidence, pairConflicts(data.nodes, data.edges, data.evidence)),
+  };
+  const de = entityBrief({ ...context, id: 'a' }, '2026-10-21', 'de');
+  assert.ok(de.includes('## Chronologie'), 'the brief has a chronology section');
+  assert.ok(de.includes('Zeitraum: 2020-01-10 → 2021-06-01 · 508 Tage'), 'the span is stated in the reader language');
+  assert.ok(de.includes('2020-01-10 · Beziehung · → Beta · OWNS'), 'events read as date, kind, what happened');
+  assert.ok(de.includes('2021-06-01 · Widerspruch · Beta · sequence'), 'a contradiction is dated and named');
+  const en = entityBrief({ ...context, id: 'a' }, '2026-10-21', 'en');
+  assert.ok(en.includes('## Timeline') && en.includes('2020-01-10 · relationship · → Beta · OWNS'), 'the chronology is bilingual');
+  assert.ok(!en.includes('Chronologie'), 'no German leaks into the English brief');
+  const withoutEvents = entityBrief({ ...context, id: 'b', timeline: { events: [], undated: [{ kind: 'relation', label: '← Alpha · MET' }], span: 0 } }, '2026-10-21', 'en');
+  assert.ok(withoutEvents.includes('no dated events'), 'an empty chronology says so');
+  assert.ok(withoutEvents.includes('undated: relationship ← Alpha · MET'), 'undated material is still reported');
+  assert.ok(!entityBrief({ ...context, id: 'a' }, '2026-10-21', 'en').includes('## Timeline') === false, 'the section exists when a timeline is supplied');
+  assert.ok(!entityBrief({ nodes: data.nodes, edges: data.edges, evidence: data.evidence, id: 'a' }, '2026-10-21', 'en').includes('## Timeline'),
+    'without a timeline no empty section is printed');
 });

@@ -547,3 +547,26 @@ test('wave 30: the case archive is built in the browser, dependency-free', () =>
   assert.ok(dashboard.includes("'application/zip'"), 'the download declares its type');
   assert.ok(dashboard.includes("t('dash.archiveAria')"), 'the button explains itself to assistive tech');
 });
+
+test('wave 31: the chronology is one function for screen and document', () => {
+  const data = read('apps/web/app/dashboard/graph-data.ts');
+  assert.match(data, /export function entityTimeline\(id: string, nodes: GraphNode\[\], edges: GraphEdge\[\], evidence: Evidence\[\], conflicts: PairConflict\[\] = \[\], limit = 40\): EntityTimeline/,
+    'the chronology is pure, bounded and takes the conflict report explicitly');
+  assert.match(data, /if \(!days\.length\) \{ undated\.push\(\{ kind: 'relation', label \}\); continue; \}/,
+    'undated relationships are listed apart, never given a date');
+  assert.match(data, /const days = conflict\.claims\.map\(claim => claim\.first\)[\s\S]{0,260}days\[days\.length - 1\]/,
+    'a contradiction starts when its second claim becomes documented');
+  assert.match(data, /push\(\{ date: days\[0\], kind: 'relation', label, documents: edge\.evidenceIds\.length \}\)/,
+    'a relationship is dated by its earliest document and carries its evidence count');
+  const dashboard = read('apps/web/app/dashboard/Dashboard.tsx');
+  assert.ok(dashboard.includes('entityTimeline(selected.id, view.nodes, view.edges, evidence, view.conflicts ?? [])'),
+    'the on-screen chronology uses the visible slice');
+  assert.ok(dashboard.includes('timeline: viewLatest.current ? entityTimeline('),
+    'the brief is built from the same function, so screen and document agree');
+  const panel = read('apps/web/app/dashboard/SidePanel.tsx');
+  assert.ok(panel.includes('<time dateTime={event.date}'), 'dates are real time elements');
+  assert.ok(panel.includes("t('inspector.timelineUndated')"), 'undated material is shown, labelled');
+  assert.ok(panel.includes("t('inspector.timelineMore',"), 'a truncated list says how much more the brief holds');
+  assert.doesNotMatch(dashboard + panel, /new Date\([^)]*\)\.toISOString\(\)\.slice\(0, 10\)[^;]*timeline/i,
+    'the chronology never borrows today as an event date');
+});
