@@ -31,7 +31,8 @@
       "tests/release.test.mjs",
       "scripts/finalize-static-export.mjs"
     ],
-    "buildCommandFromRepoRoot": "cd apps/web && npm run ci:pages"
+    "buildCommandFromRepoRoot": "cd apps/web && npm run ci:pages",
+    "rootDirectoryRequired": "repository root (a workspace root has no lockfile, so npm ci fails instantly)"
   },
   "worker": {
     "rootDirectory": "apps/worker",

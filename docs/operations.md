@@ -766,3 +766,23 @@ themselves to the repository they live in (`import.meta.url` + `process.chdir`),
 so a caller's working directory can never point the gate at the wrong files.
 Regression tests in `tests/release.test.mjs` pin both properties; a build log that
 says `Missing script: "ci:pages"` means the workspace delegation was removed.
+
+### Which directory may be the Cloudflare root
+
+Two instant-failure signatures were reproduced locally (2026-10-21), both before
+any compilation step:
+
+| Root directory | Install step | Result |
+| --- | --- | --- |
+| repository root | `npm ci` (root lockfile) | works |
+| `apps/web` | `npm ci` in a workspace without its own lockfile | **fails instantly** — `EUSAGE: npm ci can only install with an existing package-lock.json` |
+| `apps/web` | `npm run ci:pages` (no delegation) | **fails instantly** — `Missing script: "ci:pages"` |
+
+Therefore: set **Root directory = repository root** for the Pages project (the
+documented default in `cloudflare-builds.json`), with build command
+`npm run ci:pages`. If the dashboard insists on `apps/web` as the root directory,
+the install step must be skipped or made root-aware (`cd ../.. && npm ci`),
+because the single authoritative lockfile lives at the repository root.
+
+The workspace delegation added in wave 26 removes the second failure mode; the
+first one can only be fixed in the dashboard, not in the repository.

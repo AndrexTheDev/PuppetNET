@@ -467,3 +467,14 @@ test('wave 26: the build gate runs from the root or from a workspace root', () =
   assert.equal(settings.worker.buildCommand, 'npm run ci:worker');
   assert.ok(read('docs/operations.md').includes('Missing script: "ci:pages"'), 'the operations note names the failure signature');
 });
+
+test('wave 26: the root-directory requirement is written down, not implied', () => {
+  const settings = JSON.parse(read('cloudflare-builds.json'));
+  assert.equal(settings.pages.rootDirectory, 'apps/web', 'the documented dashboard value stays visible');
+  assert.match(settings.pages.rootDirectoryRequired, /repository root/, 'the required root is named explicitly');
+  assert.match(settings.pages.rootDirectoryRequired, /npm ci fails instantly/, 'the failure mode is named, not paraphrased');
+  const ops = read('docs/operations.md');
+  assert.ok(ops.includes('EUSAGE: npm ci can only install with an existing package-lock.json'), 'the install failure is quoted verbatim');
+  assert.ok(ops.includes('Root directory = repository root'), 'the fix is stated as an instruction');
+  assert.ok(ops.includes('the single authoritative lockfile lives at the repository root'), 'the reason is given');
+});
