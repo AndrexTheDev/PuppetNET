@@ -866,6 +866,30 @@ Panel „Aktenlage" mit Kopfzeile, Zeilenliste und Sprung-Befunden, Berichtsabsc
 (dashboard 70) + 1 neuer Release-Pin (release 41) — `ci:pages` grün, 0 zusätzliche
 Actions-Minuten.
 
+### Welle 35 — Quellen-Dossier — ✅ umgesetzt (2026-10-21)
+
+- **Vom Zähler zum Namen**: Welle 33 konnte nur melden „1 Streitfall". Ein Name ist
+  keine Antwort. Das Dossier öffnet die Quelle und sagt, *welche* Beziehung sie zuerst
+  meldete, wo sie nur folgte (mit Abstand in Tagen), wo sie allein steht — und **wen**
+  sie bestreitet, inklusive der Frage, ob sie mit sich selbst streitet.
+- **Dieselben Regeln, dieselbe Scheibe**: Namensvergleich, Zurechnung nur bei Datum *und*
+  Name, Einzelbeleg statt Sieg — alles identisch zu Welle 32/33. Gerechnet wird im Worker
+  auf der Scheibe **vor** der Einschränkung, damit ein Dossier nie dem Panel widerspricht,
+  das es geöffnet hat.
+- **Zwei Türen, keine Sackgasse**: „nur diese Quelle zeigen" setzt den Quellenfilter,
+  „nur ihre Streitfälle zeigen" kombiniert Quellen- und Streit-Ansicht — das Dossier ist
+  damit direkt arbeitsfähig und nicht nur eine Lesebestätigung.
+- **Undatiertes bleibt undatiert**: Belege ohne Datum werden gezählt und benannt, aber
+  nie in eine Reihenfolge einsortiert.
+- **Stale-safe**: jede Dossier-Antwort trägt ihre Version; eine ältere Antwort kann ein
+  neueres Dossier nicht überschreiben.
+
+**Geliefert (Welle 35)**: `sourceDossier()`, `SourceDossier`/`DossierClaim`/
+`DossierDispute`, Worker-Anfrage `dossier` (auf der Analyse-Scheibe), Panel mit Kopfzeile,
+Sprung-Aktionen, Erstmeldungen, Nachmeldungen, Einzelbelegen und Streitfällen, 17 neue
+DE/EN-Schlüssel, token-only CSS, 1 neuer Datenlagen-Test (dashboard 71) + 1 neuer
+Release-Pin (release 42) — `ci:pages` grün, 0 zusätzliche Actions-Minuten.
+
 ## 4. Budget-Zusammenfassung
 
 | Welle | Ort | Zusätzliche Actions-Minuten | Status |
@@ -904,6 +928,7 @@ Actions-Minuten.
 | 32 Erstmeldungen je Quelle | Browser/Worker | **0** | ✅ umgesetzt |
 | 33 Quellen im Urteil | Browser/Worker | **0** | ✅ umgesetzt |
 | 34 Aktenlage auf einen Blick | Browser | **0** | ✅ umgesetzt |
+| 35 Quellen-Dossier | Browser/Worker | **0** | ✅ umgesetzt |
 
 Kein Schritt erzeugt neue Workflows, neue Cron-Jobs, längere Jobs oder bezahlte
 Dienste. Die einzigen verbrauchsrelevanten Grenzen sind die bestehenden: 3
@@ -1734,6 +1759,29 @@ minutes.
 (dashboard 70) + 1 new release pin (release 41) — `ci:pages` green, 0 extra Actions
 minutes.
 
+### Wave 35 — source dossier — ✅ implemented (2026-10-21)
+
+- **From a counter to a name**: wave 33 could only say "1 dispute". A name is not an
+  answer. The dossier opens the source and says *which* relationship it reported first,
+  where it only followed (with the distance in days), where it stands alone — and **whom**
+  it disputes, including whether it is arguing with itself.
+- **Same rules, same slice**: name matching, attribution only with date *and* name, lone
+  claims instead of wins — identical to waves 32/33. It is computed in the worker on the
+  slice **before** narrowing, so a dossier can never contradict the panel that opened it.
+- **Two doors, no dead end**: "show this outlet only" applies the outlet filter, "show only
+  its disputes" combines outlet and dispute view — the dossier is directly actionable, not
+  a receipt.
+- **Undated stays undated**: documents without a date are counted and named, never slotted
+  into an order.
+- **Stale-safe**: every dossier answer carries its version; an older answer can never
+  overwrite a newer dossier.
+
+**Delivered (Wave 35)**: `sourceDossier()`, `SourceDossier`/`DossierClaim`/
+`DossierDispute`, worker request `dossier` (on the analysis slice), panel with headline,
+jump actions, first reports, follow-ups, lone claims and disputes, 17 new DE/EN keys,
+token-only CSS, 1 new data-layer test (dashboard 71) + 1 new release pin (release 42) —
+`ci:pages` green, 0 extra Actions minutes.
+
 ## 4. Budget summary
 
 | Wave | Location | Additional Actions minutes | Status |
@@ -1772,6 +1820,7 @@ minutes.
 | 32 first reports per source | browser/worker | **0** | ✅ implemented |
 | 33 sources judged | browser/worker | **0** | ✅ implemented |
 | 34 case at a glance | browser | **0** | ✅ implemented |
+| 35 source dossier | browser/worker | **0** | ✅ implemented |
 
 No step creates new workflows, new cron jobs, longer jobs or paid services. The only
 consumption-relevant limits remain the existing ones: 3 reservations/UTC day, 5-minute

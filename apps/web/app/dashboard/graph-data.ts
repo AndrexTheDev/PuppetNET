@@ -2000,6 +2000,116 @@ export function caseSummary(input: CaseSummaryInput, lang: 'de' | 'en' = 'de'): 
   return { headline, lines, flags: flags.slice(0, 3), empty: false };
 }
 
+/** Wave 35: everything the file says about *one* outlet, with names instead of
+ * counts. Wave 33 could only announce "1 dispute"; this lists which pair, who
+ * else was involved and whether the outlet was arguing with itself. */
+export interface DossierClaim {
+  /** Relationship key `source|type|target`. */
+  key: string;
+  label: string;
+  date: string;
+}
+
+export interface DossierDispute {
+  pair: [string, string];
+  labels: [string, string];
+  /** The outlet is the only named source on both sides — it contradicts itself. */
+  self: boolean;
+  /** Other outlets that reported a side of the same dispute. */
+  shared: string[];
+}
+
+export interface SourceDossier {
+  outlet: string;
+  /** Its dated documents that carry its name (same counting as waves 32–33). */
+  documents: number;
+  /** Its named documents on relationships that carry no usable date. */
+  undatedDocuments: number;
+  firsts: DossierClaim[];
+  followups: (DossierClaim & { lag: number })[];
+  /** Relationships only it documents — no race, so no win. */
+  solo: DossierClaim[];
+  disputes: DossierDispute[];
+  first?: string;
+  last?: string;
+}
+
+/**
+ * Wave 35: the drill-down behind a source verdict. It answers the question a
+ * count cannot: *which* relationships did this outlet publish first, where did it
+ * only follow, where is it alone — and what exactly is it disputing? Names are
+ * matched case-insensitively and trimmed, exactly like the registry and the
+ * scorecard, so all three always talk about the same outlet. Deterministic,
+ * bounded, clock-free; an unknown outlet yields an empty dossier (never a guess).
+ */
+export function sourceDossier(outlet: string, nodes: GraphNode[], edges: GraphEdge[], evidence: Evidence[], conflicts: PairConflict[] = [], limit = 12): SourceDossier {
+  const name = (outlet ?? '').trim().toLowerCase().slice(0, 80);
+  const empty: SourceDossier = { outlet: name, documents: 0, undatedDocuments: 0, firsts: [], followups: [], solo: [], disputes: [] };
+  if (!name) return empty;
+  const documents = new Map(evidence.map(doc => [doc.id, doc]));
+  const labels = new Map(nodes.map(node => [node.id, node.label]));
+  let dated = 0, first: string | undefined, last: string | undefined;
+  for (const doc of evidence) {
+    if ((doc.source ?? '').trim().toLowerCase() !== name) continue;
+    const day = isoDate(doc.date);
+    if (!day) continue;
+    dated++;
+    if (!first || day < first) first = day;
+    if (!last || day > last) last = day;
+  }
+  const firsts: DossierClaim[] = [], followups: (DossierClaim & { lag: number })[] = [], solo: DossierClaim[] = [];
+  const undatedIds = new Set<string>();
+  const pairOutlets = new Map<string, Set<string>>();
+  for (const edge of edges) {
+    if (edge.source === edge.target || edge.type === 'AGGREGATED') continue;
+    const pairKey = edge.source <= edge.target ? `${edge.source}|${edge.target}` : `${edge.target}|${edge.source}`;
+    const sides = pairOutlets.get(pairKey) ?? new Set<string>();
+    pairOutlets.set(pairKey, sides);
+    const oldest = new Map<string, string>();
+    for (const docId of edge.evidenceIds) {
+      const doc = documents.get(docId);
+      const source = (doc?.source ?? '').trim().toLowerCase();
+      if (!source) continue;
+      sides.add(source);
+      const day = isoDate(doc?.date);
+      if (!day) { if (source === name) undatedIds.add(docId); continue; }
+      if (source !== name) { if (!oldest.has(source)) oldest.set(source, day); continue; }
+      const current = oldest.get(name);
+      if (!current || day < current) oldest.set(name, day);
+    }
+    const own = oldest.get(name);
+    if (!own) continue;
+    const claim: DossierClaim = { key: `${edge.source}|${edge.type}|${edge.target}`, label: `${labels.get(edge.source) ?? edge.source} → ${labels.get(edge.target) ?? edge.target} · ${edge.type}`, date: own };
+    const fastest = [...oldest.values()].reduce((best, day) => (day < best ? day : best), own);
+    if (oldest.size === 1) solo.push(claim);
+    else if (own === fastest) firsts.push(claim);
+    else followups.push({ ...claim, lag: dayDiff(fastest, own) });
+  }
+  const order = (a: DossierClaim, b: DossierClaim) => (a.date < b.date ? -1 : a.date > b.date ? 1 : a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
+  firsts.sort(order); followups.sort(order); solo.sort(order);
+  const disputes: DossierDispute[] = [];
+  for (const conflict of conflicts) {
+    if (conflict.kind !== 'conflict') continue;
+    const sides = pairOutlets.get(`${conflict.pair[0]}|${conflict.pair[1]}`);
+    if (!sides?.has(name)) continue;
+    disputes.push({
+      pair: [conflict.pair[0], conflict.pair[1]],
+      labels: [conflict.labels[0], conflict.labels[1]],
+      self: sides.size === 1,
+      shared: [...sides].filter(entry => entry !== name).sort(),
+    });
+  }
+  return {
+    outlet: name, documents: dated, undatedDocuments: undatedIds.size,
+    firsts: firsts.slice(0, Math.max(1, limit)),
+    followups: followups.slice(0, Math.max(1, limit)),
+    solo: solo.slice(0, Math.max(1, limit)),
+    disputes: disputes.slice(0, Math.max(1, limit)),
+    ...(first ? { first } : {}),
+    ...(last ? { last } : {}),
+  };
+}
+
 /** Wave 31: one dated step in an entity's history. `document` is a source that
  * mentions it, `relation` the first document of a relationship, `conflict` a
  * clash found on that day. Undated material is reported separately instead of

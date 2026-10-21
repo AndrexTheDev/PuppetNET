@@ -2,7 +2,7 @@
 import dynamic from 'next/dynamic';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import EntityTable, { type TableRow } from './EntityTable';
-import { COLORS, TYPES, LIMITS, NOTE_STORAGE_KEY, WATCH_STORAGE_KEY, FRESH_WINDOWS, DEFAULT_FRESH_MONTHS, riskToCSV, watchToCSV, watchReport, watchChanges, watchChangesToCSV, entityBrief, watchBrief, caseArchive, zipStore, evidenceToCSV, entityTimeline, primacyToCSV, sourceScorecardCSV, caseSummary, readWatchlist, toggleWatch, diffToCSV, searchCase, caseReport, decodeViewState, edgesToCSV, encodeViewState, monthWindow, nextPlaybackMonth, nodesToCSV, caseBundle, compareDuplicates, mergeNotes, parseCaseNotes, provenanceGaps, readCaseBundle, searchNoteIndex, removeSavedView, upsertSavedView, readSavedViews, SAVED_VIEW_STORAGE_KEY, normalizeNote, rankSearch, readNotes, resolveNodeRef, viewToJSON, type Evidence, type Filters, type GraphEdge, type GraphNode, type PathTimeline, type View, type ViewUrlState, type DatasetDiff, type CaseHit, type EntityTimeline, type CaseFlag } from './graph-data';
+import { COLORS, TYPES, LIMITS, NOTE_STORAGE_KEY, WATCH_STORAGE_KEY, FRESH_WINDOWS, DEFAULT_FRESH_MONTHS, riskToCSV, watchToCSV, watchReport, watchChanges, watchChangesToCSV, entityBrief, watchBrief, caseArchive, zipStore, evidenceToCSV, entityTimeline, primacyToCSV, sourceScorecardCSV, caseSummary, readWatchlist, toggleWatch, diffToCSV, searchCase, caseReport, decodeViewState, edgesToCSV, encodeViewState, monthWindow, nextPlaybackMonth, nodesToCSV, caseBundle, compareDuplicates, mergeNotes, parseCaseNotes, provenanceGaps, readCaseBundle, searchNoteIndex, removeSavedView, upsertSavedView, readSavedViews, SAVED_VIEW_STORAGE_KEY, normalizeNote, rankSearch, readNotes, resolveNodeRef, viewToJSON, type Evidence, type Filters, type GraphEdge, type GraphNode, type PathTimeline, type View, type ViewUrlState, type DatasetDiff, type CaseHit, type EntityTimeline, type CaseFlag, type SourceDossier } from './graph-data';
 import type { NetworkHandle, PathHighlight } from './NetworkGraph';
 import type { WorkerRequest, WorkerResponse } from './protocol';
 import { loadStaticGraph, requestResearch, type Standby } from '../../src/lib/dataFetcher';
@@ -41,6 +41,8 @@ export default function Dashboard() {
   const [pathResult, setPathResult] = useState<PathResult | null>(null), [pathError, setPathError] = useState('');
   const [egoQuery, setEgoQuery] = useState(''), [egoDepth, setEgoDepth] = useState(2), [egoStatus, setEgoStatus] = useState('');
   const [brokers, setBrokers] = useState<{ id: string; label: string; share: number }[] | null>(null);
+  // Wave 35: the source dossier is answered by the worker (full slice) and kept here.
+  const [dossier, setDossier] = useState<SourceDossier | null>(null), dossierVersion = useRef(0);
   const [diff, setDiff] = useState<DatasetDiff | null>(null), [baselineName, setBaselineName] = useState('');
   const [caseQuery, setCaseQuery] = useState('');
   const [analysisNotice, setAnalysisNotice] = useState('');
@@ -100,6 +102,7 @@ export default function Dashboard() {
       if (data.kind === 'layout') setLayoutRunning(data.running);
       if (data.kind === 'detail' && data.node?.id === selectedId.current) { setSelected(data.node); setEvidence(old => [...new Map([...old, ...data.evidence].map(d => [d.id, d])).values()]); }
       if (data.kind === 'edgeDetail' && data.id === selectedEdgeId.current) setEdgeEvidence(data.evidence);
+      if (data.kind === 'dossier') { if (data.version !== dossierVersion.current) return; setDossier(data.dossier); return; }
       if (data.kind === 'path') {
         if (!data.nodes || !data.edges) {
           setPathResult(null);
@@ -391,6 +394,13 @@ export default function Dashboard() {
     });
     downloadBinary('puppetnet-fallakte.zip', zipStore(files), 'application/zip');
   }, [view, evidence, notes, watch, watchDigest, watched, briefContext, lang]);
+  // Wave 35: a source name is a door, not a label — the dossier shows what the
+  // verdict counted, with the pairs and the other outlets involved.
+  const openDossier = useCallback((outlet: string) => {
+    setDossier(null);
+    send({ kind: 'dossier', version: ++dossierVersion.current, outlet });
+    setAnnouncement(tRef.current('dash.dossierTitle', { outlet }));
+  }, [send]);
   const requestPath = useCallback(() => {
     setPathError(''); setPathResult(null);
     const nodes = viewLatest.current?.nodes ?? [];
@@ -621,6 +631,36 @@ export default function Dashboard() {
               </>}
             <p className="muted">{t('dash.summaryText')}</p>
           </div>}
+          {dossier && <div className="dossier-panel">
+            <div className="panel-row">
+              <h4 className="hub-heading">{t('dash.dossierTitle', { outlet: dossier.outlet })}</h4>
+              <button type="button" className="icon-button" aria-label={t('dash.dossierClose')} onClick={() => setDossier(null)}>×</button>
+            </div>
+            <p className="muted small-text">{t('dash.dossierSummary', { documents: number(dossier.documents), firsts: number(dossier.firsts.length), followups: number(dossier.followups.length), disputes: number(dossier.disputes.length) })}</p>
+            {dossier.first && <p className="muted small-text">{t('dash.dossierSpan', { first: dossier.first, last: dossier.last ?? dossier.first })}</p>}
+            <div className="dossier-actions">
+              <button type="button" className="text-button" onClick={() => { setFilters(f => ({ ...f, outlet: dossier.outlet })); setAnnouncement(t('dash.annOutlet', { source: dossier.outlet })); }}>{t('dash.dossierFilter')}</button>
+              {dossier.disputes.length > 0 && <button type="button" className="text-button" onClick={() => setFilters(f => ({ ...f, outlet: dossier.outlet, dispute: true }))}>{t('dash.dossierDisputeFilter')}</button>}
+            </div>
+            {dossier.firsts.length === 0 && dossier.followups.length === 0 && dossier.solo.length === 0 && dossier.disputes.length === 0
+              ? <p className="muted" role="status">{t('dash.dossierNone')}</p>
+              : <>
+                {dossier.firsts.length > 0 && <><h5 className="gaps-heading">{t('dash.dossierFirsts')} ({number(dossier.firsts.length)})</h5>
+                  <ul className="hub-list dossier-claims">{dossier.firsts.map(claim => <li key={claim.key}><span className="dossier-label">{claim.label}</span><span className="hub-rank">{claim.date}</span></li>)}</ul></>}
+                {dossier.followups.length > 0 && <><h5 className="gaps-heading">{t('dash.dossierFollowups')} ({number(dossier.followups.length)})</h5>
+                  <ul className="hub-list dossier-claims">{dossier.followups.map(claim => <li key={claim.key}><span className="dossier-label">{claim.label}</span><span className="hub-rank">{t('dash.dossierLag', { date: claim.date, days: number(claim.lag) })}</span></li>)}</ul></>}
+                {dossier.solo.length > 0 && <><h5 className="gaps-heading">{t('dash.dossierSolo')} ({number(dossier.solo.length)})</h5>
+                  <ul className="hub-list dossier-claims">{dossier.solo.map(claim => <li key={claim.key}><span className="dossier-label">{claim.label}</span><span className="hub-rank">{claim.date}</span></li>)}</ul></>}
+                {dossier.disputes.length > 0 && <><h5 className="gaps-heading">{t('dash.dossierDisputes')} ({number(dossier.disputes.length)})</h5>
+                  <ul className="hub-list dossier-claims">{dossier.disputes.map(dispute => <li key={`${dispute.pair[0]}|${dispute.pair[1]}`}>
+                    <span className="dossier-label">{dispute.labels[0]} ↔ {dispute.labels[1]}</span>
+                    {dispute.self && <span className="hub-rank">{t('dash.dossierSelf')}</span>}
+                    {dispute.shared.length > 0 && <span className="hub-rank">{t('dash.dossierShared', { list: dispute.shared.join(', ') })}</span>}
+                  </li>)}</ul></>}
+                {dossier.undatedDocuments > 0 && <p className="muted small-text" role="status">{t('dash.dossierUndated', { count: number(dossier.undatedDocuments) })}</p>}
+              </>}
+            <p className="muted">{t('dash.dossierText')}</p>
+          </div>}
           {view.analytics.hubs.length > 0 && <><h4 className="hub-heading">{t('dash.topHubs')}</h4><ol className="hub-list">{view.analytics.hubs.map(hub => <li key={hub.id}><button type="button" className="text-button" onClick={() => { if (mode !== 'network') changeMode('network'); select(hub.id); requestAnimationFrame(() => network.current?.focus(hub.id)); }}>{hub.name}</button><span className="hub-rank">{(hub.rank * 100).toFixed(1)} %</span></li>)}</ol></>}
           {view.vulnerability && <div className="vuln-panel">
             <h4 className="hub-heading">{t('dash.vulnTitle')}</h4>
@@ -763,7 +803,7 @@ export default function Dashboard() {
               : <>
                 <h5 className="gaps-heading">{t('dash.primacyOutlets')}</h5>
                 <ul className="hub-list primacy-outlets">{view.primacy.outlets.map(entry => <li key={entry.outlet}>
-                  <span className="primacy-outlet">{entry.outlet || '—'}</span>
+                  <button type="button" className="text-button primacy-outlet" aria-label={t('dash.dossierAria', { outlet: entry.outlet })} onClick={() => openDossier(entry.outlet)}>{entry.outlet || '—'}</button>
                   <span className="hub-rank">{t('dash.primacyOutletRow', { firsts: number(entry.firsts), followups: number(entry.followups), lag: entry.meanLag === undefined ? '' : t('dash.primacyLag', { days: number(entry.meanLag) }) })}</span>
                 </li>)}</ul>
                 {view.primacy.relationships.length > 0 && <><h5 className="gaps-heading">{t('dash.primacyRelations')}</h5>
@@ -786,7 +826,7 @@ export default function Dashboard() {
             {view.scorecard.profiles.length === 0
               ? <p className="muted" role="status">{t('dash.scorecardNone')}</p>
               : <><ul className="hub-list scorecard-sources">{view.scorecard.profiles.map(entry => <li key={entry.outlet}>
-                <span className={`scorecard-outlet scorecard-${entry.standing}`}>{entry.outlet || '—'}</span>
+                <button type="button" className={`text-button scorecard-outlet scorecard-${entry.standing}`} aria-label={t('dash.dossierAria', { outlet: entry.outlet })} onClick={() => openDossier(entry.outlet)}>{entry.outlet || '—'}</button>
                 <span className="scorecard-standing">{t(STANDING_LABEL[entry.standing])}</span>
                 <span className="hub-rank">{t('dash.scorecardRow', { documents: number(entry.documents), firsts: number(entry.firsts), followups: number(entry.followups), lag: entry.meanLag === undefined ? '' : t('dash.scorecardLag', { days: number(entry.meanLag) }) })}</span>
                 {entry.soloClaims > 0 && <span className="hub-rank">{t('dash.scorecardSolo', { count: number(entry.soloClaims) })}</span>}

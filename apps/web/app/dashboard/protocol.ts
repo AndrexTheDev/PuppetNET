@@ -1,4 +1,4 @@
-import type { Dataset, DatasetDiff, Evidence, Filters, GraphNode, PathTimeline, View } from './graph-data';
+import type { Dataset, DatasetDiff, Evidence, Filters, GraphNode, PathTimeline, SourceDossier, View } from './graph-data';
 export type WorkerRequest =
   | { kind: 'demo'; version: number; count: number; filters: Filters }
   | { kind: 'import'; version: number; text?: string; file?: File; filters: Filters }
@@ -9,6 +9,7 @@ export type WorkerRequest =
   | { kind: 'detail'; id: string }
   | { kind: 'edgeDetail'; id: string }
   | { kind: 'path'; source: string; target: string }
+  | { kind: 'dossier'; version: number; outlet: string }
   | { kind: 'broker' }
   | { kind: 'louvain'; active: boolean }
   | { kind: 'impact'; version: number; ids: string[] }
@@ -19,6 +20,7 @@ export type WorkerResponse =
   | { kind: 'view'; view: View }
   | { kind: 'positions'; version: number; positions: Float32Array }
   | { kind: 'layout'; running: boolean }
+  | { kind: 'dossier'; version: number; outlet: string; dossier: SourceDossier }
   | { kind: 'detail'; node?: GraphNode; evidence: Evidence[] }
   | { kind: 'edgeDetail'; id: string; evidence: Evidence[] }
   | { kind: 'path'; source: string; target: string; nodes: string[] | null;

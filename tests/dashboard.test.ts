@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
-import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, monthWindow, bundleEdges, structuralVulnerability, pathTimeline, normalizeNote, readNotes, caseReport, nextPlaybackMonth, evidenceWindow, compareDuplicates, multiFailureImpact, normalizeSavedName, readSavedViews, upsertSavedView, removeSavedView, evidenceToCSV, parseCaseNotes, mergeNotes, searchNoteIndex, caseBundle, readCaseBundle, provenanceGaps, edgeSources, sharedSourceGroups, normalizeEvidence, edgeSourceStatus, sourceRegistry, pairConflicts, evidenceFreshness, monthsBefore, FRESH_WINDOWS, DEFAULT_FRESH_MONTHS, isFreshWindow, filterDataset, nodeBacking, evidenceRisk, riskToCSV, diffDatasets, diffToCSV, searchCase, noteSnippet, WATCH_LIMIT, readWatchlist, toggleWatch, watchReport, watchToCSV, watchChanges, watchChangesToCSV, entityBrief, watchBrief, caseArchive, zipStore, crc32, entityTimeline, sourcePrimacy, primacyToCSV, sourceScorecard, sourceScorecardCSV, caseSummary, TYPES, SAVED_VIEW_LIMIT, NOTE_LIMIT, EGO_DEPTH_LIMIT, VULNERABILITY_NODE_LIMIT, normalizeInsights, ANALYSIS_LIMITS, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
+import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, monthWindow, bundleEdges, structuralVulnerability, pathTimeline, normalizeNote, readNotes, caseReport, nextPlaybackMonth, evidenceWindow, compareDuplicates, multiFailureImpact, normalizeSavedName, readSavedViews, upsertSavedView, removeSavedView, evidenceToCSV, parseCaseNotes, mergeNotes, searchNoteIndex, caseBundle, readCaseBundle, provenanceGaps, edgeSources, sharedSourceGroups, normalizeEvidence, edgeSourceStatus, sourceRegistry, pairConflicts, evidenceFreshness, monthsBefore, FRESH_WINDOWS, DEFAULT_FRESH_MONTHS, isFreshWindow, filterDataset, nodeBacking, evidenceRisk, riskToCSV, diffDatasets, diffToCSV, searchCase, noteSnippet, WATCH_LIMIT, readWatchlist, toggleWatch, watchReport, watchToCSV, watchChanges, watchChangesToCSV, entityBrief, watchBrief, caseArchive, zipStore, crc32, entityTimeline, sourcePrimacy, primacyToCSV, sourceScorecard, sourceScorecardCSV, caseSummary, sourceDossier, TYPES, SAVED_VIEW_LIMIT, NOTE_LIMIT, EGO_DEPTH_LIMIT, VULNERABILITY_NODE_LIMIT, normalizeInsights, ANALYSIS_LIMITS, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
 import { apiBase, readResponse } from '../apps/web/app/dashboard/api';
 const filters: Filters = { confidence: 0, weight: 0, types: [...TYPES], lod: true, ratio: 1 };
 test('normalizes Worker and Graphology nodes without inventing coordinates', () => {
@@ -1789,4 +1789,68 @@ test('wave 34 summarises the case without adding a claim of its own', () => {
   assert.deepEqual(caseSummary({ stats, conflicts, gaps, scorecard, risk }), summary, 'deterministic');
   const report = caseReport({ stats, nodes: data.nodes, edges: data.edges, conflicts, gaps, scorecard, summary }, '2026-10-21', 'de');
   assert.match(report, /## Aktenlage\n\n- 4 Entitäten · 4 Beziehungen · 4 Quellen\n- Belege: 4\/4/, 'the glance leads the case report');
+});
+
+test('wave 35 a source dossier names what the verdict only counted', () => {
+  const data = normalizeDataset({
+    nodes: [{ key: 'a', name: 'Alpha' }, { key: 'b', name: 'Beta' }, { key: 'c', name: 'Gamma' }, { key: 'd', name: 'Delta' }, { key: 'e', name: 'Epsilon' }],
+    evidence: [
+      { id: 'h1', title: 'H1', source: 'Handelsblatt', date: '2024-01-01' },
+      { id: 'h2', title: 'H2', source: 'Handelsblatt', date: '2024-03-01' },
+      { id: 'p1', title: 'P1', source: 'Presse', date: '2024-02-01' },
+      { id: 'p2', title: 'P2', source: 'Presse', date: '2024-04-01' },
+      { id: 'g1', title: 'G1', source: 'Gazette', date: '2024-01-01' },
+      { id: 'g2', title: 'G2', source: 'Gazette', date: '2024-04-01' },
+      { id: 'g3', title: 'G3', source: 'Gazette', date: '2024-02-01' },
+      { id: 'g4', title: 'G4', source: 'Gazette', date: '2024-03-01' },
+      { id: 'b1', title: 'B1', source: 'Blog', date: '2024-05-01' },
+      { id: 'u1', title: 'U1', source: 'Blog' },
+    ],
+    edges: [
+      { source: 'a', target: 'b', type: 'OWNS', evidenceIds: ['h1', 'p1'] },
+      { source: 'c', target: 'd', type: 'MET', evidenceIds: ['h2', 'p2'] },
+      { source: 'd', target: 'e', type: 'OWNS', evidenceIds: ['g1', 'g2'] },
+      { source: 'd', target: 'e', type: 'SOLD', evidenceIds: ['g3', 'g4'] },
+      { source: 'b', target: 'c', type: 'OWNS', evidenceIds: ['h1', 'h2'] },
+      { source: 'b', target: 'c', type: 'SOLD', evidenceIds: ['p1', 'p2'] },
+      { source: 'c', target: 'a', type: 'MET', evidenceIds: ['b1', 'u1'] },
+    ],
+  });
+  const conflicts = pairConflicts(data.nodes, data.edges, data.evidence);
+  assert.deepEqual(conflicts.map(conflict => [conflict.pair.join('|'), conflict.kind]), [['b|c', 'conflict'], ['d|e', 'conflict']],
+    'fixture check: one dispute between outlets, one with itself');
+  const lead = sourceDossier('Handelsblatt', data.nodes, data.edges, data.evidence, conflicts);
+  assert.equal(lead.outlet, 'handelsblatt', 'names are matched case-insensitively, like the registry and the verdict');
+  assert.equal(lead.documents, 2);
+  assert.deepEqual(lead.firsts.map(claim => [claim.label, claim.date]), [
+    ['Alpha → Beta · OWNS', '2024-01-01'],
+    ['Gamma → Delta · MET', '2024-03-01'],
+  ], 'its first reports, named and dated');
+  assert.deepEqual(lead.solo.map(claim => claim.label), ['Beta → Gamma · OWNS'], 'a claim nobody else documents is solo, not a win');
+  assert.deepEqual(lead.disputes, [{ pair: ['b', 'c'], labels: ['Beta', 'Gamma'], self: false, shared: ['presse'] }],
+    'the disputed pair is named, with the outlet it is arguing with');
+  assert.deepEqual([lead.first, lead.last], ['2024-01-01', '2024-03-01']);
+  const follower = sourceDossier('presse', data.nodes, data.edges, data.evidence, conflicts);
+  assert.deepEqual(follower.followups.map(claim => [claim.label, claim.date, claim.lag]), [
+    ['Alpha → Beta · OWNS', '2024-02-01', 31],
+    ['Gamma → Delta · MET', '2024-04-01', 31],
+  ], 'follow-ups carry the distance to the earliest report');
+  assert.deepEqual(follower.firsts, [], 'a follower did not report anything first');
+  assert.deepEqual(follower.disputes[0].shared, ['handelsblatt'], 'the dispute is symmetric between the two outlets');
+  const alone = sourceDossier('gazette', data.nodes, data.edges, data.evidence, conflicts);
+  assert.deepEqual(alone.solo.map(claim => claim.date), ['2024-01-01', '2024-02-01'], 'two claims, both without a race');
+  assert.deepEqual(alone.disputes, [{ pair: ['d', 'e'], labels: ['Delta', 'Epsilon'], self: true, shared: [] }],
+    'a dispute only it documents is marked as contradicting itself');
+  const quiet = sourceDossier('blog', data.nodes, data.edges, data.evidence, conflicts);
+  assert.deepEqual([quiet.documents, quiet.undatedDocuments, quiet.solo.length], [1, 1, 1],
+    'a named but undated document is counted apart and never dated by guesswork');
+  assert.deepEqual(sourceDossier('  Nobody ', data.nodes, data.edges, data.evidence, conflicts), {
+    outlet: 'nobody', documents: 0, undatedDocuments: 0, firsts: [], followups: [], solo: [], disputes: [],
+  }, 'an unknown outlet yields an empty dossier, never a guess');
+  assert.equal(sourceDossier('', data.nodes, data.edges, data.evidence, conflicts).outlet, '', 'no name, no dossier');
+  const bounded = sourceDossier('gazette', data.nodes, data.edges, data.evidence, conflicts, 1);
+  assert.deepEqual([bounded.solo.length, bounded.disputes.length], [1, 1], 'bounded per list');
+  assert.deepEqual(sourceDossier('gazette', data.nodes, data.edges, data.evidence, conflicts), alone, 'deterministic');
+  assert.deepEqual(sourceDossier('gazette', data.nodes, data.edges, data.evidence, []).disputes, [],
+    'without the conflict set nothing is called a dispute');
 });

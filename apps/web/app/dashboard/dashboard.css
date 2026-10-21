@@ -280,4 +280,9 @@
 .summary-flags{margin:0;padding:0;list-style:none}
 .summary-flags li{margin-bottom:var(--space-1,0.25rem)}
 .summary-flags .text-button{color:var(--color-gold)}
+.dossier-panel{margin-bottom:var(--space-3,1rem);border:1px solid var(--line);border-radius:var(--radius-1,0.25rem);padding:var(--space-2,0.5rem)}
+.dossier-actions{display:flex;flex-wrap:wrap;gap:var(--space-2,0.5rem);margin:var(--space-1,0.25rem) 0}
+.dossier-claims li{display:flex;flex-wrap:wrap;gap:var(--space-1,0.25rem);align-items:baseline}
+.dossier-label{overflow-wrap:anywhere}
+.primacy-outlet,.scorecard-outlet{text-align:left}
 

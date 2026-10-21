@@ -632,3 +632,27 @@ test('wave 34: the case at a glance only orders what the panels already proved',
   for (const key of ['summaryTitle', 'summaryText', 'summaryEmpty', 'summaryFlags', 'summaryFlagDispute', 'summaryFlagSelf', 'summaryFlagSingle', 'summaryFlagStale', 'summaryJumpAria', 'summaryJumped'])
     assert.equal((strings.match(new RegExp(`'dash\\.${key}'`, 'g')) ?? []).length, 2, `dash.${key} exists in both languages`);
 });
+
+test('wave 35: a source name opens a dossier instead of a dead end', () => {
+  const data = read('apps/web/app/dashboard/graph-data.ts');
+  assert.match(data, /export function sourceDossier\(outlet: string, nodes: GraphNode\[\], edges: GraphEdge\[\], evidence: Evidence\[\], conflicts: PairConflict\[\] = \[\], limit = 12\): SourceDossier/,
+    'the dossier is pure and bounded');
+  assert.match(data, /if \(!name\) return empty;/, 'no name, no dossier — never a guess');
+  assert.match(data, /if \(oldest\.size === 1\) solo\.push\(claim\);/, 'a claim nobody else documents is solo, not a win');
+  assert.match(data, /self: sides\.size === 1,/, 'a dispute only this outlet documents is marked as such');
+  assert.match(data, /shared: \[\.\.\.sides\]\.filter\(entry => entry !== name\)\.sort\(\),/, 'the other side of a dispute is named');
+  assert.doesNotMatch(data.match(/export function sourceDossier[\s\S]*?\n}/)?.[0] ?? '', /new Date\(\)|Math\.random/, 'no clock, no randomness');
+  const protocol = read('apps/web/app/dashboard/protocol.ts');
+  assert.ok(protocol.includes("kind: 'dossier'; version: number; outlet: string"), 'the UI asks the worker');
+  assert.ok(protocol.includes("kind: 'dossier'; version: number; outlet: string; dossier: SourceDossier"), 'and gets the dossier back');
+  const worker = read('apps/web/app/dashboard/graph.worker.ts');
+  assert.match(worker, /const disputes = pairConflicts\(analysis\.nodes, analysis\.edges, dataset\.evidence\);/, 'judged on the same slice as the verdict');
+  assert.match(worker, /sourceDossier\(data\.outlet, analysis\.nodes, analysis\.edges, dataset\.evidence, disputes\)/, 'on the full slice, not the narrowed view');
+  const dashboard = read('apps/web/app/dashboard/Dashboard.tsx');
+  assert.ok(dashboard.includes("send({ kind: 'dossier', version: ++dossierVersion.current, outlet })"), 'opening a dossier is a request');
+  assert.ok(dashboard.includes("if (data.version !== dossierVersion.current) return;"), 'a stale answer never overwrites a newer dossier');
+  assert.ok(dashboard.includes("t('dash.dossierText')"), 'the panel explains what it shows');
+  const strings = read('apps/web/lib/i18n-strings.ts');
+  for (const key of ['dossierAria', 'dossierTitle', 'dossierClose', 'dossierSummary', 'dossierSpan', 'dossierFilter', 'dossierDisputeFilter', 'dossierFirsts', 'dossierFollowups', 'dossierSolo', 'dossierDisputes', 'dossierSelf', 'dossierShared', 'dossierLag', 'dossierUndated', 'dossierNone', 'dossierText'])
+    assert.equal((strings.match(new RegExp(`'dash\\.${key}'`, 'g')) ?? []).length, 2, `dash.${key} exists in both languages`);
+});

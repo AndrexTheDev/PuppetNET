@@ -3,7 +3,7 @@ import { MultiDirectedGraph, UndirectedGraph } from 'graphology';
 import forceAtlas2 from 'graphology-layout-forceatlas2';
 import betweenness from 'graphology-metrics/centrality/betweenness';
 import louvain from 'graphology-communities-louvain';
-import { demoDataset, normalizeDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, levelFor, shortestPath, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, bundleEdges, structuralVulnerability, pathTimeline, multiFailureImpact, provenanceGaps, sharedSourceGroups, sourceRegistry, pairConflicts, evidenceFreshness, isFreshWindow, DEFAULT_FRESH_MONTHS, evidenceRisk, sourcePrimacy, sourceScorecard, evidenceToCSV, diffDatasets, EGO_DEPTH_LIMIT, ANALYSIS_LIMITS, LIMITS, TYPES, type Dataset, type Filters, type View } from './graph-data';
+import { demoDataset, normalizeDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, levelFor, shortestPath, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, bundleEdges, structuralVulnerability, pathTimeline, multiFailureImpact, provenanceGaps, sharedSourceGroups, sourceRegistry, pairConflicts, evidenceFreshness, isFreshWindow, DEFAULT_FRESH_MONTHS, evidenceRisk, sourcePrimacy, sourceScorecard, sourceDossier, evidenceToCSV, diffDatasets, EGO_DEPTH_LIMIT, ANALYSIS_LIMITS, LIMITS, TYPES, type Dataset, type Filters, type View } from './graph-data';
 import type { WorkerRequest, WorkerResponse } from './protocol';
 const scope = self as unknown as { onmessage: ((event: MessageEvent<WorkerRequest>) => void) | null; postMessage: (value: WorkerResponse, transfer?: Transferable[]) => void };
 let dataset: Dataset = { nodes: [], edges: [], evidence: [] };
@@ -105,6 +105,15 @@ function build(filters: Filters) {
   if (layoutWanted) start();
 }
 scope.onmessage = async ({ data }) => {
+  // Wave 35: the drill-down behind a source verdict. Answered on the same slice the
+  // verdict itself was judged on (before the dispute and thin-file views narrow it),
+  // so a dossier can never disagree with the panel that opened it.
+  if (data.kind === 'dossier') {
+    const analysis = filterDataset(effectiveDataset(), { ...lastFilters, dispute: undefined, weak: undefined });
+    const disputes = pairConflicts(analysis.nodes, analysis.edges, dataset.evidence);
+    send({ kind: 'dossier', version: data.version, outlet: data.outlet, dossier: sourceDossier(data.outlet, analysis.nodes, analysis.edges, dataset.evidence, disputes) });
+    return;
+  }
   if (data.kind === 'detail') {
     send({ kind: 'detail', node: dataset.nodes.find(n => n.id === data.id), evidence: evidenceFor(dataset, data.id) }); return;
   }
