@@ -156,7 +156,7 @@ NEGATIVE = re.compile(
     r"wohl|soll|sollen|sollte|sollten|könnte|könnten|dürfte|dürften|dementi\w*|bestreit\w*|bestritt\w*|"
     r"abgestritten|leugn\w*|geleugnet|zurückgewiesen|zurückweis\w*|vorgeworfen|vorwurf\w*|vorwürfe\w*|"
     r"beschuldig\w*|verdacht\w*|verdächtig\w*|gerücht\w*|spekul\w*|"
-    r"not|never|neither|no longer|alleg\w*|reportedly|purportedly|supposedly|denie[sd]|deny|denying|denial|"
+    r"(?-i:not)|never|neither|no longer|alleg\w*|reportedly|purportedly|supposedly|denie[sd]|deny|denying|denial|"
     r"disput\w*|accus\w*|suspect\w*|might|could|rumou?r\w*|speculat\w*)\b", re.I)
 #: Dependency labels that attach a nominal to a role noun or the copula:
 #: op = prepositional object ("von Y"), nk = PP-internal noun kernel,

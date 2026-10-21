@@ -130,6 +130,8 @@ def test_validator_corpus(c):
     ("Die Acme GmbH ist sowohl in Berlin als auch in Wien tätig.", False),
     ("In May 2026 the Mayor of Bremen met Siemens AG.", False),
     ("Weber ist Geschäftsführer der Acme GmbH.", False),
+    ("Die in Not geratene Acme GmbH wurde von Siemens übernommen.", False),
+    ("Siemens AG did not acquire Acme GmbH.", True),
 ])
 def test_local_sentence_filter_shares_the_denial_lexicon(sentence, vetoed):
     from src.gemini_tasks import NEGATION_OR_HEDGE

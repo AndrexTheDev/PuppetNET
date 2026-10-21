@@ -41,6 +41,7 @@ Aktueller Drei-Phasen-Vertrag und Betriebsgrenzen: [Ressourcenmodus](docs/resour
   Kontingente und Abrechnung beobachten; Cloud-Fallback und optionale Dienste
   nur bewusst aktivieren. Operator-Token nie als `NEXT_PUBLIC_*` veröffentlichen.
 - **Release-Checkliste:** [docs/release-checklist.md](docs/release-checklist.md).
+- **Go-live (Betreiberschritte in Reihenfolge):** [docs/go-live.md](docs/go-live.md).
   Architektur und Einrichtung: [Zero-KV](docs/zero-kv-worker.md),
   [Ingestion](docs/daily-ingestion.md),
   [Verbesserungs-Roadmap](docs/improvement-roadmap.md).
@@ -136,6 +137,7 @@ Current three-phase contract and operational limits:
   quotas and billing; activate cloud fallback and optional services only
   deliberately. Never publish operator tokens as `NEXT_PUBLIC_*`.
 - **Release checklist:** [docs/release-checklist.md](docs/release-checklist.md).
+- **Go-live (operator steps in order):** [docs/go-live.md](docs/go-live.md#english).
   Architecture and setup: [Zero-KV](docs/zero-kv-worker.md),
   [ingestion](docs/daily-ingestion.md),
   [improvement roadmap](docs/improvement-roadmap.md).

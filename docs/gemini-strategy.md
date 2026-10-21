@@ -164,10 +164,19 @@ WHERE r.public_released IS NULL
 RETURN a.name, type(r), b.name, r.confidence, r.evidence[-1] AS zitat
 ORDER BY r.confidence DESC LIMIT 50;
 
-// Freigeben bzw. ablehnen (einzeln, nach Prüfung des Zitats)
-MATCH (a {name: $von})-[r {method: 'llm'}]->(b {name: $nach}) SET r.public_released = true;
-MATCH (a {name: $von})-[r {method: 'llm'}]->(b {name: $nach}) SET r.public_released = false;
+// Freigeben bzw. ablehnen: genau EINE Kante (Typ angeben!), nach Prüfung des Zitats
+MATCH (a:Entity {canonical_key: $von})-[r {method: 'llm'}]->(b:Entity {canonical_key: $nach})
+WHERE type(r) = $typ SET r.public_released = true;   // ablehnen: = false
+
+// Entitäten, die nur das Cloud-Modell gesehen hat (keine Profilseite ohne Freigabe)
+MATCH (e:Entity {cloud_only: true}) WHERE e.public_released IS NULL
+RETURN e.canonical_key, e.name, e.entity_type, e.doc_ids[-1] AS beleg LIMIT 50;
+MATCH (e:Entity {canonical_key: $key}) SET e.public_released = true;   // ablehnen: = false
 ```
+
+Ohne Typfilter würde die Freigabe **alle** offenen KI-Kanten zwischen zwei Entitäten
+auf einmal veröffentlichen (z. B. eine korrekte `ACQUIRED` und eine fragwürdige
+`CONTROLS`). Eine freigegebene Kante erscheint nur, wenn beide Enden öffentlich sind.
 
 ## 4. Budgetrechnung
 

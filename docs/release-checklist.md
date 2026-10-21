@@ -3,7 +3,7 @@
 > 🌐 **Sprachen · Languages:** Deutsch ↓ · [English](#english)
 
 ## 1. Vorbereiten
-- [ ] Auf `arena/5fb0fe0b-puppetnet` bleiben; `git status` und den **gesamten**
+- [ ] Auf dem jeweiligen Session-Branch bleiben; `git status` und den **gesamten**
   Diff prüfen (enthält auch die vorherigen Pipeline-/Zero-KV-/UI-Arbeiten).
 - [ ] `npm ci`, Node.js 22, dann `npm run ci:pages`, `npm run ci:worker`,
   `node --test tests/release.test.mjs`, `git diff --check`.
@@ -24,7 +24,7 @@ git branch --show-current
 git diff --check
 git add <geprüfte-Dateien>
 git commit -m "Prepare static Pages release and consolidate design tokens"
-git push origin arena/5fb0fe0b-puppetnet
+git push origin "$(git branch --show-current)"
 ```
 - [ ] Cloudflare Pages: Repository-Root, Build `npm run ci:pages`, Output
   `apps/web/out`, Node 22; keine Pages Functions/SSR und kein KV erforderlich.

@@ -914,6 +914,27 @@ Release-Pin (release 42) — `ci:pages` grün, 0 zusätzliche Actions-Minuten.
 Profil-Job + Zusatz-Cron, konfigurierbare Run-Slots (harte Obergrenze 12 + 4),
 28 neue Python-Tests (`tests/test_gemini_broker.py`) + 2 angepasste Workflow-/Ledger-Pins.
 
+### Welle 37 — Betriebsreife: Audits, Beta-Härtung, Go-live — ✅ umgesetzt (2026-10-21)
+
+- **Befund**: Der systematische Durchlauf (alle Audits und Suites, Beta-Szenarien
+  S1–S11 bis in den Browser) fand 10 Fehler im neuen Cloud-Pfad, im Workflow und in der
+  Web-Darstellung ([Beta-Bericht](testing/beta-2026-10-21.md)).
+- **Präzision**: ein gemeinsames Negations-/Dementi-/Vorwurfslexikon für lokale und
+  Cloud-Extraktion; `ACCUSED_OF` nicht per Cloud; Injection-Schutz für Zitate;
+  Kurzformen nur bei Eindeutigkeit; Entitäten, die nur das Modell sah (`cloud_only`),
+  bekommen ohne Freigabe keine Profilseite.
+- **Recall**: typografische Zitatnormalisierung; Genitiv und Firmennamen ohne Rechtsform;
+  `MISC`-Firmen aus spaCy werden ORG.
+- **Betrieb**: Verbindungsprüfung manuell und nur lesend (kein Push-Trigger in der
+  Produktions-Concurrency-Gruppe), Rebase-Retry für alle Ledger-/Daten-Pushes, Broker
+  drosselt beim ersten 429 pro Minute statt zu parken, Merge-Reihenfolge unabhängig.
+- **Web**: Profiltitel brachen buchstabenweise um (globale `header`-Flexregel).
+- **Go-live**: [Betreiberschritte in Reihenfolge](go-live.md).
+
+**Geliefert (Welle 37)**: 53 neue Python-Tests (1.394 gesamt), Validator-Korpus,
+`tests/entity_browser.mjs`, reproduzierbare Beta-Skripte `scripts/beta/`
+(Broker 28, Pipeline 17, Validator 34, Cross-Stack 16 Prüfungen).
+
 ## 4. Budget-Zusammenfassung
 
 | Welle | Ort | Zusätzliche Actions-Minuten | Status |
@@ -1809,6 +1830,29 @@ minutes.
 jump actions, first reports, follow-ups, lone claims and disputes, 17 new DE/EN keys,
 token-only CSS, 1 new data-layer test (dashboard 71) + 1 new release pin (release 42) —
 `ci:pages` green, 0 extra Actions minutes.
+
+### Wave 36 — Gemini free tier used systematically + public-repo profile — ✅ implemented (2026-10-21, opt-in)
+
+The scarce free-tier resource is requests per day, not tokens. A budget broker
+(per model and project, Pacific day, 80 % safety factor, learns from 429, reserves
+before sending) runs one schema-validated document request. Every relation is verified
+locally and stored as `method=llm` with confidence ≤ 0.6. The export publishes `llm`
+edges only after `public_released=true`. An API-verified `PIPELINE_PROFILE=public`
+allows 8 + 3 runs per day. Details: [Gemini strategy](gemini-strategy.md).
+
+### Wave 37 — operational readiness: audits, beta hardening, go-live — ✅ implemented (2026-10-21)
+
+All audits, all suites and beta scenarios S1–S11 (through to the browser) found 10
+defects; all are fixed with regression tests
+([beta report](testing/beta-2026-10-21.md)):
+- one shared negation/denial/allegation lexicon; `ACCUSED_OF` never from the cloud;
+- a prompt-injection guard; unique-only short names; typographic quote folding;
+- `cloud_only` entities need an operator release; spaCy `MISC` companies become ORG;
+- a read-only manual connection check and rebase-retry pushes;
+- broker throttling on the first per-minute 429 and an order-independent merge;
+- a fixed profile title layout.
+
+Operator steps: [go-live](go-live.md#english).
 
 ## 4. Budget summary
 
