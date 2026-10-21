@@ -596,6 +596,31 @@ Widersprüche, aufgelöste, CSV, Entfernen), 17 neue DE/EN-Schlüssel, token-onl
 1 neuer Datenlagen-Test (dashboard 55) + 1 neuer Release-Pin (release 30) —
 `ci:pages` grün, 0 zusätzliche Actions-Minuten.
 
+### Welle 25 — Akten-Suche — ✅ umgesetzt (2026-10-21)
+
+- **Ein Suchfeld für die ganze Akte**: Entitäten, Widersprüche, Belastbarkeit,
+  Quellen und Recherche-Notizen. Jeder Treffer nennt seine **Art** — damit ist klar,
+  *warum* etwas passt — und ein Klick springt an die richtige Stelle: Entität
+  fokussieren, Widerspruchs-Ansicht öffnen, Quellenfilter setzen.
+- **Jedes Objekt erscheint genau einmal**, unter dem aussagekräftigsten Titel: eine
+  Entität, die zugleich ein Belastbarkeits-Befund ist, wird als Entität gelistet und
+  trägt den Befund als Detail — zwei Zeilen für dieselbe Sache wären Lärm.
+- **Gewichtung ist erklärt statt zufällig**: Entität vor Widerspruch vor
+  Belastbarkeit vor Quelle vor Notiz, bei gleichem Text-Score; danach Label und ID.
+  Leere Eingabe liefert **nichts** statt einer Datenhalde; Ergebnis begrenzt,
+  deterministisch, LoD-Gruppen ausgenommen. Jeder Indexteil ist optional.
+- **Notiz-Auszüge zeigen den Treffer**, nicht den Anfang: das Fenster wird um den
+  Treffer zentriert und enthält das gesuchte Wort vollständig, wenn es hineinpasst —
+  ein Auszug, der genau das gesuchte Wort abschneidet, wäre schlechter als keiner.
+- Die Suche läuft **im Browser** auf den bereits geladenen Panels — 0 zusätzliche
+  Actions-Minuten, kein Server, keine neue Datenkopie.
+
+**Geliefert (Welle 25)**: `searchCase()`, `noteSnippet()`, `CaseHit`/`CaseKind`,
+Suchfeld im Analyse-Bereich mit Trefferart, Detail, Sprungzielen und ehrlichem
+Leer-/Kein-Treffer-Text, 14 neue DE/EN-Schlüssel, token-only CSS,
+2 neue Datenlagen-Tests (dashboard 57) + 1 neuer Release-Pin (release 31) —
+`ci:pages` grün, 0 zusätzliche Actions-Minuten.
+
 ## 4. Budget-Zusammenfassung
 
 | Welle | Ort | Zusätzliche Actions-Minuten | Status |
@@ -624,6 +649,7 @@ Widersprüche, aufgelöste, CSV, Entfernen), 17 neue DE/EN-Schlüssel, token-onl
 | 22 Widerspruchs-Ansicht/Zeitfenster | Browser/Worker | **0** | ✅ umgesetzt |
 | 23 Belastbarkeit der Akte | Browser/Worker | **0** | ✅ umgesetzt |
 | 24 Änderungs-Vergleich | Browser/Worker | **0** | ✅ umgesetzt |
+| 25 Akten-Suche | Browser | **0** | ✅ umgesetzt |
 
 Kein Schritt erzeugt neue Workflows, neue Cron-Jobs, längere Jobs oder bezahlte
 Dienste. Die einzigen verbrauchsrelevanten Grenzen sind die bestehenden: 3
@@ -1200,6 +1226,31 @@ ones, CSV, remove), 17 new DE/EN keys, token-only CSS, 1 new data-layer test
 (dashboard 55) + 1 new release pin (release 30) — `ci:pages` green, 0 extra Actions
 minutes.
 
+### Wave 25 — searching the case — ✅ implemented (2026-10-21)
+
+- **One search field for the whole case**: entities, contradictions, sturdiness,
+  sources and research notes. Every hit names its **kind** — so it is clear *why* it
+  matched — and a click jumps to the right place: focus the entity, open the dispute
+  view, apply the outlet filter.
+- **One row per object**, under its most telling label: an entity that is also a
+  sturdiness finding is listed as an entity and carries the finding as its detail —
+  two rows for the same thing would be noise.
+- **Weighting is declared, not accidental**: entity before contradiction before
+  sturdiness before source before note at equal text score, then label and id. An empty
+  query returns **nothing** instead of a data dump; results are bounded, deterministic,
+  display groups excluded, and every part of the index is optional.
+- **Note excerpts show the match**, not the beginning: the window is centred on the hit
+  and contains the searched word in full whenever it fits — an excerpt that cuts exactly
+  the word you searched for is worse than none.
+- The search runs **in the browser** on the panels already loaded — 0 extra Actions
+  minutes, no server, no second copy of the data.
+
+**Delivered (Wave 25)**: `searchCase()`, `noteSnippet()`, `CaseHit`/`CaseKind`, search
+field in the analysis section with kind, detail, jump targets and an honest
+empty/no-hit text, 14 new DE/EN keys, token-only CSS, 2 new data-layer tests
+(dashboard 57) + 1 new release pin (release 31) — `ci:pages` green, 0 extra Actions
+minutes.
+
 ## 4. Budget summary
 
 | Wave | Location | Additional Actions minutes | Status |
@@ -1228,6 +1279,7 @@ minutes.
 | 22 dispute view/time window | browser/worker | **0** | ✅ implemented |
 | 23 how much the file can carry | browser/worker | **0** | ✅ implemented |
 | 24 change comparison | browser/worker | **0** | ✅ implemented |
+| 25 case search | browser | **0** | ✅ implemented |
 
 No step creates new workflows, new cron jobs, longer jobs or paid services. The only
 consumption-relevant limits remain the existing ones: 3 reservations/UTC day, 5-minute

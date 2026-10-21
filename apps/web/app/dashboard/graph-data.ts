@@ -1510,6 +1510,100 @@ export function diffToCSV(diff: DatasetDiff): string {
   return [['kind', 'change', 'ref', 'label', 'detail'].map(csvCell).join(','), ...rows.map(row => row.map(csvCell).join(','))].join('\n') + '\n';
 }
 
+/** Wave 25: one search over the whole case file. Every hit keeps the kind that
+ * produced it, so the UI can say *why* something matched — an entity, a
+ * contradiction, a sturdiness finding, a source, or a research note. */
+export type CaseKind = 'entity' | 'conflict' | 'risk' | 'outlet' | 'note';
+export interface CaseHit {
+  kind: CaseKind;
+  id: string;
+  label: string;
+  detail?: string;
+  score: number;
+}
+
+/** Kind weighting: a named entity outranks a note at equal text score, because
+ * the case is built on entities. Ties then fall back to the label and the id. */
+const CASE_WEIGHT: Record<CaseKind, number> = { entity: 50, conflict: 40, risk: 30, outlet: 20, note: 10 };
+
+/**
+ * Wave 25: ranked search across everything the case knows — the visible
+ * entities, the contradictions, the sturdiness findings, the sources and the
+ * research notes. An entity that is also a sturdiness finding is reported once,
+ * as an entity (with the finding as its detail), because two rows for the same
+ * thing is noise. Empty query returns nothing instead of a random dump; the
+ * result is bounded and deterministic.
+ */
+export function searchCase(query: string, input: {
+  nodes: GraphNode[];
+  conflicts?: PairConflict[];
+  risk?: RiskReport;
+  sourceRegistry?: SourceRegistryEntry[];
+  notes?: Record<string, string>;
+}, limit = 12): CaseHit[] {
+  const q = query.trim();
+  if (!q) return [];
+  const scored: CaseHit[] = [];
+  const severity = new Map<string, string>();
+  for (const entry of input.risk?.entries ?? []) severity.set(entry.id, entry.state);
+  for (const node of input.nodes) {
+    if (node.group) continue;
+    const best = Math.max(fuzzyScore(q, node.label), fuzzyScore(q, node.id));
+    if (!best) continue;
+    const state = severity.get(node.id);
+    scored.push({ kind: 'entity', id: node.id, label: node.label, ...(state ? { detail: state } : {}), score: best + CASE_WEIGHT.entity });
+  }
+  for (const conflict of input.conflicts ?? []) {
+    const best = Math.max(fuzzyScore(q, `${conflict.labels[0]} ${conflict.labels[1]}`), fuzzyScore(q, conflict.pair.join(' ')), fuzzyScore(q, conflict.kind));
+    if (!best) continue;
+    scored.push({ kind: 'conflict', id: conflict.pair.join('|'), label: `${conflict.labels[0]} ↔ ${conflict.labels[1]}`, detail: conflict.kind, score: best + CASE_WEIGHT.conflict });
+  }
+  for (const entry of input.risk?.entries ?? []) {
+    const best = Math.max(fuzzyScore(q, entry.label), fuzzyScore(q, entry.type), fuzzyScore(q, entry.state));
+    if (!best) continue;
+    scored.push({ kind: 'risk', id: entry.id, label: entry.label, detail: entry.state, score: best + CASE_WEIGHT.risk });
+  }
+  for (const source of input.sourceRegistry ?? []) {
+    const best = fuzzyScore(q, source.name);
+    if (!best) continue;
+    scored.push({ kind: 'outlet', id: source.name, label: source.name || '—', detail: `${source.documents}`, score: best + CASE_WEIGHT.outlet });
+  }
+  for (const [id, text] of Object.entries(input.notes ?? {})) {
+    const best = fuzzyScore(q, text) || fuzzyScore(q, input.nodes.find(node => node.id === id)?.label ?? '');
+    if (!best) continue;
+    scored.push({ kind: 'note', id, label: input.nodes.find(node => node.id === id)?.label ?? id, detail: noteSnippet(text, q), score: best + CASE_WEIGHT.note });
+  }
+  // One row per thing: the strongest kind wins, so an entity that also carries a
+  // sturdiness finding is not listed twice.
+  const byKey = new Map<string, CaseHit>();
+  for (const hit of scored.sort((a, b) => b.score - a.score || (a.label < b.label ? -1 : a.label > b.label ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0))) {
+    const key = `${hit.kind === 'risk' ? 'entity' : hit.kind}:${hit.id}`;
+    const seen = byKey.get(key);
+    if (!seen) byKey.set(key, hit);
+    else if (!seen.detail && hit.detail) byKey.set(key, { ...seen, detail: hit.detail });
+  }
+  const order: CaseKind[] = ['entity', 'conflict', 'risk', 'outlet', 'note'];
+  return [...byKey.values()]
+    .sort((a, b) => b.score - a.score || order.indexOf(a.kind) - order.indexOf(b.kind) || (a.label < b.label ? -1 : a.label > b.label ? 1 : 0))
+    .slice(0, Math.max(1, limit));
+}
+
+/** Wave 25: a short, honest excerpt around the match (never a silent truncation
+ * of the beginning when the hit sits at the end). */
+export function noteSnippet(text: string, query: string, size = 90): string {
+  const clean = text.replace(/\s+/g, ' ').trim();
+  if (clean.length <= size) return clean;
+  const q = query.trim().toLowerCase();
+  const at = q ? clean.toLowerCase().indexOf(q) : -1;
+  if (at < 0) return `${clean.slice(0, size - 1)}…`;
+  // Centre the match in the excerpt and guarantee the whole query is visible
+  // (unless it is longer than the excerpt itself) — an excerpt that cuts the very
+  // word you searched for is worse than no excerpt.
+  const start = Math.max(0, Math.min(at - Math.floor((size - q.length) / 2), clean.length - size), at);
+  const slice = clean.slice(start, start + size).trim();
+  return `${start > 0 ? '…' : ''}${slice}${start + size < clean.length ? '…' : ''}`;
+}
+
 export const CONFIDENCE_THRESHOLD = 0.5;
 
 /**

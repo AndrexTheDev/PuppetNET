@@ -235,3 +235,11 @@
 .risk-state{font-size:.8em;font-weight:600}
 .diff-panel{margin-top:var(--space-3,1rem);border-top:1px solid var(--line);padding-top:var(--space-2,0.5rem)}
 .diff-panel .conflict-claims{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:0.15rem;font-size:.85em}
+.case-search{margin-top:var(--space-3,1rem);border-top:1px solid var(--line);padding-top:var(--space-2,0.5rem)}
+.case-search-field{display:flex;gap:var(--space-1,.25rem);align-items:center;flex-wrap:wrap}
+.case-search-field input{flex:1 1 12rem;font:inherit;font-size:.9em;padding:0.25rem 0.5rem;border:1px solid var(--line);border-radius:var(--radius-1,4px);background:transparent;color:inherit}
+.case-hits li{display:flex;flex-wrap:wrap;gap:var(--space-1,.25rem);align-items:baseline}
+.case-kind{font-size:.75em;text-transform:uppercase;letter-spacing:.04em;opacity:.7}
+.case-hit-conflict .case-kind{color:var(--color-danger)}
+.case-hit-risk .case-kind{color:var(--color-gold)}
+.case-hit-note .case-kind{color:var(--color-green)}

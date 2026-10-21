@@ -431,3 +431,21 @@ test('wave 24: the comparison is strict about identity and parsed off the UI thr
   assert.ok(dashboard.includes("t('dash.diffText')"), 'the panel explains the identity rules');
   assert.ok(dashboard.includes('setDiff(null)'), 'the comparison can be removed');
 });
+
+test('wave 25: the case search is one ranked index, not a second search box', () => {
+  const data = read('apps/web/app/dashboard/graph-data.ts');
+  assert.match(data, /export function searchCase\(query: string, input: \{/, 'the search takes one explicit input object');
+  assert.match(data, /const CASE_WEIGHT: Record<CaseKind, number> = \{ entity: 50, conflict: 40, risk: 30, outlet: 20, note: 10 \}/,
+    'kind weighting is declared, not scattered');
+  assert.match(data, /if \(!q\) return \[\];/, 'an empty query returns nothing instead of dumping the case');
+  assert.match(data, /export function noteSnippet\(text: string, query: string, size = 90\): string/, 'excerpts are a tested pure helper');
+  const dashboard = read('apps/web/app/dashboard/Dashboard.tsx');
+  assert.ok(dashboard.includes("t('dash.caseSearchHint')"), 'the panel says exactly what is searched');
+  assert.ok(dashboard.includes("t('dash.caseSearchEmpty')"), 'a miss explains filters as a possible cause');
+  assert.ok(dashboard.includes("t('dash.caseKindConflict')") === false, 'kind labels are derived, not hard-coded per row');
+  assert.match(dashboard, /t\(`dash\.caseKind\$\{hit\.kind\[0\]\.toUpperCase\(\)\}/, 'kind labels come from the closed vocabulary');
+  assert.ok(dashboard.includes("setFilters(f => ({ ...f, dispute: true }))"), 'a contradiction hit jumps into the dispute view');
+  assert.ok(dashboard.includes("outlet: hit.id"), 'a source hit applies the outlet filter');
+  assert.ok(dashboard.includes('searchCase(caseQuery, { nodes: view.nodes, conflicts: view.conflicts, risk: view.risk, sourceRegistry: view.sourceRegistry, notes })'),
+    'the index is built from the same view data the panels use');
+});

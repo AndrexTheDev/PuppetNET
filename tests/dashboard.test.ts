@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
-import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, monthWindow, bundleEdges, structuralVulnerability, pathTimeline, normalizeNote, readNotes, caseReport, nextPlaybackMonth, evidenceWindow, compareDuplicates, multiFailureImpact, normalizeSavedName, readSavedViews, upsertSavedView, removeSavedView, evidenceToCSV, parseCaseNotes, mergeNotes, searchNoteIndex, caseBundle, readCaseBundle, provenanceGaps, edgeSources, sharedSourceGroups, normalizeEvidence, edgeSourceStatus, sourceRegistry, pairConflicts, evidenceFreshness, monthsBefore, FRESH_WINDOWS, DEFAULT_FRESH_MONTHS, isFreshWindow, filterDataset, nodeBacking, evidenceRisk, riskToCSV, diffDatasets, diffToCSV, TYPES, SAVED_VIEW_LIMIT, NOTE_LIMIT, EGO_DEPTH_LIMIT, VULNERABILITY_NODE_LIMIT, normalizeInsights, ANALYSIS_LIMITS, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
+import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, monthWindow, bundleEdges, structuralVulnerability, pathTimeline, normalizeNote, readNotes, caseReport, nextPlaybackMonth, evidenceWindow, compareDuplicates, multiFailureImpact, normalizeSavedName, readSavedViews, upsertSavedView, removeSavedView, evidenceToCSV, parseCaseNotes, mergeNotes, searchNoteIndex, caseBundle, readCaseBundle, provenanceGaps, edgeSources, sharedSourceGroups, normalizeEvidence, edgeSourceStatus, sourceRegistry, pairConflicts, evidenceFreshness, monthsBefore, FRESH_WINDOWS, DEFAULT_FRESH_MONTHS, isFreshWindow, filterDataset, nodeBacking, evidenceRisk, riskToCSV, diffDatasets, diffToCSV, searchCase, noteSnippet, TYPES, SAVED_VIEW_LIMIT, NOTE_LIMIT, EGO_DEPTH_LIMIT, VULNERABILITY_NODE_LIMIT, normalizeInsights, ANALYSIS_LIMITS, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
 import { apiBase, readResponse } from '../apps/web/app/dashboard/api';
 const filters: Filters = { confidence: 0, weight: 0, types: [...TYPES], lod: true, ratio: 1 };
 test('normalizes Worker and Graphology nodes without inventing coordinates', () => {
@@ -1184,4 +1184,58 @@ test('wave 24 the diff reports what changed, not what was merely retold', () => 
     normalizeDataset({ nodes: [{ key: 'x', name: 'X, "quoted"' }], evidence: [], edges: [] }),
   );
   assert.ok(diffToCSV(quoted).includes('entity,added,x,"X, ""quoted""",Other'), 'RFC-4180 quoting is reused for change rows');
+});
+
+test('wave 25 the case search sees everything the file knows, once', () => {
+  const data = normalizeDataset({
+    nodes: [{ key: 'a', name: 'Alpha Holding' }, { key: 'b', name: 'Beta GmbH' }, { key: 'c', name: 'Gamma AG' }],
+    evidence: [
+      { id: 'd1', title: 'One', source: 'Handelsblatt', date: '2024-01-01' },
+      { id: 'd2', title: 'Two', source: 'Presse', date: '2024-06-01' },
+    ],
+    edges: [
+      { source: 'a', target: 'b', type: 'OWNS', evidenceIds: ['d1'] },
+      { source: 'b', target: 'a', type: 'SOLD', evidenceIds: ['d2'] },
+    ],
+  });
+  const input = {
+    nodes: data.nodes,
+    conflicts: pairConflicts(data.nodes, data.edges, data.evidence),
+    risk: evidenceRisk(data.nodes, data.edges, data.evidence, '2026-10-21'),
+    sourceRegistry: sourceRegistry(data, data.nodes, data.edges),
+    notes: { c: 'Gamma AG taucht nur in einer Quelle auf, Nachrecherche im Handelsregister nötig.' },
+  };
+  const alpha = searchCase('alpha', input);
+  assert.deepEqual(alpha.map(hit => hit.kind), ['entity', 'conflict'], 'an entity hit outranks the contradiction it is part of');
+  assert.equal(alpha[0].label, 'Alpha Holding');
+  assert.equal(alpha[0].detail, 'stale', 'the sturdiness finding travels as the detail, not as a second row');
+  assert.equal(searchCase('sequence', input).length, 1, 'the kind of a contradiction is searchable too');
+  assert.equal(searchCase('sequence', input)[0].kind, 'conflict');
+  assert.deepEqual(searchCase('handels', input).map(hit => hit.kind), ['outlet', 'note'], 'a source and the note that mentions it');
+  assert.deepEqual(searchCase('gamma', input).map(hit => hit.kind), ['entity', 'note'], 'the entity is reported once, the note separately');
+  assert.deepEqual(searchCase('zzz', input), []);
+  assert.deepEqual(searchCase('   ', input), [], 'an empty query is not a dump of everything');
+  assert.equal(searchCase('a', input, 2).length, 2, 'bounded');
+  assert.deepEqual(searchCase('beta', input), searchCase('beta', input), 'deterministic');
+  assert.deepEqual(searchCase('BETA', input).map(hit => hit.label)[0], 'Beta GmbH', 'case-insensitive');
+  const grouped = { ...input, nodes: [{ ...data.nodes[0], id: 'g:a', group: true as const }, ...data.nodes] };
+  assert.deepEqual(searchCase('alpha', grouped).map(hit => hit.id), ['a', 'a|b'], 'display groups are not searched');
+  assert.deepEqual(searchCase('alpha', { nodes: data.nodes }).map(hit => hit.kind), ['entity'], 'every part of the index is optional');
+  const outletHit = searchCase('presse', input).find(hit => hit.kind === 'outlet');
+  assert.ok(outletHit && outletHit.detail === '1', 'the outlet hit carries its document count');
+  assert.deepEqual(searchCase('alpha', { nodes: data.nodes, notes: { a: 'x'.repeat(500) } }).map(hit => hit.kind), ['entity', 'note'],
+    'a note on a matching entity is found through that entity, without an extra index');
+  assert.deepEqual(searchCase('zzz', { nodes: data.nodes, notes: { a: 'x'.repeat(500) } }), [],
+    'a long note is not a hit unless its text or its entity matches');
+});
+
+test('wave 25 note snippets show the match instead of the beginning', () => {
+  const long = `${'Vorspann '.repeat(20)}Handelsregister-Eintrag bestätigt die Verbindung${' Anhang'.repeat(20)}`;
+  const snippet = noteSnippet(long, 'handelsregister', 40);
+  assert.ok(snippet.includes('Handelsregister-Eintrag'), 'the match is inside the excerpt');
+  assert.ok(snippet.startsWith('…') && snippet.endsWith('…'), 'both cut sides are marked');
+  assert.ok(snippet.length <= 42, 'the excerpt stays short');
+  assert.equal(noteSnippet('kurz und knapp', 'kurz', 40), 'kurz und knapp', 'short notes are returned whole');
+  assert.equal(noteSnippet(`${'x '.repeat(60)}`, 'fehlt', 30).endsWith('…'), true, 'a miss truncates at the end, never invents context');
+  assert.equal(noteSnippet('  viel   Leerraum  ', 'leerraum', 40), 'viel Leerraum', 'whitespace is normalised');
 });

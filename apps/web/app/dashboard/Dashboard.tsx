@@ -2,7 +2,7 @@
 import dynamic from 'next/dynamic';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import EntityTable, { type TableRow } from './EntityTable';
-import { COLORS, TYPES, LIMITS, NOTE_STORAGE_KEY, FRESH_WINDOWS, DEFAULT_FRESH_MONTHS, riskToCSV, diffToCSV, caseReport, decodeViewState, edgesToCSV, encodeViewState, monthWindow, nextPlaybackMonth, nodesToCSV, caseBundle, compareDuplicates, mergeNotes, parseCaseNotes, provenanceGaps, readCaseBundle, searchNoteIndex, removeSavedView, upsertSavedView, readSavedViews, SAVED_VIEW_STORAGE_KEY, normalizeNote, rankSearch, readNotes, resolveNodeRef, viewToJSON, type Evidence, type Filters, type GraphEdge, type GraphNode, type PathTimeline, type View, type ViewUrlState, type DatasetDiff } from './graph-data';
+import { COLORS, TYPES, LIMITS, NOTE_STORAGE_KEY, FRESH_WINDOWS, DEFAULT_FRESH_MONTHS, riskToCSV, diffToCSV, searchCase, caseReport, decodeViewState, edgesToCSV, encodeViewState, monthWindow, nextPlaybackMonth, nodesToCSV, caseBundle, compareDuplicates, mergeNotes, parseCaseNotes, provenanceGaps, readCaseBundle, searchNoteIndex, removeSavedView, upsertSavedView, readSavedViews, SAVED_VIEW_STORAGE_KEY, normalizeNote, rankSearch, readNotes, resolveNodeRef, viewToJSON, type Evidence, type Filters, type GraphEdge, type GraphNode, type PathTimeline, type View, type ViewUrlState, type DatasetDiff, type CaseHit } from './graph-data';
 import type { NetworkHandle, PathHighlight } from './NetworkGraph';
 import type { WorkerRequest, WorkerResponse } from './protocol';
 import { loadStaticGraph, requestResearch, type Standby } from '../../src/lib/dataFetcher';
@@ -39,6 +39,7 @@ export default function Dashboard() {
   const [egoQuery, setEgoQuery] = useState(''), [egoDepth, setEgoDepth] = useState(2), [egoStatus, setEgoStatus] = useState('');
   const [brokers, setBrokers] = useState<{ id: string; label: string; share: number }[] | null>(null);
   const [diff, setDiff] = useState<DatasetDiff | null>(null), [baselineName, setBaselineName] = useState('');
+  const [caseQuery, setCaseQuery] = useState('');
   const [analysisNotice, setAnalysisNotice] = useState('');
   // Wave 13: entity resolution and failure simulation are case actions, not
   // background analytics - both work on the slice the investigator sees.
@@ -294,6 +295,9 @@ export default function Dashboard() {
   }
   // Fuzzy-ranked search: exact substring first, then subsequence matches, stable order.
   const list = useMemo(() => rankSearch(view?.nodes ?? [], search, Number.MAX_SAFE_INTEGER), [view, search]);
+  const caseHits = useMemo<CaseHit[]>(() => view
+    ? searchCase(caseQuery, { nodes: view.nodes, conflicts: view.conflicts, risk: view.risk, sourceRegistry: view.sourceRegistry, notes })
+    : [], [view, caseQuery, notes]);
   const communities = useMemo(() => {
     const set = new Set<string>();
     for (const n of view?.nodes ?? []) if (n.community && set.size < 100) set.add(n.community);
@@ -585,6 +589,23 @@ export default function Dashboard() {
             </li>)}</ul>}
             <p className="muted">{t('dash.conflictText')}</p>
           </div>}
+          <div className="case-search">
+            <h4 className="hub-heading">{t('dash.caseSearchTitle')}</h4>
+            <label className="case-search-field"><input type="search" value={caseQuery} placeholder={t('dash.caseSearchPlaceholder')} aria-label={t('dash.caseSearchAria')} onChange={e => setCaseQuery(e.target.value)} />{caseQuery && <button type="button" className="text-button" onClick={() => setCaseQuery('')}>{t('dash.caseSearchClear')}</button>}</label>
+            {caseQuery.trim() && (caseHits.length === 0
+              ? <p className="muted" role="status">{t('dash.caseSearchEmpty')}</p>
+              : <><p className="muted small-text">{t('dash.caseSearchCount', { count: number(caseHits.length) })}</p>
+                <ul className="hub-list case-hits">{caseHits.map(hit => <li key={`${hit.kind}:${hit.id}`} className={`case-hit case-hit-${hit.kind}`}>
+                  {hit.kind === 'conflict'
+                    ? <button type="button" className="text-button" onClick={() => setFilters(f => ({ ...f, dispute: true }))}>{hit.label}</button>
+                    : hit.kind === 'outlet'
+                      ? <button type="button" className="text-button" onClick={() => setFilters(f => ({ ...f, outlet: hit.id }))}>{hit.label}</button>
+                      : <button type="button" className="text-button" onClick={() => { if (mode !== 'network') changeMode('network'); select(hit.id); requestAnimationFrame(() => network.current?.focus(hit.id)); }}>{hit.label}</button>}
+                  <span className="case-kind">{t(`dash.caseKind${hit.kind[0].toUpperCase()}${hit.kind.slice(1)}`)}</span>
+                  {hit.detail && <span className="hub-rank">{hit.detail}</span>}
+                </li>)}</ul></>)}
+            <p className="muted">{t('dash.caseSearchHint')}</p>
+          </div>
           {view.risk && <div className="risk-panel">
             <h4 className="hub-heading">{t('dash.riskTitle')}</h4>
             <p className="muted small-text">{t('dash.riskSummary', { weak: number(view.risk.weakCount), entities: number(view.risk.entities), months: view.risk.months })}</p>
