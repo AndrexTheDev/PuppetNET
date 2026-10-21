@@ -187,3 +187,16 @@
 .gaps-panel{margin-top:var(--space-3,1rem);border-top:1px solid var(--line);padding-top:var(--space-2,0.5rem)}
 .gaps-heading{margin:var(--space-2,0.5rem) 0 0;font-size:.85em;font-weight:600;opacity:.85}
 .bundle-import{margin-top:var(--space-1,0.25rem)}
+
+/* Wave 18: source independence + shared-document groups (token-only) */
+.source-verdict{text-align:right}
+.source-none{opacity:.7}
+.source-single,.source-unknown{color:var(--color-gold)}
+.source-shared{color:var(--color-danger)}
+.source-independent{color:var(--color-green)}
+.shared-panel{margin-top:var(--space-3,1rem);border-top:1px solid var(--line);padding-top:var(--space-2,0.5rem)}
+.shared-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:var(--space-2,0.5rem)}
+.shared-list li{display:flex;flex-direction:column;gap:0.15rem;border-left:2px solid var(--line);padding-left:var(--space-2,0.5rem)}
+.shared-doc{font-weight:600;overflow-wrap:anywhere}
+.shared-meta{font-size:.8em;opacity:.7;font-variant-numeric:tabular-nums}
+.shared-entities{display:flex;flex-wrap:wrap;gap:var(--space-1,0.25rem)}

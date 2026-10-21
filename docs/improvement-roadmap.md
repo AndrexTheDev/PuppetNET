@@ -418,6 +418,27 @@ Statusansagen), Provenienz-Abschnitt im Bericht, token-only CSS, 2 neue Datenlag
 (dashboard 42) + 1 neuer Release-Pin (release 23) — `ci:pages` grün, 0 zusätzliche
 Actions-Minuten.
 
+### Welle 18 — Belegqualität (Unabhängigkeit + gemeinsame Belege) — ✅ umgesetzt (2026-10-20)
+
+- **Quellenlage je Beziehung**: Der Kanten-Inspector bewertet jetzt *Unabhängigkeit* statt
+  nur Dokumente zu zählen. Fünf ehrliche Stufen: `keine Belege`, `ein Beleg`
+  („für eine belastbare Aussage fehlt die zweite Quelle"), `mehrere Belege, derselbe
+  Quellenname` (**nicht** unabhängig — zwei Artikel desselben Hauses sind keine
+  Korroboration), `mehrere Belege ohne Quellenname` (Unabhängigkeit **nicht belegbar**)
+  und `n unabhängige Quellen`. Farbgebung über Tokens, Text bleibt die Aussage.
+- **Belege mit mehreren Entitäten**: Ein Dokument, das mehrere sichtbare Entitäten stützt
+  (Registerauszug mit drei Firmen, Artikel mit zwei Personen), wird als eigene Gruppe
+  gezeigt — ein beleggetriebener Zusammenhang, den kantenbasierte Ansichten nicht
+  sichtbar machen können. Explizit als **Hinweis auf gemeinsame Herkunft, keine Aussage
+  über Identität** gekennzeichnet; jede Entität ist direkt fokussierbar.
+- Beides wandert in den **Fallbericht** (DE/EN), damit die Belegqualität im Dokument steht.
+
+**Geliefert (Welle 18)**: `edgeSources()` + `sharedSourceGroups()` (reine, getestete
+Funktionen), `View.sharedSources` aus dem Worker, Quellenlage-Zeile im Inspector,
+Gemeinsame-Belege-Panel + Berichtszeile (DE/EN), token-only CSS, 2 neue Datenlagen-Tests
+(dashboard 44) + 1 neuer Release-Pin (release 24) — `ci:pages` grün, 0 zusätzliche
+Actions-Minuten.
+
 ## 4. Budget-Zusammenfassung
 
 | Welle | Ort | Zusätzliche Actions-Minuten | Status |
@@ -439,6 +460,7 @@ Actions-Minuten.
 | 15 Fallbericht-Roundtrip | Browser | **0** | ✅ umgesetzt |
 | 16 Notiz-Index/Fallakte | Browser | **0** | ✅ umgesetzt |
 | 17 Provenienz-Lücken/Fallakte-Import | Browser/Web Worker | **0** | ✅ umgesetzt |
+| 18 Belegqualität/gemeinsame Belege | Browser/Web Worker | **0** | ✅ umgesetzt |
 
 Kein Schritt erzeugt neue Workflows, neue Cron-Jobs, längere Jobs oder bezahlte
 Dienste. Die einzigen verbrauchsrelevanten Grenzen sind die bestehenden: 3
@@ -852,6 +874,27 @@ green, 0 extra Actions minutes.
 provenance section in the report, token-only CSS, 2 new data-layer tests (dashboard 42) +
 1 new release pin (release 23) — `ci:pages` green, 0 extra Actions minutes.
 
+### Wave 18 — evidence quality (independence + shared documents) — ✅ implemented (2026-10-20)
+
+- **Source status per relationship**: the edge inspector now judges *independence*
+  instead of counting documents. Five honest levels: `no evidence`, `one document`
+  ("the second source is missing for a solid claim"), `several documents, same source
+  name` (**not** independent — two articles from one outlet are not corroboration),
+  `several documents without a source name` (independence **cannot be proven**) and
+  `n independent sources`.
+- **Documents backing several entities**: one document supporting several visible
+  entities (a register extract naming three companies, an article naming two people) is
+  shown as its own group — an evidence-driven connection that edge-based views cannot
+  surface. Explicitly labelled as a **hint at shared provenance, not a statement about
+  identity**; every entity is focusable.
+- Both travel into the **case report** (DE/EN), so evidence quality is in the document.
+
+**Delivered (Wave 18)**: `edgeSources()` + `sharedSourceGroups()` (pure, tested
+functions), `View.sharedSources` from the worker, source-status row in the inspector,
+shared-document panel + report line (DE/EN), token-only CSS, 2 new data-layer tests
+(dashboard 44) + 1 new release pin (release 24) — `ci:pages` green, 0 extra Actions
+minutes.
+
 ## 4. Budget summary
 
 | Wave | Location | Additional Actions minutes | Status |
@@ -873,6 +916,7 @@ provenance section in the report, token-only CSS, 2 new data-layer tests (dashbo
 | 15 notes roundtrip | browser | **0** | ✅ implemented |
 | 16 note index/case bundle | browser | **0** | ✅ implemented |
 | 17 provenance gaps/bundle import | browser/web worker | **0** | ✅ implemented |
+| 18 evidence quality/shared documents | browser/web worker | **0** | ✅ implemented |
 
 No step creates new workflows, new cron jobs, longer jobs or paid services. The only
 consumption-relevant limits remain the existing ones: 3 reservations/UTC day, 5-minute

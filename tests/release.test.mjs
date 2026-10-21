@@ -315,9 +315,24 @@ test('wave 17: provenance gaps are computed in the worker and bundles reject jun
   assert.match(data, /if \(bundle\.format !== 'puppetnet-case' \|\| Number\(bundle\.version\) !== 1\) return null;/, 'wrong formats and versions are rejected whole');
   const worker = read('apps/web/app/dashboard/graph.worker.ts');
   assert.match(worker, /const gaps = provenanceGaps\(filtered\.nodes, grouped\.edges\)/, 'gaps are computed on the visible slice');
-  assert.match(worker, /\.\.\.\(vulnerability \? \{ vulnerability \} : \{\}\), gaps \}/, 'coverage travels with every view, even when clean');
+  assert.match(worker, /\.\.\.\(vulnerability \? \{ vulnerability \} : \{\}\), gaps,/, 'coverage travels with every view, even when clean');
   const dashboard = read('apps/web/app/dashboard/Dashboard.tsx');
   assert.ok(dashboard.includes("t('dash.gapsTitle')"), 'the gap panel is dictionary-driven');
   assert.ok(dashboard.includes("t('dash.gapsNone')"), 'a clean slice is stated positively');
   assert.ok(dashboard.includes('parseCaseNotes') && dashboard.includes('readCaseBundle'), 'both import paths exist');
+});
+
+test('wave 18: source independence is judged, not just counted', () => {
+  const data = read('apps/web/app/dashboard/graph-data.ts');
+  assert.match(data, /export function edgeSources\(evidence: Evidence\[\]\): EdgeSources/, 'the verdict is a pure function');
+  assert.match(data, /export function sharedSourceGroups\(nodes: GraphNode\[\], evidence: Evidence\[\], limit = 8\)/, 'shared documents are grouped purely');
+  assert.match(data, /documents === 1 \? 'single'/, 'a single document is never called corroborated');
+  const worker = read('apps/web/app/dashboard/graph.worker.ts');
+  assert.match(worker, /const sharedSources = sharedSourceGroups\(filtered\.nodes, dataset\.evidence\)/, 'shared documents come from the visible slice and the real evidence table');
+  assert.match(worker, /\.\.\.\(sharedSources\.length \? \{ sharedSources \} : \{\}\)/, 'empty groups are omitted');
+  const panel = read('apps/web/app/dashboard/SidePanel.tsx');
+  assert.ok(panel.includes("t('inspector.sourcesIndependent'"), 'the inspector states independent corroboration explicitly');
+  assert.ok(panel.includes("t('inspector.sourcesShared'"), 'same-outlet evidence is called out instead of counted twice');
+  const dashboard = read('apps/web/app/dashboard/Dashboard.tsx');
+  assert.ok(dashboard.includes("t('dash.sharedText')"), 'the shared-document panel carries its no-identity-claim note');
 });

@@ -70,6 +70,8 @@ export interface View {
   vulnerability?: Vulnerability;
   /** Wave 17: provenance coverage and the gaps behind the visible claims. */
   gaps?: ProvenanceGaps;
+  /** Wave 18: documents that back several visible entities at once. */
+  sharedSources?: SharedSourceGroup[];
 }
 export const LIMITS = { nodes: 200_000, edges: 500_000, bytes: 64 * 1024 * 1024 };
 const record = (v: unknown): Record<string, unknown> => v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {};
@@ -997,6 +999,72 @@ export function caseBundle(input: CaseBundleInput): string {
   }, null, 2) + '\n';
 }
 
+/** Wave 18: how well a relationship is sourced. Two documents from the same
+ * outlet are not two independent sources — the methodological difference that a
+ * plain document count hides. */
+export type SourceIndependence = 'none' | 'single' | 'shared' | 'unknown' | 'independent';
+export interface EdgeSources { documents: number; sources: number; independence: SourceIndependence }
+
+/**
+ * Wave 18: source verdict for one relationship. Documents are the distinct
+ * evidence ids; `sources` counts distinct non-empty source names (case-folded).
+ * A document without a source name can never prove independence, so two such
+ * documents are 'unknown' instead of 'independent', and a named-but-identical
+ * origin is reported as 'shared' instead of pretending to be corroborated.
+ */
+export function edgeSources(evidence: Evidence[]): EdgeSources {
+  const documents = new Set(evidence.map(doc => doc.id).filter(Boolean)).size;
+  const sources = new Set(evidence.map(doc => (doc.source ?? '').trim().toLowerCase()).filter(Boolean)).size;
+  const independence: SourceIndependence =
+    documents === 0 ? 'none'
+      : documents === 1 ? 'single'
+        : sources >= 2 ? 'independent'
+          : sources === 1 ? 'shared' : 'unknown';
+  return { documents, sources, independence };
+}
+
+export interface SharedSourceGroup {
+  document: string;
+  title?: string;
+  source?: string;
+  entities: { id: string; label: string }[];
+}
+
+/**
+ * Wave 18: documents that back more than one visible entity. A single register
+ * entry naming three companies, or one article naming two people, is evidence
+ * *about all of them* — a link-analysis signal that edge-based views cannot
+ * show. Entity-level only (node evidence), LoD display groups excluded, sorted
+ * by group size and then document id, bounded. It is a hint about shared
+ * provenance, never a claim of identity.
+ */
+export function sharedSourceGroups(nodes: GraphNode[], evidence: Evidence[], limit = 8): SharedSourceGroup[] {
+  const documents = new Map(evidence.map(doc => [doc.id, doc]));
+  const groups = new Map<string, { id: string; label: string }[]>();
+  for (const node of nodes) {
+    if (node.group) continue;
+    for (const document of new Set(node.evidenceIds)) {
+      if (!document) continue;
+      const list = groups.get(document);
+      const entry = { id: node.id, label: node.label };
+      if (list) list.push(entry); else groups.set(document, [entry]);
+    }
+  }
+  const out: SharedSourceGroup[] = [];
+  for (const [document, entities] of groups) {
+    if (entities.length < 2) continue;
+    const doc = documents.get(document);
+    out.push({
+      document,
+      ...(doc?.title ? { title: doc.title } : {}),
+      ...(doc?.source ? { source: doc.source } : {}),
+      entities: entities.sort((a, b) => (a.label.toLowerCase() < b.label.toLowerCase() ? -1 : a.label.toLowerCase() > b.label.toLowerCase() ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0)),
+    });
+  }
+  out.sort((a, b) => b.entities.length - a.entities.length || (a.document < b.document ? -1 : a.document > b.document ? 1 : 0));
+  return out.slice(0, Math.max(1, limit));
+}
+
 export const CONFIDENCE_THRESHOLD = 0.5;
 
 /**
@@ -1057,6 +1125,7 @@ export interface CaseReportInput {
   duplicates?: { label: string; ids: string[]; sameType: boolean }[];
   vulnerability?: Vulnerability;
   gaps?: ProvenanceGaps;
+  sharedSources?: { document: string; entities: { id: string; label: string }[] }[];
   notes?: Record<string, string>;
 }
 /** Wave 11 case report: a deterministic Markdown file for the case folder —
@@ -1071,7 +1140,7 @@ const CASE_REPORT_TEXT = {
     notes: 'Ermittlungsnotizen', noNotes: '_Keine Notizen erfasst._', analytics: 'Analytik',
     communities: 'Communities', density: 'Dichte', range: 'Zeitraum', hubs: 'Hubs',
     structure: 'Struktur', cutEdges: 'Schnittkanten', edges: 'Kanten', kcore: 'max. k-Kern', nodes: 'Knoten',
-    provenance: 'Provenienz', backed: 'belegt', unbackedNodes: 'Entitäten ohne Beleg', singleSource: 'Hochsichere Beziehungen mit nur einer Quelle', none: 'keine',
+    provenance: 'Provenienz', backed: 'belegt', unbackedNodes: 'Entitäten ohne Beleg', singleSource: 'Hochsichere Beziehungen mit nur einer Quelle', none: 'keine', sharedDocs: 'Belege, die mehrere Entitäten stützen',
     articulation: 'Artikulationspunkt', degree: 'Grad', splits: 'zerfällt in {parts} Teile, größter {largest}',
     rules: 'Regelhinweise', duplicates: 'Mögliche Dubletten', mixed: 'gemischte Typen',
     timeline: 'Erwähnungen pro Monat',
@@ -1083,7 +1152,7 @@ const CASE_REPORT_TEXT = {
     notes: 'Research notes', noNotes: '_No notes recorded._', analytics: 'Analytics',
     communities: 'Communities', density: 'Density', range: 'Time range', hubs: 'Hubs',
     structure: 'Structure', cutEdges: 'Cut edges', edges: 'edges', kcore: 'max. k-core', nodes: 'nodes',
-    provenance: 'Provenance', backed: 'backed', unbackedNodes: 'entities without evidence', singleSource: 'High-confidence relationships with a single source', none: 'none',
+    provenance: 'Provenance', backed: 'backed', unbackedNodes: 'entities without evidence', singleSource: 'High-confidence relationships with a single source', none: 'none', sharedDocs: 'Documents backing several entities',
     articulation: 'Articulation point', degree: 'degree', splits: 'splits into {parts} parts, largest {largest}',
     rules: 'Rule hits', duplicates: 'Possible duplicates', mixed: 'mixed types',
     timeline: 'Mentions per month',
@@ -1132,6 +1201,7 @@ export function caseReport(input: CaseReportInput, generated: string, lang: 'de'
     lines.push(`- ${text.singleSource}: ${g.singleSourceCount}`);
     for (const edge of g.singleSource) lines.push(`  - \`${edge.id}\` ${clean(edge.type)} (${(edge.confidence * 100).toFixed(1)} %) — ${clean(labelOf.get(edge.source) ?? edge.source)} → ${clean(labelOf.get(edge.target) ?? edge.target)}`);
     lines.push(`- ${text.unbackedNodes}: ${g.unbackedNodeCount}${g.unbacked.length ? ` — ${g.unbacked.map(node => clean(node.label)).join(', ')}` : ` (${text.none})`}`);
+    if (input.sharedSources?.length) lines.push(`- ${text.sharedDocs}: ${input.sharedSources.map(group => `\`${group.document}\` (${group.entities.map(entity => clean(entity.label)).join(', ')})`).join('; ')}`);
   }
   if (input.insights?.length) {
     lines.push('', `## ${text.rules}`, '');

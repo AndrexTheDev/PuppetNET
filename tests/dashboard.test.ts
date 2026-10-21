@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
-import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, monthWindow, bundleEdges, structuralVulnerability, pathTimeline, normalizeNote, readNotes, caseReport, nextPlaybackMonth, evidenceWindow, compareDuplicates, multiFailureImpact, normalizeSavedName, readSavedViews, upsertSavedView, removeSavedView, evidenceToCSV, parseCaseNotes, mergeNotes, searchNoteIndex, caseBundle, readCaseBundle, provenanceGaps, SAVED_VIEW_LIMIT, NOTE_LIMIT, EGO_DEPTH_LIMIT, VULNERABILITY_NODE_LIMIT, normalizeInsights, ANALYSIS_LIMITS, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
+import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, monthWindow, bundleEdges, structuralVulnerability, pathTimeline, normalizeNote, readNotes, caseReport, nextPlaybackMonth, evidenceWindow, compareDuplicates, multiFailureImpact, normalizeSavedName, readSavedViews, upsertSavedView, removeSavedView, evidenceToCSV, parseCaseNotes, mergeNotes, searchNoteIndex, caseBundle, readCaseBundle, provenanceGaps, edgeSources, sharedSourceGroups, normalizeEvidence, SAVED_VIEW_LIMIT, NOTE_LIMIT, EGO_DEPTH_LIMIT, VULNERABILITY_NODE_LIMIT, normalizeInsights, ANALYSIS_LIMITS, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
 import { apiBase, readResponse } from '../apps/web/app/dashboard/api';
 const filters: Filters = { confidence: 0, weight: 0, types: [...TYPES], lod: true, ratio: 1 };
 test('normalizes Worker and Graphology nodes without inventing coordinates', () => {
@@ -757,4 +757,45 @@ test('wave 17 case bundles read back safely or not at all', () => {
   assert.equal(hostile?.report, '', 'a non-string report never reaches the UI');
   const roundtrip = readCaseBundle(bundle);
   assert.equal(caseBundle({ notes: roundtrip!.notes, views: roundtrip!.views, report: roundtrip!.report, generated: '2026-10-20T12:00:00.000Z' }), bundle, 'bundle -> read -> bundle is stable');
+});
+
+test('wave 18 source verdict tells independence apart from a document count', () => {
+  const docs = (list: unknown[]) => normalizeEvidence(list);
+  assert.deepEqual(edgeSources([]), { documents: 0, sources: 0, independence: 'none' });
+  assert.deepEqual(edgeSources(docs([{ id: 'd1', title: 'A', source: 'HR' }])), { documents: 1, sources: 1, independence: 'single' });
+  assert.equal(edgeSources(docs([{ id: 'd1', title: 'A', source: 'Handelsblatt' }, { id: 'd2', title: 'B', source: '  handelsblatt ' }])).independence, 'shared',
+    'two documents from the same outlet are not corroboration');
+  assert.equal(edgeSources(docs([{ id: 'd1', title: 'A' }, { id: 'd2', title: 'B' }])).independence, 'unknown',
+    'documents without a source name can never prove independence');
+  const independent = edgeSources(docs([{ id: 'd1', title: 'A', source: 'Handelsregister' }, { id: 'd2', title: 'B', source: 'Presse' }]));
+  assert.deepEqual(independent, { documents: 2, sources: 2, independence: 'independent' });
+  assert.equal(edgeSources(docs([{ id: 'd1', title: 'A', source: 'HR' }, { id: 'd1', title: 'dup' }])).documents, 1, 'the same document twice is one document');
+});
+
+test('wave 18 shared documents group the entities they back', () => {
+  const data = normalizeDataset({
+    nodes: [
+      { key: 'a', name: 'Alpha GmbH', evidenceIds: ['d1'] },
+      { key: 'b', name: 'Beta AG', evidenceIds: ['d1', 'd2'] },
+      { key: 'c', name: 'Gamma', evidenceIds: ['d2'] },
+      { key: 'd', name: 'Delta', evidenceIds: ['d3'] },
+    ],
+    evidence: [
+      { id: 'd1', title: 'Registerauszug', source: 'HR' },
+      { id: 'd2', title: 'Zeitungsartikel' },
+      { id: 'd3', title: 'Einzelbeleg' },
+    ],
+    edges: [],
+  });
+  const groups = sharedSourceGroups(data.nodes, data.evidence);
+  assert.deepEqual(groups.map(group => [group.document, group.entities.map(entity => entity.id)]), [['d1', ['a', 'b']], ['d2', ['b', 'c']]],
+    'documents backing a single entity are not groups');
+  assert.equal(groups[0].title, 'Registerauszug');
+  assert.equal(groups[0].source, 'HR');
+  assert.equal(groups[1].source, undefined, 'a document without a source name stays honest');
+  assert.deepEqual(sharedSourceGroups(data.nodes, data.evidence), groups, 'deterministic');
+  const grouped = [{ ...data.nodes[0], id: 'group:x', group: true, evidenceIds: ['d1'] }, ...data.nodes];
+  assert.equal(sharedSourceGroups(grouped, data.evidence)[0].entities.length, 2, 'LoD display groups are not entities');
+  assert.equal(sharedSourceGroups(data.nodes, data.evidence, 1).length, 1, 'the list is bounded');
+  assert.deepEqual(sharedSourceGroups([], []), []);
 });
