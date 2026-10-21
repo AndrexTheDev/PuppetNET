@@ -151,6 +151,7 @@ Vorfall. Der Refresh aus Schritt 1 ist selbst ein KV-Write und zählt in § 3.1.
 | Degradierung | `.degraded`, `.warnings` | leer, außer dokumentierten Hinweisen |
 | Alarme | `.alert` in `/status.json` | kein Dauerfeuer; `skipped: throttled` ist normal (6-h-Drossel) |
 | Cron-Ausführung | Dashboard → Trigger Events / Logs | beide Schedules, kein `auth_locked` |
+| Pages-Deploy | GitHub-Check „Cloudflare Pages“ am letzten `main`-Commit (auch Daten-Commits) | `success`; bei „Build failed“ das Cloudflare-Build-Log öffnen, die Seite bleibt sonst auf dem alten Stand |
 
 `degraded` ist die wichtigste Zeile: sie fasst „KV nicht gebunden", fehlgeschlagenen
 Keep-Alive, fehlende Workers-Analytics und nicht erreichbare AuraDB zusammen. Jeder
@@ -398,6 +399,7 @@ incident. The refresh from step 1 is itself a KV write and counts in § 3.1.
 | Degradation | `.degraded`, `.warnings` | empty, except documented notes |
 | Alerts | `.alert` in `/status.json` | no continuous fire; `skipped: throttled` is normal (6-h throttle) |
 | Cron execution | Dashboard → Trigger Events / Logs | both schedules, no `auth_locked` |
+| Pages deploy | GitHub check "Cloudflare Pages" on the latest `main` commit (data commits too) | `success`; on "Build failed" open the Cloudflare build log, otherwise the site silently stays stale |
 
 `degraded` is the most important row: it summarizes "KV not bound", failed
 keep-alive, missing Workers analytics and unreachable AuraDB. Every entry is

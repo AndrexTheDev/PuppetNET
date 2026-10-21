@@ -52,6 +52,8 @@ const DE = {
   'type.Organization': 'Organisation',
   'type.Location': 'Ort',
   'type.Vehicle': 'Fahrzeug oder Luftfahrzeug',
+  // `Craft` is what the pipeline export and the entity pages emit (PUBLIC_ENTITY_TYPES).
+  'type.Craft': 'Fahrzeug oder Luftfahrzeug',
   'type.Document': 'Dokument',
   'type.Other': 'Sonstiges',
 
@@ -605,6 +607,7 @@ const EN: typeof DE = {
   'type.Organization': 'Organization',
   'type.Location': 'Location',
   'type.Vehicle': 'Vehicle or aircraft',
+  'type.Craft': 'Vehicle or aircraft',
   'type.Document': 'Document',
   'type.Other': 'Other',
 

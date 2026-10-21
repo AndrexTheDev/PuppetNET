@@ -3,13 +3,15 @@
 > 🌐 **Sprachen · Languages:** Deutsch ↓ · [English](#english)
 
 Stand 21.10.2026. Code, Tests und Beta sind abgeschlossen
-([Beta-Bericht](testing/beta-2026-10-21.md)). Offen sind nur Betreiberschritte. Jeder
+([Beta-Bericht](testing/beta-2026-10-21.md)). Die Cloudflare-Pages-Builds sind seit 87b997c
+wieder grün. Zuvor war seit Welle 6 kein Build durchgelaufen
+([Vorfall](operations.md#incident-2026-10-2021-every-pages-build-failed-for-26-hours)). Offen sind nur Betreiberschritte. Jeder
 Schritt hat ein prüfbares Ergebnis. Erst zum nächsten Schritt gehen, wenn er grün ist.
 Details stehen in den verlinkten Dokumenten.
 
 | # | Schritt | Wo | Fertig, wenn … |
 |---|---|---|---|
-| 1 | **Code nach `main`**: PR aus dem Session-Branch öffnen, CI abwarten, mergen. | GitHub | Workflow „Python ingestion pipeline“ grün |
+| 1 | **Code nach `main`**: PR aus dem Session-Branch öffnen, CI abwarten, mergen. | GitHub | Checks „tests“ **und** „Cloudflare Pages“ grün; danach Produktions-Deploy unter puppetnet-web.pages.dev |
 | 2 | **Neo4j-Zugang reparieren** (aktuell `Unauthorized`): In der Aura-Konsole das Passwort zurücksetzen und `NEO4J_URI` (`neo4j+s://…`), `NEO4J_USER` und `NEO4J_PASSWORD` als Repository-Secrets neu setzen. | Aura, GitHub → Settings → Secrets | Schritt 3 meldet Neo4j OK |
 | 3 | **Verbindungsprüfung**: Actions → „Bounded daily ingestion and static publication“ → *Run workflow* auf `main` → `task: connection-check`. Nur lesend, keine Commits, kein Kontingent. | GitHub Actions | Job-Summary: Secrets, Neo4j, spaCy, Gemini und Export **OK** (Report auch als Artefakt) |
 | 4 | **Quellen festlegen**: Variable `DAILY_RSS_FEEDS` mit deutschsprachigen Feeds, optional `VERIFIED_RSS_FEEDS` (exakte HTTPS-Feed-URLs, die automatisch veröffentlichen dürfen). | GitHub → Variables | Policy bewusst geprüft ([Quellen-Policy](source-policy.md)) |
@@ -35,7 +37,7 @@ Details stehen in den verlinkten Dokumenten.
 As of 21 Oct 2026, code, tests and beta are complete ([beta report](testing/beta-2026-10-21.md)).
 Only operator steps remain. Move on only when a step is green.
 
-1. **Merge to `main`** via PR from the session branch. Done when the "Python ingestion pipeline" workflow is green.
+1. **Merge to `main`** via PR from the session branch. Done when the checks "tests" **and** "Cloudflare Pages" are green and the production deploy appears on puppetnet-web.pages.dev.
 2. **Fix Neo4j access** (currently `Unauthorized`): reset the password in Aura and re-set the `NEO4J_URI` (`neo4j+s://…`), `NEO4J_USER` and `NEO4J_PASSWORD` secrets.
 3. **Connection check**: Actions → "Bounded daily ingestion and static publication" → *Run workflow* on `main` → `task: connection-check`. Read-only, no commits, no quota. Done when all five stages are OK in the job summary (also stored as an artifact).
 4. **Sources**: set `DAILY_RSS_FEEDS`, and optionally `VERIFIED_RSS_FEEDS` ([source policy](source-policy.md)).

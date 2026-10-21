@@ -15,10 +15,12 @@ import assert from 'node:assert/strict';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 
+import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 
 import { DICTIONARIES, NUMBER_LOCALE, STRING_KEYS, translate } from '../apps/web/lib/i18n-strings';
 import { describeGraphNode, graphInstructions } from '../apps/web/lib/graph-keyboard';
+import { PUBLIC_ENTITY_TYPES } from '../apps/web/lib/entity-seo';
 
 // The provider and the components must share ONE instance of the context
 // module. The components are compiled as CommonJS and `require('./i18n')`.
@@ -53,6 +55,26 @@ test('every German key exists in English with identical placeholders', () => {
     assert.deepEqual(params(en), params(de), `placeholder mismatch for "${key}"`);
   }
   assert.equal(Object.keys(DICTIONARIES.en).length, Object.keys(DICTIONARIES.de).length);
+});
+
+test('every entity type the data can carry has a label in both languages', () => {
+  // The fallback returns the raw key, so a missing type label ships as visible
+  // text ("type.Craft" on /en/ and in the dashboard table, found on the first
+  // live Pages preview). Collect the types from every producer of entity data.
+  const types = new Set<string>(PUBLIC_ENTITY_TYPES);
+  const exporter = readFileSync('packages/pipeline/src/export_static_slices.py', 'utf8');
+  const mapping = exporter.match(/types = \{([^}]+)\}/);
+  assert.ok(mapping, 'the export type mapping is still a literal dict');
+  for (const [, value] of mapping[1].matchAll(/:\s*"(\w+)"/g)) types.add(value);
+  const sample = JSON.parse(readFileSync('apps/web/public/data/entities.sample.json', 'utf8')) as { entities: { type: string }[] };
+  for (const entity of sample.entities) types.add(entity.type);
+  assert.ok(types.has('Craft') && types.size >= 4, [...types].join(','));
+  for (const type of types) {
+    for (const lang of ['de', 'en'] as const) {
+      assert.ok(Object.prototype.hasOwnProperty.call(DICTIONARIES[lang], `type.${type}`), `${lang}: type.${type} is missing`);
+      assert.notEqual(translate(lang, `type.${type}`), `type.${type}`);
+    }
+  }
 });
 
 test('translate substitutes params and falls back honestly', () => {

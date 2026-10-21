@@ -786,3 +786,32 @@ because the single authoritative lockfile lives at the repository root.
 
 The workspace delegation added in wave 26 removes the second failure mode; the
 first one can only be fixed in the dashboard, not in the repository.
+
+### Incident 2026-10-20/21: every Pages build failed for ~26 hours
+
+From wave 6 (33f1ad1, 2026-10-20 ~21:00 UTC) until 87b997c, **every** Pages build
+failed: no deployment at all. Local runs were green the whole time. The Cloudflare
+build log is the only place the gate output is visible, and GitHub only shows
+"Build failed". There were two causes, both test-harness issues:
+
+1. **Node minor version.** Image v3 runs Node **22.16.0** unless `NODE_VERSION` or
+   a `.node-version` file overrides it. On Node 22 before 22.18, a CommonJS file
+   imported from ESM is evaluated separately from the copy a CommonJS sibling
+   `require`s. `tests/i18n.test.tsx` therefore had two React language contexts and
+   failed. On 22.22 the same test passed. The product bundle was never affected.
+2. **`SITE_ORIGIN` in the build environment.** An SEO test isolated only
+   `NEXT_PUBLIC_SITE_ORIGIN`, but `siteOrigin()` prefers `SITE_ORIGIN`.
+
+Reproduce a Cloudflare build exactly, from a clean clone:
+
+```sh
+npm pack node-linux-x64@22.16.0 && tar -xzf node-linux-x64-22.16.0.tgz   # Node from the npm registry
+git clone --depth 1 <repo> cf && cd cf/apps/web && npm ci
+PATH=$PWD/../../../package/bin:$PATH SITE_ORIGIN=https://puppetnet-web.pages.dev npm run ci:pages
+```
+
+Guards since then:
+- The gate prints its Node version first.
+- `tests/release.test.mjs` runs all gate suites with the variables from
+  `cloudflare-builds.json`.
+- The i18n test loads provider and components through one `require`.
