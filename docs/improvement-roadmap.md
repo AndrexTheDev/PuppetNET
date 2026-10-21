@@ -810,6 +810,34 @@ Chronologie-Block im Inspektor (max. 8 Ereignisse, `<time>`-Elemente, Rest-Hinwe
 13 neue DE/EN-Schlüssel, token-only CSS, 1 neuer Datenlagen-Test (dashboard 68) +
 1 neuer Release-Pin (release 39) — `ci:pages` grün, 0 zusätzliche Actions-Minuten.
 
+### Welle 33 — Quellen im Urteil — ✅ umgesetzt (2026-10-21)
+
+- **Die Frage nach der Erstmeldung**: Hält die schnelle Meldung auch stand? Welle 32 sagt,
+  *wer* zuerst war; Welle 33 sagt, was diese Quelle wert ist — ohne daraus eine Zahl zu
+  machen, die die Akte nicht deckt.
+- **Befund ≠ Urteil**: Widerspricht sich eine Quelle **selbst** (zwei überlappende
+  Aussagen zum selben Paar, beide von ihr), ist das ein Fehler, den sie verursacht hat —
+  das wiegt schwerer als jede Schnelligkeit. Streiten dagegen **verschiedene** Quellen
+  untereinander, kann diese Akte nicht entscheiden, wer recht hat: der Streitfall wird
+  daneben gezählt, nicht als Abwertung.
+- **Ein Sieg braucht ein Rennen**: Eine Erstmeldung, bei der nur eine Quelle überhaupt
+  datiert berichtet, ist kein Sieg, sondern ein Einzelbeleg — sie wird als `soloClaims`
+  neben den Erstmeldungen ausgewiesen, die sie aufbläht. Die Stände sind deshalb
+  `contradictory → leader → follower → thin`.
+- **Je Quelle**: Stand, Erstmeldungen, Nachmeldungen, Ø Rückstand, Einzelbelege,
+  Streitfälle, Selbstwidersprüche, datierte und undatierte Belege, belegter Zeitraum.
+  Nicht zurechenbare Streitfälle (`unattributed`) werden gezählt, nicht verteilt.
+- **Vor der Einschränkung gerechnet** (wie Konflikte, Erstmeldungen, Belastbarkeit):
+  ein Filter ändert das Urteil über eine Quelle nicht. Dazu Berichtsabschnitt DE/EN
+  und CSV.
+
+**Geliefert (Welle 33)**: `sourceScorecard()`, `sourceScorecardCSV()`,
+`SourceStanding`/`SourceProfile`/`SourceScorecardReport`, `View.scorecard` aus dem Worker,
+Panel „Quellen im Urteil" (Stand als Satz, Zahlen dahinter, CSV), Berichtsabschnitt
+`## Quellen im Urteil`, 13 neue DE/EN-Schlüssel, token-only CSS, 1 neuer Datenlagen-Test
+(dashboard 69) + 1 neuer Release-Pin (release 40) — `ci:pages` grün, 0 zusätzliche
+Actions-Minuten.
+
 ## 4. Budget-Zusammenfassung
 
 | Welle | Ort | Zusätzliche Actions-Minuten | Status |
@@ -846,6 +874,7 @@ Chronologie-Block im Inspektor (max. 8 Ereignisse, `<time>`-Elemente, Rest-Hinwe
 | 30 Fallakte als ZIP | Browser | **0** | ✅ umgesetzt |
 | 31 Chronologie je Entität | Browser | **0** | ✅ umgesetzt |
 | 32 Erstmeldungen je Quelle | Browser/Worker | **0** | ✅ umgesetzt |
+| 33 Quellen im Urteil | Browser/Worker | **0** | ✅ umgesetzt |
 
 Kein Schritt erzeugt neue Workflows, neue Cron-Jobs, längere Jobs oder bezahlte
 Dienste. Die einzigen verbrauchsrelevanten Grenzen sind die bestehenden: 3
@@ -1624,6 +1653,31 @@ panel (outlet table, relationship list, honest empty state, CSV), report section
 13 new DE/EN keys, token-only CSS, 1 new data-layer test (dashboard 68) + 1 new release
 pin (release 39) — `ci:pages` green, 0 extra Actions minutes.
 
+### Wave 33 — sources judged — ✅ implemented (2026-10-21)
+
+- **The question behind the first report**: does the quick report hold up? Wave 32 says
+  *who* was first; wave 33 says what that source is worth — without turning it into a
+  number the file cannot support.
+- **Finding ≠ verdict**: a source contradicting **itself** (two overlapping claims about
+  the same pair, both from it) is a defect it caused — that outweighs any speed. When
+  **different** sources disagree, this file cannot adjudicate who is right: the dispute is
+  counted beside the verdict, never as a demotion.
+- **A win needs a race**: a first report where only one source is dated at all is not a
+  win but a lone claim — surfaced as `soloClaims` next to the firsts it inflates. The
+  standings are therefore `contradictory → leader → follower → thin`.
+- **Per source**: standing, firsts, follow-ups, mean lag, lone claims, disputes,
+  self-contradictions, dated and undated documents, documented window. Disputes that
+  cannot be attributed (`unattributed`) are counted, not handed to anyone.
+- **Judged before narrowing** (like conflicts, primacy, sturdiness): filtering never
+  changes the verdict on a source. Plus a DE/EN report section and CSV.
+
+**Delivered (Wave 33)**: `sourceScorecard()`, `sourceScorecardCSV()`,
+`SourceStanding`/`SourceProfile`/`SourceScorecardReport`, `View.scorecard` from the worker,
+"Sources judged" panel (standing as a sentence, numbers behind it, CSV), report section
+`## Sources judged`, 13 new DE/EN keys, token-only CSS, 1 new data-layer test
+(dashboard 69) + 1 new release pin (release 40) — `ci:pages` green, 0 extra Actions
+minutes.
+
 ## 4. Budget summary
 
 | Wave | Location | Additional Actions minutes | Status |
@@ -1660,6 +1714,7 @@ pin (release 39) — `ci:pages` green, 0 extra Actions minutes.
 | 30 case archive (ZIP) | browser | **0** | ✅ implemented |
 | 31 entity chronology | browser | **0** | ✅ implemented |
 | 32 first reports per source | browser/worker | **0** | ✅ implemented |
+| 33 sources judged | browser/worker | **0** | ✅ implemented |
 
 No step creates new workflows, new cron jobs, longer jobs or paid services. The only
 consumption-relevant limits remain the existing ones: 3 reservations/UTC day, 5-minute

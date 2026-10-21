@@ -588,3 +588,27 @@ test('wave 32: primacy credits nobody without a date and a name', () => {
   assert.ok(dashboard.includes("t('dash.primacyNone')"), 'a slice without multi-source claims says so');
   assert.ok(dashboard.includes('primacyToCSV(view.primacy!)'), 'the CSV button is wired');
 });
+
+test('wave 33: a source verdict is a state with reasons, never a score', () => {
+  const data = read('apps/web/app/dashboard/graph-data.ts');
+  assert.match(data, /export function sourceScorecard\(edges: GraphEdge\[\], evidence: Evidence\[\], conflicts: PairConflict\[\] = \[\], limit = 8\): SourceScorecardReport/,
+    'the verdict is pure and bounded');
+  assert.match(data, /export type SourceStanding = 'contradictory' \| 'leader' \| 'follower' \| 'thin';/,
+    'no made-up middle states');
+  assert.match(data, /if \(conflict\.kind !== 'conflict'\) continue;/, 'a documented sequence is a history, not a dispute');
+  assert.match(data, /if \(outlets\.size === 1\) \{/, 'a dispute in a single outlet is held against that outlet');
+  assert.match(data, /const standing: SourceStanding = selfConflicts \? 'contradictory'/, 'self-contradiction overrides everything');
+  assert.match(data, /: own\.firsts > own\.solo \? 'leader'/, 'a first without a race is never a win');
+  assert.doesNotMatch(data.match(/export function sourceScorecard[\s\S]*?\n}/)?.[0] ?? '', /new Date\(\)/, 'no clock in the verdict');
+  assert.match(data, /export function sourceScorecardCSV\(report: SourceScorecardReport\): string/, 'the verdict is exportable');
+  assert.match(data, /## \$\{text\.scorecard\}/, 'the case report carries the section');
+  const worker = read('apps/web/app/dashboard/graph.worker.ts');
+  assert.match(worker, /const scorecard = sourceScorecard\(analysisSlice\.edges, dataset\.evidence, conflicts\);/, 'judged on the slice before narrowing');
+  const dashboard = read('apps/web/app/dashboard/Dashboard.tsx');
+  assert.ok(dashboard.includes("t('dash.scorecardText')"), 'the panel explains why there is no score');
+  assert.ok(dashboard.includes("t('dash.scorecardNone')"), 'an unattributable slice says so');
+  assert.ok(dashboard.includes('sourceScorecardCSV(view.scorecard!)'), 'the CSV button is wired');
+  const strings = read('apps/web/lib/i18n-strings.ts');
+  for (const key of ['scorecardTitle', 'scorecardText', 'scorecardSummary', 'scorecardNone', 'scorecardContradictory', 'scorecardLeader', 'scorecardFollower', 'scorecardThin', 'scorecardRow', 'scorecardLag', 'scorecardSelf', 'scorecardSolo', 'scorecardCsv'])
+    assert.ok((strings.match(new RegExp(`'dash\\.${key}'`, 'g')) ?? []).length === 2, `dash.${key} exists in both languages`);
+});

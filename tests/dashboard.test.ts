@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
-import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, monthWindow, bundleEdges, structuralVulnerability, pathTimeline, normalizeNote, readNotes, caseReport, nextPlaybackMonth, evidenceWindow, compareDuplicates, multiFailureImpact, normalizeSavedName, readSavedViews, upsertSavedView, removeSavedView, evidenceToCSV, parseCaseNotes, mergeNotes, searchNoteIndex, caseBundle, readCaseBundle, provenanceGaps, edgeSources, sharedSourceGroups, normalizeEvidence, edgeSourceStatus, sourceRegistry, pairConflicts, evidenceFreshness, monthsBefore, FRESH_WINDOWS, DEFAULT_FRESH_MONTHS, isFreshWindow, filterDataset, nodeBacking, evidenceRisk, riskToCSV, diffDatasets, diffToCSV, searchCase, noteSnippet, WATCH_LIMIT, readWatchlist, toggleWatch, watchReport, watchToCSV, watchChanges, watchChangesToCSV, entityBrief, watchBrief, caseArchive, zipStore, crc32, entityTimeline, sourcePrimacy, primacyToCSV, TYPES, SAVED_VIEW_LIMIT, NOTE_LIMIT, EGO_DEPTH_LIMIT, VULNERABILITY_NODE_LIMIT, normalizeInsights, ANALYSIS_LIMITS, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
+import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, monthWindow, bundleEdges, structuralVulnerability, pathTimeline, normalizeNote, readNotes, caseReport, nextPlaybackMonth, evidenceWindow, compareDuplicates, multiFailureImpact, normalizeSavedName, readSavedViews, upsertSavedView, removeSavedView, evidenceToCSV, parseCaseNotes, mergeNotes, searchNoteIndex, caseBundle, readCaseBundle, provenanceGaps, edgeSources, sharedSourceGroups, normalizeEvidence, edgeSourceStatus, sourceRegistry, pairConflicts, evidenceFreshness, monthsBefore, FRESH_WINDOWS, DEFAULT_FRESH_MONTHS, isFreshWindow, filterDataset, nodeBacking, evidenceRisk, riskToCSV, diffDatasets, diffToCSV, searchCase, noteSnippet, WATCH_LIMIT, readWatchlist, toggleWatch, watchReport, watchToCSV, watchChanges, watchChangesToCSV, entityBrief, watchBrief, caseArchive, zipStore, crc32, entityTimeline, sourcePrimacy, primacyToCSV, sourceScorecard, sourceScorecardCSV, TYPES, SAVED_VIEW_LIMIT, NOTE_LIMIT, EGO_DEPTH_LIMIT, VULNERABILITY_NODE_LIMIT, normalizeInsights, ANALYSIS_LIMITS, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
 import { apiBase, readResponse } from '../apps/web/app/dashboard/api';
 const filters: Filters = { confidence: 0, weight: 0, types: [...TYPES], lod: true, ratio: 1 };
 test('normalizes Worker and Graphology nodes without inventing coordinates', () => {
@@ -1641,4 +1641,82 @@ test('wave 32 primacy credits the earliest source and never invents an order', (
     'blog,1,2,50,2',
     'handelsblatt,1,0,,1',
   ], 'the CSV carries the empty lag as an empty cell, not as "undefined"');
+});
+
+test('wave 33 judges a source by what it did, not by a made-up score', () => {
+  const data = normalizeDataset({
+    nodes: [{ key: 'a', name: 'Alpha' }, { key: 'b', name: 'Beta' }, { key: 'c', name: 'Gamma' },
+      { key: 'd', name: 'Delta' }, { key: 'e', name: 'Epsilon' }, { key: 'f', name: 'Zeta' }, { key: 'g', name: 'Eta' }],
+    evidence: [
+      // Two real races: Handelsblatt first, Presse 31 days later — both times.
+      { id: 'h1', title: 'H1', source: 'Handelsblatt', date: '2024-01-01' },
+      { id: 'h2', title: 'H2', source: 'Handelsblatt', date: '2024-03-01' },
+      { id: 'p1', title: 'P1', source: 'Presse', date: '2024-02-01' },
+      { id: 'p2', title: 'P2', source: 'Presse', date: '2024-04-01' },
+      // Gazette contradicts itself on delta|epsilon, and is alone on both sides.
+      { id: 'g1', title: 'G1', source: 'Gazette', date: '2024-01-01' },
+      { id: 'g2', title: 'G2', source: 'Gazette', date: '2024-04-01' },
+      { id: 'g3', title: 'G3', source: 'Gazette', date: '2024-02-01' },
+      { id: 'g4', title: 'G4', source: 'Gazette', date: '2024-03-01' },
+      // A blog whose only claim stands alone: a first without a race.
+      { id: 'b1', title: 'B1', source: 'Blog', date: '2024-05-01' },
+      // A disputed pair nobody can be named for.
+      { id: 'u1', title: 'U1', date: '2024-01-01' },
+      { id: 'u2', title: 'U2', date: '2024-06-01' },
+      { id: 'u3', title: 'U3', date: '2024-02-01' },
+      { id: 'u4', title: 'U4', date: '2024-03-01' },
+    ],
+    edges: [
+      { source: 'a', target: 'b', type: 'OWNS', evidenceIds: ['h1', 'p1'] },
+      { source: 'c', target: 'd', type: 'MET', evidenceIds: ['h2', 'p2'] },
+      { source: 'd', target: 'e', type: 'OWNS', evidenceIds: ['g1', 'g2'] },
+      { source: 'd', target: 'e', type: 'SOLD', evidenceIds: ['g3', 'g4'] },
+      { source: 'b', target: 'c', type: 'OWNS', evidenceIds: ['h1', 'h2'] },
+      { source: 'b', target: 'c', type: 'SOLD', evidenceIds: ['p1', 'p2'] },
+      { source: 'c', target: 'e', type: 'MET', evidenceIds: ['b1'] },
+      { source: 'f', target: 'g', type: 'OWNS', evidenceIds: ['u1', 'u2'] },
+      { source: 'f', target: 'g', type: 'SOLD', evidenceIds: ['u3', 'u4'] },
+    ],
+  });
+  const conflicts = pairConflicts(data.nodes, data.edges, data.evidence);
+  assert.deepEqual(conflicts.map(conflict => [conflict.pair.join('|'), conflict.kind]),
+    [['b|c', 'conflict'], ['d|e', 'conflict'], ['f|g', 'conflict']], 'fixture check: three real disputes');
+  const card = sourceScorecard(data.edges, data.evidence, conflicts);
+  assert.deepEqual(card.profiles.map(entry => [entry.outlet, entry.standing, entry.firsts, entry.followups, entry.soloClaims, entry.conflicts, entry.selfConflicts]), [
+    ['gazette', 'contradictory', 2, 0, 2, 0, 1],
+    ['handelsblatt', 'leader', 3, 0, 1, 1, 0],
+    ['presse', 'follower', 1, 2, 1, 1, 0],
+    ['blog', 'thin', 1, 0, 1, 0, 0],
+  ], 'self-contradiction ranks first, then wins, then follow-ups, then lone claims');
+  // A dispute is never a race: its two claims are different relationship types, so
+  // each side is alone on its own relationship and neither "won" anything there.
+  assert.equal(card.profiles[1].soloClaims, 1, 'the one-sided claim of the disputed pair is counted as solo, not as a win');
+  assert.equal(card.profiles[1].conflicts, 1, 'a dispute between outlets is counted …');
+  assert.equal(card.profiles[1].standing, 'leader', '… but never demoted: the file cannot say who is right');
+  assert.equal(card.profiles[1].meanLag, undefined, 'a source that never followed has no lag');
+  assert.equal(card.profiles[2].meanLag, 31, 'the mean lag is measured against the earliest report');
+  assert.deepEqual([card.sources, card.contradictory, card.leaders, card.followers, card.contested, card.unattributed],
+    [4, 1, 1, 1, 3, 1], 'a dispute nobody can be named for is counted, not attributed to anyone');
+  assert.equal(card.profiles[0].documents, 4, 'documents are counted per outlet exactly like wave 32');
+  assert.deepEqual([card.profiles[0].first, card.profiles[0].last], ['2024-01-01', '2024-04-01'], 'the span is the documented window');
+  assert.deepEqual(sourceScorecard([], [], []), { profiles: [], sources: 0, contradictory: 0, leaders: 0, followers: 0, contested: 0, unattributed: 0 },
+    'an empty slice judges nobody');
+  assert.equal(sourceScorecard(data.edges, data.evidence, conflicts, 2).profiles.length, 2, 'bounded');
+  assert.equal(sourceScorecard(data.edges, data.evidence, conflicts, 2).sources, 4, 'the summary still counts every source');
+  assert.deepEqual(sourceScorecard(data.edges, data.evidence, conflicts), card, 'deterministic');
+  assert.deepEqual(sourceScorecard(data.edges, data.evidence).profiles.map(entry => entry.outlet), ['handelsblatt', 'presse', 'gazette', 'blog'],
+    'without conflicts nothing is held against a source, so nobody is called contradictory');
+  const csv = sourceScorecardCSV(card);
+  const rows = csv.trim().split('\n');
+  assert.equal(rows[0], 'outlet,standing,firsts,followups,mean_lag_days,solo_claims,conflicts,self_conflicts,documents,undated_documents,first,last');
+  assert.equal(rows[1], 'gazette,contradictory,2,0,,2,0,1,4,0,2024-01-01,2024-04-01', 'the verdict is exported, not a score');
+  assert.equal(rows.length, 5);
+  const undatedOnly = normalizeDataset({
+    nodes: [{ key: 'x', name: 'X' }, { key: 'y', name: 'Y' }],
+    evidence: [{ id: 'n1', title: 'N', source: 'Presse' }],
+    edges: [{ source: 'x', target: 'y', type: 'MET', evidenceIds: ['n1'] }],
+  });
+  const undatedCard = sourceScorecard(undatedOnly.edges, undatedOnly.evidence, []);
+  assert.deepEqual([undatedCard.profiles[0].standing, undatedCard.profiles[0].undatedDocuments, undatedCard.profiles[0].firsts],
+    ['thin', 1, 0], 'a named but undated document is evidence without timing — it never becomes a first report');
 });

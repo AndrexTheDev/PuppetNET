@@ -82,6 +82,8 @@ export interface View {
   risk?: RiskReport;
   /** Wave 32: who reported a relationship first. */
   primacy?: PrimacyReport;
+  /** Wave 33: what each source is worth in context. */
+  scorecard?: SourceScorecardReport;
 }
 export const LIMITS = { nodes: 200_000, edges: 500_000, bytes: 64 * 1024 * 1024 };
 const record = (v: unknown): Record<string, unknown> => v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {};
@@ -1729,6 +1731,170 @@ export function primacyToCSV(report: PrimacyReport): string {
   return [header, ...rows].join('\n') + '\n';
 }
 
+/** Wave 33: a source's standing in context. Deliberately not a score: a named
+ * state with the counts behind it, because "first but often wrong" and "slow but
+ * never wrong" must not collapse into one number. */
+export type SourceStanding = 'contradictory' | 'leader' | 'follower' | 'thin';
+
+export interface SourceProfile {
+  outlet: string;
+  standing: SourceStanding;
+  /** Relationships where its document was the earliest — includes solo ones. */
+  firsts: number;
+  /** Relationships it only reported after another outlet. */
+  followups: number;
+  /** Mean lag in days over its follow-ups; undefined when it never followed. */
+  meanLag?: number;
+  /** Relationships where it was the only dated source: a first without a race. */
+  soloClaims: number;
+  /** Conflicting pairs it reported a side of — a fact, not yet a verdict: a
+   *  disagreement between outlets is not a defect of either, because the file
+   *  cannot say who is right. Only contradicting *itself* is held against it. */
+  conflicts: number;
+  /** Conflicting pairs where it is the only named outlet — it contradicts itself. */
+  selfConflicts: number;
+  /** Its dated documents that carry a source name (same counting as wave 32). */
+  documents: number;
+  /** Its named but undated documents on relationships — usable evidence, unusable timing. */
+  undatedDocuments: number;
+  first?: string;
+  last?: string;
+}
+
+export interface SourceScorecardReport {
+  profiles: SourceProfile[];
+  /** Named outlets with at least one document on a relationship. */
+  sources: number;
+  contradictory: number;
+  leaders: number;
+  followers: number;
+  /** Sources that reported a side of at least one dispute. */
+  contested: number;
+  /** Conflicting pairs with no named source at all — nobody can be judged. */
+  unattributed: number;
+}
+
+/**
+ * Wave 33: what is this source worth *in context*? Wave 32 asked who was first;
+ * this asks whether that first report holds up. Two different things are kept
+ * apart on purpose: contradicting *itself* is a defect it caused, while a
+ * disagreement *between* outlets is a fact the file cannot adjudicate — so the
+ * latter is counted beside the verdict, never turned into a demotion. The verdict
+ * is therefore contradictory → leader → follower → thin, and a lone claim never
+ * counts as a win: `soloClaims` sits next to the firsts it inflates. Conflicts
+ * come from `pairConflicts` (only `conflict` pairs — a documented sequence is a
+ * history, not a dispute). Deterministic, bounded, no clock.
+ */
+export function sourceScorecard(edges: GraphEdge[], evidence: Evidence[], conflicts: PairConflict[] = [], limit = 8): SourceScorecardReport {
+  const documents = new Map(evidence.map(doc => [doc.id, doc]));
+  interface Tally { firsts: number; followups: number; lags: number[]; solo: number; undated: number }
+  const tallies = new Map<string, Tally>();
+  const tally = (outlet: string): Tally => {
+    const existing = tallies.get(outlet);
+    if (existing) return existing;
+    const fresh: Tally = { firsts: 0, followups: 0, lags: [], solo: 0, undated: 0 };
+    tallies.set(outlet, fresh);
+    return fresh;
+  };
+  const pairOutlets = new Map<string, Set<string>>();
+  for (const edge of edges) {
+    if (edge.source === edge.target || edge.type === 'AGGREGATED') continue;
+    const pairKey = edge.source <= edge.target ? `${edge.source}|${edge.target}` : `${edge.target}|${edge.source}`;
+    const oldest = new Map<string, string>();
+    for (const docId of edge.evidenceIds) {
+      const doc = documents.get(docId);
+      const outlet = (doc?.source ?? '').trim().toLowerCase();
+      if (!outlet) continue;
+      const own = tally(outlet);
+      const sides = pairOutlets.get(pairKey) ?? new Set<string>();
+      pairOutlets.set(pairKey, sides);
+      sides.add(outlet);
+      const day = isoDate(doc?.date);
+      if (!day) { own.undated++; continue; }
+      const current = oldest.get(outlet);
+      if (!current || day < current) oldest.set(outlet, day);
+    }
+    const ordered = [...oldest.entries()].sort((a, b) => (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+    if (!ordered.length) continue;
+    if (ordered.length === 1) {
+      const own = tally(ordered[0][0]);
+      own.firsts++;
+      own.solo++;
+      continue;
+    }
+    const earliest = ordered[0][1];
+    for (const [outlet, day] of ordered) {
+      const own = tally(outlet);
+      if (day === earliest) { own.firsts++; continue; }
+      own.followups++;
+      own.lags.push(dayDiff(earliest, day));
+    }
+  }
+  // Named + dated documents and their span, counted exactly like wave 32.
+  const docCount = new Map<string, number>(), spans = new Map<string, { first?: string; last?: string }>();
+  for (const doc of evidence) {
+    const outlet = (doc.source ?? '').trim().toLowerCase();
+    const day = isoDate(doc.date);
+    if (!outlet || !day) continue;
+    docCount.set(outlet, (docCount.get(outlet) ?? 0) + 1);
+    const span = spans.get(outlet) ?? {};
+    if (!span.first || day < span.first) span.first = day;
+    if (!span.last || day > span.last) span.last = day;
+    spans.set(outlet, span);
+  }
+  // Contradictions only count where they are attributed: unnamed documents cannot be judged.
+  let unattributed = 0;
+  const disputed = new Map<string, number>(), selfDisputed = new Map<string, number>();
+  for (const conflict of conflicts) {
+    if (conflict.kind !== 'conflict') continue;
+    const outlets = pairOutlets.get(`${conflict.pair[0]}|${conflict.pair[1]}`) ?? new Set<string>();
+    if (!outlets.size) { unattributed++; continue; }
+    if (outlets.size === 1) {
+      const only = [...outlets][0];
+      selfDisputed.set(only, (selfDisputed.get(only) ?? 0) + 1);
+      continue;
+    }
+    for (const outlet of outlets) disputed.set(outlet, (disputed.get(outlet) ?? 0) + 1);
+  }
+  const rank: Record<SourceStanding, number> = { contradictory: 0, leader: 1, follower: 2, thin: 3 };
+  const profiles: SourceProfile[] = [...tallies.entries()].map(([outlet, own]) => {
+    const selfConflicts = selfDisputed.get(outlet) ?? 0;
+    const conflicts = disputed.get(outlet) ?? 0;
+    // A first without a race is not a win, so a source that only ever stood alone stays thin.
+    const standing: SourceStanding = selfConflicts ? 'contradictory'
+      : own.firsts > own.solo ? 'leader' : own.followups ? 'follower' : 'thin';
+    const span = spans.get(outlet) ?? {};
+    return {
+      outlet, standing,
+      firsts: own.firsts, followups: own.followups,
+      ...(own.lags.length ? { meanLag: Math.round(own.lags.reduce((sum, lag) => sum + lag, 0) / own.lags.length) } : {}),
+      soloClaims: own.solo, conflicts, selfConflicts,
+      documents: docCount.get(outlet) ?? 0, undatedDocuments: own.undated,
+      ...(span.first ? { first: span.first } : {}),
+      ...(span.last ? { last: span.last } : {}),
+    };
+  });
+  profiles.sort((a, b) => rank[a.standing] - rank[b.standing] || b.firsts - a.firsts || b.documents - a.documents
+    || (a.outlet < b.outlet ? -1 : a.outlet > b.outlet ? 1 : 0));
+  return {
+    profiles: profiles.slice(0, Math.max(1, limit)),
+    sources: profiles.length,
+    contradictory: profiles.filter(entry => entry.standing === 'contradictory').length,
+    leaders: profiles.filter(entry => entry.standing === 'leader').length,
+    followers: profiles.filter(entry => entry.standing === 'follower').length,
+    contested: profiles.filter(entry => entry.conflicts > 0 || entry.selfConflicts > 0).length,
+    unattributed,
+  };
+}
+
+/** Wave 33: the source verdict as RFC-4180 CSV. */
+export function sourceScorecardCSV(report: SourceScorecardReport): string {
+  const header = ['outlet', 'standing', 'firsts', 'followups', 'mean_lag_days', 'solo_claims', 'conflicts', 'self_conflicts', 'documents', 'undated_documents', 'first', 'last'].map(csvCell).join(',');
+  const rows = report.profiles.map(entry => [entry.outlet, entry.standing, entry.firsts, entry.followups, entry.meanLag,
+    entry.soloClaims, entry.conflicts, entry.selfConflicts, entry.documents, entry.undatedDocuments, entry.first, entry.last].map(csvCell).join(','));
+  return [header, ...rows].join('\n') + '\n';
+}
+
 /** Wave 31: one dated step in an entity's history. `document` is a source that
  * mentions it, `relation` the first document of a relationship, `conflict` a
  * clash found on that day. Undated material is reported separately instead of
@@ -2329,6 +2495,7 @@ export interface CaseReportInput {
   freshness?: Freshness;
   risk?: RiskReport;
   primacy?: PrimacyReport;
+  scorecard?: SourceScorecardReport;
   notes?: Record<string, string>;
 }
 /** Wave 11 case report: a deterministic Markdown file for the case folder —
@@ -2349,7 +2516,9 @@ const CASE_REPORT_TEXT = {
     timeline: 'Erwähnungen pro Monat',
     conflicts: 'Widersprüchliche Aussagen', conflictsNone: 'keine abweichenden Aussagen', currency: 'Aktualität der Belege',
     risk: 'Belastbarkeit der Akte', riskNone: 'alle Entitäten sind gedeckt',
-    primacy: 'Erstmeldungen je Quelle', primacyNone: 'keine Beziehung mit mehreren datierten Quellen', riskStates: 'ohne Beleg / dünn und alt / nur eine Quelle / veraltet / ohne Datum / solide',
+    primacy: 'Erstmeldungen je Quelle', primacyNone: 'keine Beziehung mit mehreren datierten Quellen',
+    scorecard: 'Quellen im Urteil', scorecardNone: 'keine Quelle zurechenbar',
+    standingContradictory: 'widerspricht sich selbst', standingLeader: 'meldet zuerst', standingFollower: 'folgt nur', standingThin: 'nur Einzelbelege', riskStates: 'ohne Beleg / dünn und alt / nur eine Quelle / veraltet / ohne Datum / solide',
     footer: 'Hinweise, keine Beweise: Quellen prüfen; personenbezogene Daten nur mit Rechtsgrundlage verarbeiten.',
   },
   en: {
@@ -2364,7 +2533,9 @@ const CASE_REPORT_TEXT = {
     timeline: 'Mentions per month',
     conflicts: 'Conflicting claims', conflictsNone: 'no differing claims', currency: 'Currency of the evidence',
     risk: 'How much the file can carry', riskNone: 'every entity is covered',
-    primacy: 'First reports per source', primacyNone: 'no relationship with several dated sources', riskStates: 'no document / thin and old / single source / outdated / undated / solid',
+    primacy: 'First reports per source', primacyNone: 'no relationship with several dated sources',
+    scorecard: 'Sources judged', scorecardNone: 'no attributable source',
+    standingContradictory: 'contradicts itself', standingLeader: 'reports first', standingFollower: 'only follows', standingThin: 'single claims only', riskStates: 'no document / thin and old / single source / outdated / undated / solid',
     footer: 'Hints, not proof: verify the sources; process personal data only with a legal basis.',
   },
 } as const;
@@ -2444,6 +2615,23 @@ export function caseReport(input: CaseReportInput, generated: string, lang: 'de'
       lines.push(`- ${clean(outlet.outlet || '—')}: ${outlet.firsts} ${lang === 'en' ? 'first' : 'zuerst'} · ${outlet.followups} ${lang === 'en' ? 'follow-ups' : 'gefolgt'}${lag} · ${outlet.documents} ${lang === 'en' ? 'doc(s)' : 'Beleg(e)'}`);
     }
     if (p.solo) lines.push(`- ${p.solo} ${lang === 'en' ? 'relationship(s) rest on a single outlet' : 'Beziehung(en) stützen sich auf eine einzige Quelle'}${p.undated ? ` · ${p.undated} ${lang === 'en' ? 'without a usable date' : 'ohne verwertbares Datum'}` : ''}`);
+  }
+  if (input.scorecard) {
+    const card = input.scorecard;
+    const standing: Record<SourceStanding, string> = {
+      contradictory: text.standingContradictory, leader: text.standingLeader,
+      follower: text.standingFollower, thin: text.standingThin,
+    };
+    lines.push('', `## ${text.scorecard}`, '');
+    if (!card.profiles.length) lines.push(`- ${text.scorecardNone}`);
+    for (const entry of card.profiles) {
+      const lag = entry.meanLag === undefined ? '' : ` · ${lang === 'en' ? 'mean lag' : 'Ø Abstand'} ${entry.meanLag} ${lang === 'en' ? 'days' : 'Tage'}`;
+      const sole = entry.soloClaims ? ` · ${entry.soloClaims} ${lang === 'en' ? 'without a race' : 'ohne Wettbewerb'}` : '';
+      const disputes = entry.selfConflicts ? ` · ${entry.selfConflicts} ${lang === 'en' ? 'self-contradiction(s)' : 'Selbstwiderspruch/-sprüche'}`
+        : entry.conflicts ? ` · ${entry.conflicts} ${lang === 'en' ? 'dispute(s)' : 'Streitfall/-fälle'}` : '';
+      lines.push(`- ${clean(entry.outlet || '—')}: ${standing[entry.standing]} · ${entry.firsts} ${lang === 'en' ? 'first' : 'zuerst'} · ${entry.followups} ${lang === 'en' ? 'follow-ups' : 'gefolgt'}${lag} · ${entry.documents} ${lang === 'en' ? 'doc(s)' : 'Beleg(e)'}${sole}${disputes}`);
+    }
+    if (card.unattributed) lines.push(`- ${card.unattributed} ${lang === 'en' ? 'disputed pair(s) without an attributable source' : 'Streitfall/-fälle ohne zurechenbare Quelle'}`);
   }
   if (input.conflicts) {
     lines.push('', `## ${text.conflicts}`, '');

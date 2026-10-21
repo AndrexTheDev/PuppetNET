@@ -2,13 +2,16 @@
 import dynamic from 'next/dynamic';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import EntityTable, { type TableRow } from './EntityTable';
-import { COLORS, TYPES, LIMITS, NOTE_STORAGE_KEY, WATCH_STORAGE_KEY, FRESH_WINDOWS, DEFAULT_FRESH_MONTHS, riskToCSV, watchToCSV, watchReport, watchChanges, watchChangesToCSV, entityBrief, watchBrief, caseArchive, zipStore, evidenceToCSV, entityTimeline, primacyToCSV, readWatchlist, toggleWatch, diffToCSV, searchCase, caseReport, decodeViewState, edgesToCSV, encodeViewState, monthWindow, nextPlaybackMonth, nodesToCSV, caseBundle, compareDuplicates, mergeNotes, parseCaseNotes, provenanceGaps, readCaseBundle, searchNoteIndex, removeSavedView, upsertSavedView, readSavedViews, SAVED_VIEW_STORAGE_KEY, normalizeNote, rankSearch, readNotes, resolveNodeRef, viewToJSON, type Evidence, type Filters, type GraphEdge, type GraphNode, type PathTimeline, type View, type ViewUrlState, type DatasetDiff, type CaseHit, type EntityTimeline } from './graph-data';
+import { COLORS, TYPES, LIMITS, NOTE_STORAGE_KEY, WATCH_STORAGE_KEY, FRESH_WINDOWS, DEFAULT_FRESH_MONTHS, riskToCSV, watchToCSV, watchReport, watchChanges, watchChangesToCSV, entityBrief, watchBrief, caseArchive, zipStore, evidenceToCSV, entityTimeline, primacyToCSV, sourceScorecardCSV, readWatchlist, toggleWatch, diffToCSV, searchCase, caseReport, decodeViewState, edgesToCSV, encodeViewState, monthWindow, nextPlaybackMonth, nodesToCSV, caseBundle, compareDuplicates, mergeNotes, parseCaseNotes, provenanceGaps, readCaseBundle, searchNoteIndex, removeSavedView, upsertSavedView, readSavedViews, SAVED_VIEW_STORAGE_KEY, normalizeNote, rankSearch, readNotes, resolveNodeRef, viewToJSON, type Evidence, type Filters, type GraphEdge, type GraphNode, type PathTimeline, type View, type ViewUrlState, type DatasetDiff, type CaseHit, type EntityTimeline } from './graph-data';
 import type { NetworkHandle, PathHighlight } from './NetworkGraph';
 import type { WorkerRequest, WorkerResponse } from './protocol';
 import { loadStaticGraph, requestResearch, type Standby } from '../../src/lib/dataFetcher';
 import StandbyPanel, { LoadingStage } from './BootState';
 import SidePanel from './SidePanel';
 import { downloadBinary, downloadText } from './download';
+
+/** Wave 33: the verdict is shown as a sentence, never as a number. */
+const STANDING_LABEL = { contradictory: 'dash.scorecardContradictory', leader: 'dash.scorecardLeader', follower: 'dash.scorecardFollower', thin: 'dash.scorecardThin' } as const;
 import { useLanguage, useT } from './i18n';
 import { NUMBER_LOCALE } from '../../lib/i18n-strings';
 function DynamicStage({ k }: { k: 'webgl' | 'map' }) { const t = useT(); return <div className="stage-loading">{k === 'webgl' ? t('dash.loadingWebgl') : t('dash.loadingMap')}</div>; }
@@ -352,7 +355,7 @@ export default function Dashboard() {
   const exportArchive = useCallback(() => {
     if (!view) return;
     const generated = new Date().toISOString();
-    const report = caseReport({ stats: view.stats, nodes: view.nodes, edges: view.edges, analytics: view.analytics, insights: view.insights, timeline: view.timeline, duplicates: view.duplicates, vulnerability: view.vulnerability, gaps: view.gaps, sharedSources: view.sharedSources, conflicts: view.conflicts, freshness: view.freshness, risk: view.risk, primacy: view.primacy, notes }, generated, lang);
+    const report = caseReport({ stats: view.stats, nodes: view.nodes, edges: view.edges, analytics: view.analytics, insights: view.insights, timeline: view.timeline, duplicates: view.duplicates, vulnerability: view.vulnerability, gaps: view.gaps, sharedSources: view.sharedSources, conflicts: view.conflicts, freshness: view.freshness, risk: view.risk, primacy: view.primacy, scorecard: view.scorecard, notes }, generated, lang);
     const files = caseArchive({
       report,
       ...(watch.length ? { watchBrief: watchBrief(watch, briefContext(), generated, lang) } : {}),
@@ -445,7 +448,7 @@ export default function Dashboard() {
   const noteHits = useMemo(() => (view && Object.keys(notes).length ? searchNoteIndex(view.nodes, notes, noteQuery) : []), [notes, noteQuery, view]);
   const exportCaseBundle = () => {
     if (!view) return;
-    const report = caseReport({ stats: view.stats, nodes: view.nodes, edges: view.edges, analytics: view.analytics, insights: view.insights, timeline: view.timeline, duplicates: view.duplicates, vulnerability: view.vulnerability, gaps: view.gaps, sharedSources: view.sharedSources, conflicts: view.conflicts, freshness: view.freshness, risk: view.risk, primacy: view.primacy, notes }, new Date().toISOString(), lang);
+    const report = caseReport({ stats: view.stats, nodes: view.nodes, edges: view.edges, analytics: view.analytics, insights: view.insights, timeline: view.timeline, duplicates: view.duplicates, vulnerability: view.vulnerability, gaps: view.gaps, sharedSources: view.sharedSources, conflicts: view.conflicts, freshness: view.freshness, risk: view.risk, primacy: view.primacy, scorecard: view.scorecard, notes }, new Date().toISOString(), lang);
     downloadText('puppetnet-fallakte.json', caseBundle({ notes, views: savedViews, report, generated: new Date().toISOString() }), 'application/json');
     setAnnouncement(t('dash.annBundle', { notes: number(Object.keys(notes).length), views: number(savedViews.length) }));
   };
@@ -736,6 +739,25 @@ export default function Dashboard() {
                 <button type="button" className="text-button" onClick={() => downloadText('puppetnet-erstmeldungen.csv', primacyToCSV(view.primacy!), 'text/csv;charset=utf-8')}>{t('dash.primacyCsv')}</button>
               </>}
             <p className="muted">{t('dash.primacyText')}</p>
+          </div>}
+          {view.scorecard && <div className="scorecard-panel">
+            <h4 className="hub-heading">{t('dash.scorecardTitle')}</h4>
+            <p className="muted small-text">{t('dash.scorecardSummary', {
+              sources: number(view.scorecard.sources), contradictory: number(view.scorecard.contradictory),
+              leaders: number(view.scorecard.leaders), followers: number(view.scorecard.followers),
+              contested: number(view.scorecard.contested),
+            })}</p>
+            {view.scorecard.profiles.length === 0
+              ? <p className="muted" role="status">{t('dash.scorecardNone')}</p>
+              : <><ul className="hub-list scorecard-sources">{view.scorecard.profiles.map(entry => <li key={entry.outlet}>
+                <span className={`scorecard-outlet scorecard-${entry.standing}`}>{entry.outlet || '—'}</span>
+                <span className="scorecard-standing">{t(STANDING_LABEL[entry.standing])}</span>
+                <span className="hub-rank">{t('dash.scorecardRow', { documents: number(entry.documents), firsts: number(entry.firsts), followups: number(entry.followups), lag: entry.meanLag === undefined ? '' : t('dash.scorecardLag', { days: number(entry.meanLag) }) })}</span>
+                {entry.soloClaims > 0 && <span className="hub-rank">{t('dash.scorecardSolo', { count: number(entry.soloClaims) })}</span>}
+                {entry.selfConflicts > 0 && <span className="hub-rank">{t('dash.scorecardSelf', { count: number(entry.selfConflicts) })}</span>}
+              </li>)}</ul>
+              <button type="button" className="text-button" onClick={() => downloadText('puppetnet-quellenurteil.csv', sourceScorecardCSV(view.scorecard!), 'text/csv;charset=utf-8')}>{t('dash.scorecardCsv')}</button></>}
+            <p className="muted">{t('dash.scorecardText')}</p>
           </div>}
           {view.freshness && <div className="fresh-panel">
             <h4 className="hub-heading">{t('dash.freshTitle')}</h4>
