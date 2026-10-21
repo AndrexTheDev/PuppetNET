@@ -1604,6 +1604,107 @@ export function noteSnippet(text: string, query: string, size = 90): string {
   return `${start > 0 ? '…' : ''}${slice}${start + size < clean.length ? '…' : ''}`;
 }
 
+/** Wave 27: a watchlist is case work, not data — it lives in this browser only,
+ * is capped, sanitized on read, and never leaves the device. */
+export const WATCH_LIMIT = 200;
+export const WATCH_STORAGE_KEY = 'puppetnet.watch.v1';
+export function readWatchlist(raw: unknown): string[] {
+  const parsed = typeof raw === 'string' ? (() => { try { return JSON.parse(raw); } catch { return []; } })() : raw;
+  if (!Array.isArray(parsed)) return [];
+  const out: string[] = [];
+  for (const value of parsed) {
+    // Ids are strings; a number or object in the store is junk, not an id.
+    if (typeof value !== 'string') continue;
+    const id = text(value, 200);
+    if (id && !out.includes(id) && out.length < WATCH_LIMIT) out.push(id);
+  }
+  return out;
+}
+/** Adds or removes one entity. The list keeps insertion order (oldest watch
+ * first) and is bounded, so the UI never needs to re-sort a session. */
+export function toggleWatch(list: string[], id: string): string[] {
+  const key = text(id, 200);
+  if (!key) return list;
+  if (list.includes(key)) return list.filter(entry => entry !== key);
+  return [...list, key].slice(-WATCH_LIMIT);
+}
+
+export interface WatchEntry {
+  id: string; label: string; type: EntityType;
+  /** Present in the visible slice? A watch outlives filters, so this can be false. */
+  visible: boolean;
+  state?: RiskState;
+  sources?: number;
+  documents?: number;
+  last?: string;
+  /** Relationship types this entity is involved in that are currently disputed. */
+  conflicts: string[];
+}
+
+export interface WatchReport {
+  watched: number;
+  visible: number;
+  /** Watched entities that are no longer in the export at all. */
+  gone: string[];
+  /** Nothing flagged: no sturdiness finding and no dispute. (The risk report only
+   * lists findings, so "no finding" is the honest reading — not "solid".) */
+  settled: number;
+  entries: WatchEntry[];
+}
+
+/**
+ * Wave 27: the watchlist, judged with the same rules as the panels. The list is
+ * the investigator's own selection, so it is reported in full — but the order
+ * follows urgency (dispute, then thin/old, then everything else), because a
+ * watchlist that hides its problems is a bookmark list. Entities that dropped
+ * out of the current slice are marked, never silently dropped.
+ */
+export function watchReport(list: string[], nodes: GraphNode[], edges: GraphEdge[], evidence: Evidence[], options: { risk?: RiskReport; conflicts?: PairConflict[] } = {}, limit = 50): WatchReport {
+  const visible = new Map(nodes.map(node => [node.id, node]));
+  const risk = new Map((options.risk?.entries ?? []).map(entry => [entry.id, entry]));
+  const disputed = new Map<string, string[]>();
+  for (const conflict of options.conflicts ?? []) {
+    if (conflict.kind !== 'conflict') continue;
+    for (const id of conflict.pair) {
+      const types = disputed.get(id) ?? [];
+      for (const claim of conflict.claims) if (!types.includes(claim.type)) types.push(claim.type);
+      disputed.set(id, types);
+    }
+  }
+  const backing = nodeBacking(nodes, edges, evidence);
+  const entries: WatchEntry[] = list.map(id => {
+    const node = visible.get(id);
+    const own = backing.get(id);
+    const finding = risk.get(id);
+    return {
+      id,
+      label: node?.label ?? id,
+      type: node?.type ?? 'Other',
+      visible: Boolean(node),
+      ...(finding?.state ? { state: finding.state } : {}),
+      ...(own ? { sources: own.sources, documents: own.documents } : {}),
+      ...(finding?.last ?? own?.newest ? { last: finding?.last ?? own?.newest } : {}),
+      conflicts: disputed.get(id) ?? [],
+    };
+  });
+  const rank = (entry: WatchEntry) => (entry.conflicts.length ? 0 : entry.state === 'weak' || !entry.visible ? 1 : entry.state === 'stale' || entry.state === 'thin' || entry.state === 'unbacked' ? 2 : entry.state === 'undated' ? 3 : 4);
+  const ordered = entries.slice().sort((a, b) => rank(a) - rank(b) || (a.label < b.label ? -1 : a.label > b.label ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  return {
+    watched: list.length,
+    visible: entries.filter(entry => entry.visible).length,
+    gone: entries.filter(entry => !entry.visible).map(entry => entry.id),
+    settled: entries.filter(entry => entry.visible && !entry.conflicts.length && !entry.state).length,
+    entries: ordered.slice(0, Math.max(1, limit)),
+  };
+}
+
+/** Wave 27: the watchlist as RFC-4180 CSV — the short list you take to a call. */
+export function watchToCSV(report: WatchReport): string {
+  const header = ['id', 'label', 'type', 'state', 'sources', 'documents', 'last', 'conflicts', 'visible'].map(csvCell).join(',');
+  const rows = report.entries.map(entry => [entry.id, entry.label, entry.type, entry.state ?? '', entry.sources, entry.documents, entry.last, entry.conflicts.join(' | '), entry.visible ? 'yes' : 'no'].map(csvCell).join(','));
+  return [header, ...rows].join('\n') + '\n';
+}
+
 export const CONFIDENCE_THRESHOLD = 0.5;
 
 /**

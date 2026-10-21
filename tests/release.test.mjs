@@ -478,3 +478,24 @@ test('wave 26: the root-directory requirement is written down, not implied', () 
   assert.ok(ops.includes('Root directory = repository root'), 'the fix is stated as an instruction');
   assert.ok(ops.includes('the single authoritative lockfile lives at the repository root'), 'the reason is given');
 });
+
+test('wave 27: the watchlist is local case work, not telemetry', () => {
+  const data = read('apps/web/app/dashboard/graph-data.ts');
+  assert.match(data, /export const WATCH_LIMIT = 200;/, 'the list is bounded');
+  assert.match(data, /export const WATCH_STORAGE_KEY = 'puppetnet\.watch\.v1';/, 'storage has a versioned key');
+  assert.match(data, /export function readWatchlist\(raw: unknown\): string\[\]/, 'reading is sanitized, never trusted');
+  assert.match(data, /if \(typeof value !== 'string'\) continue;/, 'only strings can become ids');
+  assert.match(data, /export function watchReport\(/, 'the report takes every panel it judges against as an argument');
+  assert.match(data, /if \(conflict\.kind !== 'conflict'\) continue;/, 'only real contradictions count as disputes');
+  const dashboard = read('apps/web/app/dashboard/Dashboard.tsx');
+  assert.ok(dashboard.includes('window.localStorage.setItem(WATCH_STORAGE_KEY'), 'the list survives a reload in this browser only');
+  assert.ok(dashboard.includes("t('dash.watchGone',"), 'a vanished watch is reported instead of silently dropped');
+  assert.ok(dashboard.includes("t('dash.watchText')"), 'the panel says the list never leaves the device');
+  assert.ok(dashboard.includes('watched.gone.length > 0'), 'the vanished count is rendered, not only computed');
+  assert.ok(dashboard.includes('watchToCSV(watched)'), 'the short list is exportable');
+  assert.ok(dashboard.includes('toggleWatch(current, entry.id)'), 'entries can be removed in place');
+  const panel = read('apps/web/app/dashboard/SidePanel.tsx');
+  assert.ok(panel.includes('aria-pressed={watched}'), 'the toggle is a real pressed state for assistive tech');
+  assert.ok(panel.includes("t('inspector.watchAdd')") && panel.includes("t('inspector.watchRemove')"), 'both states are named');
+  assert.doesNotMatch(dashboard, /fetch\([^)]*WATCH/, 'the watchlist is never sent anywhere');
+});

@@ -243,3 +243,9 @@
 .case-hit-conflict .case-kind{color:var(--color-danger)}
 .case-hit-risk .case-kind{color:var(--color-gold)}
 .case-hit-note .case-kind{color:var(--color-green)}
+.watch-panel{margin-top:var(--space-3,1rem);border-top:1px solid var(--line);padding-top:var(--space-2,0.5rem)}
+.watch-list li{display:flex;flex-wrap:wrap;gap:var(--space-1,.25rem);align-items:baseline}
+.watch-state{font-size:.8em;font-weight:600;opacity:.9}
+.watch-list li.watch-weak .watch-state,.watch-list li.watch-stale .watch-state{color:var(--color-gold)}
+.watch-disputed{color:var(--color-danger)}
+.watch-toggle.is-watched{border-color:var(--color-gold);font-weight:600}

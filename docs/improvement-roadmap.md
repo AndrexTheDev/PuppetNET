@@ -649,6 +649,33 @@ Leer-/Kein-Treffer-Text, 14 neue DE/EN-Schlüssel, token-only CSS,
 Build-Gates, dokumentierte Startpunkte, 1 neuer Release-Pin (release 32), `ci:pages`
 grün aus Root und aus `apps/web`.
 
+### Welle 27 — Beobachtungsliste — ✅ umgesetzt (2026-10-21)
+
+- **Entitäten markieren, die im Blick bleiben sollen** — im Inspektor mit einem Klick,
+  `aria-pressed` inklusive. Die Liste überlebt einen Reload (nur `localStorage`), ist auf
+  200 Einträge begrenzt, wird beim Lesen **bereinigt** (keine Duplikate, keine leeren IDs,
+  Zahlen und Objekte sind Müll) und verlässt das Gerät nur beim bewussten CSV-Export.
+- **Sortiert nach Dringlichkeit, nicht nach Eingabe**: Streitfälle zuerst, dann
+  verschwundene Einträge, dann Befunde (dünn und alt, veraltet, nur eine Quelle …), dann
+  der Rest — nichts wird ausgeblendet. Eine Beobachtungsliste, die ihre Probleme
+  versteckt, wäre nur eine Lesezeichenliste.
+- **Bewertet mit den Regeln der Panels**: Streitfälle aus `pairConflicts` (nur echte
+  Widersprüche, keine zeitlichen Entwicklungen), Belege und Quellen aus `nodeBacking`,
+  Zustände aus `evidenceRisk`. „Ohne Befund" heißt ehrlich *kein Eintrag in der
+  Auffälligkeitsliste* — nicht „solide", denn das behauptet die Risiko-Liste nicht.
+- **Verschwundene Einträge werden benannt, nicht gelöscht**: fällt eine beobachtete
+  Entität aus dem aktuellen Export, sagt die Liste es und behält die ID. Beobachten ist
+  Fallarbeit und darf nicht von der Datenlage abhängen.
+- **CSV-Export** der kurzen Liste (inkl. strittiger Beziehungstypen), damit sie in ein
+  Gespräch mitgenommen werden kann — kein Server, keine Telemetrie, 0 zusätzliche
+  Actions-Minuten.
+
+**Geliefert (Welle 27)**: `WATCH_LIMIT`/`WATCH_STORAGE_KEY`/`readWatchlist()`/`toggleWatch()`,
+`watchReport()`, `watchToCSV()`, Inspektor-Umschalter, Beobachtungs-Panel mit Dringlichkeits-Reihenfolge,
+Entfernen je Eintrag, Verschwunden-Hinweis und CSV, 16 neue DE/EN-Schlüssel, token-only CSS,
+2 neue Datenlagen-Tests (dashboard 59) + 1 neuer Release-Pin (release 34) —
+`ci:pages` grün, 0 zusätzliche Actions-Minuten.
+
 ## 4. Budget-Zusammenfassung
 
 | Welle | Ort | Zusätzliche Actions-Minuten | Status |
@@ -679,6 +706,7 @@ grün aus Root und aus `apps/web`.
 | 24 Änderungs-Vergleich | Browser/Worker | **0** | ✅ umgesetzt |
 | 25 Akten-Suche | Browser | **0** | ✅ umgesetzt |
 | 26 Build-Gate ortsunabhängig | Build/CI | **0** | ✅ umgesetzt |
+| 27 Beobachtungsliste | Browser (lokal) | **0** | ✅ umgesetzt |
 
 Kein Schritt erzeugt neue Workflows, neue Cron-Jobs, längere Jobs oder bezahlte
 Dienste. Die einzigen verbrauchsrelevanten Grenzen sind die bestehenden: 3
@@ -1307,6 +1335,31 @@ minutes.
 gates, documented entry points, 1 new release pin (release 32), `ci:pages` green from
 the root and from `apps/web`.
 
+### Wave 27 — watchlist — ✅ implemented (2026-10-21)
+
+- **Mark the entities that should stay in view** — one click in the inspector, with
+  `aria-pressed`. The list survives a reload (`localStorage` only), is capped at 200
+  entries, is **sanitized on read** (no duplicates, no empty ids, numbers and objects are
+  junk) and leaves the device only through a deliberate CSV export.
+- **Sorted by urgency, not by insertion**: disputes first, then vanished entries, then
+  findings (thin and old, outdated, single source …), then the rest — nothing is hidden.
+  A watchlist that hides its problems is just a bookmark list.
+- **Judged with the panels' rules**: disputes from `pairConflicts` (real contradictions
+  only, never temporal developments), backing from `nodeBacking`, states from
+  `evidenceRisk`. "No finding" honestly means *not in the follow-up list* — not "solid",
+  which the risk report does not claim.
+- **Vanished entries are named, not deleted**: when a watched entity drops out of the
+  current export the list says so and keeps the id. Watching is case work and must not
+  depend on the data at hand.
+- **CSV export** of the short list (including the disputed relationship types) so it can
+  be taken into a call — no server, no telemetry, 0 extra Actions minutes.
+
+**Delivered (Wave 27)**: `WATCH_LIMIT`/`WATCH_STORAGE_KEY`/`readWatchlist()`/`toggleWatch()`,
+`watchReport()`, `watchToCSV()`, inspector toggle, watch panel with urgency ordering,
+per-entry removal, vanished hint and CSV, 16 new DE/EN keys, token-only CSS,
+2 new data-layer tests (dashboard 59) + 1 new release pin (release 34) —
+`ci:pages` green, 0 extra Actions minutes.
+
 ## 4. Budget summary
 
 | Wave | Location | Additional Actions minutes | Status |
@@ -1337,6 +1390,7 @@ the root and from `apps/web`.
 | 24 change comparison | browser/worker | **0** | ✅ implemented |
 | 25 case search | browser | **0** | ✅ implemented |
 | 26 location-independent build gate | build/CI | **0** | ✅ implemented |
+| 27 watchlist | browser (local) | **0** | ✅ implemented |
 
 No step creates new workflows, new cron jobs, longer jobs or paid services. The only
 consumption-relevant limits remain the existing ones: 3 reservations/UTC day, 5-minute

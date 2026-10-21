@@ -2,7 +2,7 @@
 import dynamic from 'next/dynamic';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import EntityTable, { type TableRow } from './EntityTable';
-import { COLORS, TYPES, LIMITS, NOTE_STORAGE_KEY, FRESH_WINDOWS, DEFAULT_FRESH_MONTHS, riskToCSV, diffToCSV, searchCase, caseReport, decodeViewState, edgesToCSV, encodeViewState, monthWindow, nextPlaybackMonth, nodesToCSV, caseBundle, compareDuplicates, mergeNotes, parseCaseNotes, provenanceGaps, readCaseBundle, searchNoteIndex, removeSavedView, upsertSavedView, readSavedViews, SAVED_VIEW_STORAGE_KEY, normalizeNote, rankSearch, readNotes, resolveNodeRef, viewToJSON, type Evidence, type Filters, type GraphEdge, type GraphNode, type PathTimeline, type View, type ViewUrlState, type DatasetDiff, type CaseHit } from './graph-data';
+import { COLORS, TYPES, LIMITS, NOTE_STORAGE_KEY, WATCH_STORAGE_KEY, FRESH_WINDOWS, DEFAULT_FRESH_MONTHS, riskToCSV, watchToCSV, watchReport, readWatchlist, toggleWatch, diffToCSV, searchCase, caseReport, decodeViewState, edgesToCSV, encodeViewState, monthWindow, nextPlaybackMonth, nodesToCSV, caseBundle, compareDuplicates, mergeNotes, parseCaseNotes, provenanceGaps, readCaseBundle, searchNoteIndex, removeSavedView, upsertSavedView, readSavedViews, SAVED_VIEW_STORAGE_KEY, normalizeNote, rankSearch, readNotes, resolveNodeRef, viewToJSON, type Evidence, type Filters, type GraphEdge, type GraphNode, type PathTimeline, type View, type ViewUrlState, type DatasetDiff, type CaseHit } from './graph-data';
 import type { NetworkHandle, PathHighlight } from './NetworkGraph';
 import type { WorkerRequest, WorkerResponse } from './protocol';
 import { loadStaticGraph, requestResearch, type Standby } from '../../src/lib/dataFetcher';
@@ -70,6 +70,7 @@ export default function Dashboard() {
   // Wave 11: research notes live in localStorage only — loaded once, persisted
   // after every change, never sent to a server.
   const [notes, setNotes] = useState<Record<string, string>>({});
+  const [watch, setWatch] = useState<string[]>([]), watchReady = useRef(false);
   const notesReady = useRef(false);
   const initialFocus = useRef(initialUrl.current.focus ?? null);
   // Wave 6 i18n: refs keep the mount-effect and worker-handler closures stable
@@ -234,6 +235,19 @@ export default function Dashboard() {
       else window.localStorage.removeItem(NOTE_STORAGE_KEY);
     } catch { /* private mode / quota: the session keeps working, nothing is lost silently in the UI */ }
   }, [notes]);
+  // Wave 27: the watchlist is case work in this browser only — capped, sanitized
+  // on read, and written back on every change so a session survives a reload.
+  useEffect(() => {
+    try { setWatch(readWatchlist(window.localStorage.getItem(WATCH_STORAGE_KEY))); } catch { /* storage blocked: the list stays in memory */ }
+    watchReady.current = true;
+  }, []);
+  useEffect(() => {
+    if (!watchReady.current) return;
+    try {
+      if (watch.length) window.localStorage.setItem(WATCH_STORAGE_KEY, JSON.stringify(watch));
+      else window.localStorage.removeItem(WATCH_STORAGE_KEY);
+    } catch { /* private mode / quota: the session keeps working */ }
+  }, [watch]);
   // Shareable permalinks: replaceState mirrors the investigation state into the
   // URL without adding history entries (bound values only, no free text blobs).
   useEffect(() => {
@@ -298,6 +312,9 @@ export default function Dashboard() {
   const caseHits = useMemo<CaseHit[]>(() => view
     ? searchCase(caseQuery, { nodes: view.nodes, conflicts: view.conflicts, risk: view.risk, sourceRegistry: view.sourceRegistry, notes })
     : [], [view, caseQuery, notes]);
+  const watched = useMemo(() => view
+    ? watchReport(watch, view.nodes, view.edges, evidence, { risk: view.risk, conflicts: view.conflicts })
+    : null, [watch, view, evidence]);
   const communities = useMemo(() => {
     const set = new Set<string>();
     for (const n of view?.nodes ?? []) if (n.community && set.size < 100) set.add(n.community);
@@ -589,6 +606,22 @@ export default function Dashboard() {
             </li>)}</ul>}
             <p className="muted">{t('dash.conflictText')}</p>
           </div>}
+          {watched && watched.watched > 0 && <div className="watch-panel">
+            <h4 className="hub-heading">{t('dash.watchTitle')}</h4>
+            <p className="muted small-text">{t('dash.watchSummary', { watched: number(watched.watched), visible: number(watched.visible), settled: number(watched.settled) })}</p>
+            {watched.gone.length > 0 && <p className="muted small-text" role="status">{t('dash.watchGone', { count: number(watched.gone.length) })}</p>}
+            <ul className="hub-list watch-list">{watched.entries.map(entry => <li key={entry.id} className={`watch-${entry.state ?? 'plain'}${entry.conflicts.length ? ' watch-disputed' : ''}`}>
+              {entry.visible
+                ? <button type="button" className="text-button" aria-label={t('dash.watchAria', { label: entry.label })} onClick={() => { if (mode !== 'network') changeMode('network'); select(entry.id); requestAnimationFrame(() => network.current?.focus(entry.id)); }}>{entry.label}</button>
+                : <span>{entry.label}</span>}
+              {entry.state && <span className="watch-state">{t(`dash.risk${entry.state[0].toUpperCase()}${entry.state.slice(1)}`)}</span>}
+              {entry.conflicts.length > 0 && <span className="watch-state watch-dispute">{t('dash.watchDisputed', { types: entry.conflicts.join(' / ') })}</span>}
+              {entry.last && <span className="hub-rank">{entry.last}</span>}
+              <button type="button" className="text-button" aria-label={t('dash.watchRemoveAria', { label: entry.label })} onClick={() => setWatch(current => toggleWatch(current, entry.id))}>×</button>
+            </li>)}</ul>
+            <button type="button" className="text-button" onClick={() => downloadText('puppetnet-beobachtung.csv', watchToCSV(watched), 'text/csv;charset=utf-8')}>{t('dash.watchCsv')}</button>
+            <p className="muted">{t('dash.watchText')}</p>
+          </div>}
           <div className="case-search">
             <h4 className="hub-heading">{t('dash.caseSearchTitle')}</h4>
             <label className="case-search-field"><input type="search" value={caseQuery} placeholder={t('dash.caseSearchPlaceholder')} aria-label={t('dash.caseSearchAria')} onChange={e => setCaseQuery(e.target.value)} />{caseQuery && <button type="button" className="text-button" onClick={() => setCaseQuery('')}>{t('dash.caseSearchClear')}</button>}</label>
@@ -762,7 +795,7 @@ export default function Dashboard() {
         source: selectedEdge ? view?.nodes.find(n => n.id === selectedEdge.source)?.label ?? selectedEdge.source : '',
         target: selectedEdge ? view?.nodes.find(n => n.id === selectedEdge.target)?.label ?? selectedEdge.target : '',
       }} detailError={detailError} note={selected && !selected.group ? notes[selected.id] ?? '' : ''} onEgo={id => requestEgo(id)}
-      onNote={text => { if (!selected || selected.group) return; const clean = normalizeNote(text); setNotes(current => { const next = { ...current }; if (clean) next[selected.id] = clean; else delete next[selected.id]; return next; }); }} onClose={() => { clearSelected(); setAnnouncement(t('dash.detailsClosed')); }} onDrill={group => { clearSelected(); setBusy(true); send({ kind: 'drill', group, version: ++version.current, filters: filtersRef.current }); }} />
+      watched={Boolean(selected && watch.includes(selected.id))} onWatch={() => { if (!selected || selected.group) return; setWatch(current => toggleWatch(current, selected.id)); }} onNote={text => { if (!selected || selected.group) return; const clean = normalizeNote(text); setNotes(current => { const next = { ...current }; if (clean) next[selected.id] = clean; else delete next[selected.id]; return next; }); }} onClose={() => { clearSelected(); setAnnouncement(t('dash.detailsClosed')); }} onDrill={group => { clearSelected(); setBusy(true); send({ kind: 'drill', group, version: ++version.current, filters: filtersRef.current }); }} />
     </div>}
     <footer className="dashboard-footer"><span>PUPPETNET / OPEN-SOURCE INTELLIGENCE</span><span>Sigma.js 4 · Graphology · Leaflet · OpenStreetMap</span><a className="footer-legal" href="/legal/">{t('dash.legalLink')}</a></footer>
   </main>;

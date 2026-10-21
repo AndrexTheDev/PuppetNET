@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
-import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, monthWindow, bundleEdges, structuralVulnerability, pathTimeline, normalizeNote, readNotes, caseReport, nextPlaybackMonth, evidenceWindow, compareDuplicates, multiFailureImpact, normalizeSavedName, readSavedViews, upsertSavedView, removeSavedView, evidenceToCSV, parseCaseNotes, mergeNotes, searchNoteIndex, caseBundle, readCaseBundle, provenanceGaps, edgeSources, sharedSourceGroups, normalizeEvidence, edgeSourceStatus, sourceRegistry, pairConflicts, evidenceFreshness, monthsBefore, FRESH_WINDOWS, DEFAULT_FRESH_MONTHS, isFreshWindow, filterDataset, nodeBacking, evidenceRisk, riskToCSV, diffDatasets, diffToCSV, searchCase, noteSnippet, TYPES, SAVED_VIEW_LIMIT, NOTE_LIMIT, EGO_DEPTH_LIMIT, VULNERABILITY_NODE_LIMIT, normalizeInsights, ANALYSIS_LIMITS, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
+import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, monthWindow, bundleEdges, structuralVulnerability, pathTimeline, normalizeNote, readNotes, caseReport, nextPlaybackMonth, evidenceWindow, compareDuplicates, multiFailureImpact, normalizeSavedName, readSavedViews, upsertSavedView, removeSavedView, evidenceToCSV, parseCaseNotes, mergeNotes, searchNoteIndex, caseBundle, readCaseBundle, provenanceGaps, edgeSources, sharedSourceGroups, normalizeEvidence, edgeSourceStatus, sourceRegistry, pairConflicts, evidenceFreshness, monthsBefore, FRESH_WINDOWS, DEFAULT_FRESH_MONTHS, isFreshWindow, filterDataset, nodeBacking, evidenceRisk, riskToCSV, diffDatasets, diffToCSV, searchCase, noteSnippet, WATCH_LIMIT, readWatchlist, toggleWatch, watchReport, watchToCSV, TYPES, SAVED_VIEW_LIMIT, NOTE_LIMIT, EGO_DEPTH_LIMIT, VULNERABILITY_NODE_LIMIT, normalizeInsights, ANALYSIS_LIMITS, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
 import { apiBase, readResponse } from '../apps/web/app/dashboard/api';
 const filters: Filters = { confidence: 0, weight: 0, types: [...TYPES], lod: true, ratio: 1 };
 test('normalizes Worker and Graphology nodes without inventing coordinates', () => {
@@ -1238,4 +1238,74 @@ test('wave 25 note snippets show the match instead of the beginning', () => {
   assert.equal(noteSnippet('kurz und knapp', 'kurz', 40), 'kurz und knapp', 'short notes are returned whole');
   assert.equal(noteSnippet(`${'x '.repeat(60)}`, 'fehlt', 30).endsWith('…'), true, 'a miss truncates at the end, never invents context');
   assert.equal(noteSnippet('  viel   Leerraum  ', 'leerraum', 40), 'viel Leerraum', 'whitespace is normalised');
+});
+
+test('wave 27 the watchlist persists, stays bounded and keeps its own order', () => {
+  assert.equal(WATCH_LIMIT, 200);
+  assert.deepEqual(readWatchlist('["a","a","","b"]'), ['a', 'b'], 'duplicates and empty ids are dropped');
+  assert.deepEqual(readWatchlist('["a",5,null,{"id":"b"},"c"]'), ['a', 'c'], 'only strings are ids; numbers and objects are junk');
+  assert.deepEqual(readWatchlist('kein json'), [], 'broken storage is empty, not fatal');
+  assert.deepEqual(readWatchlist(null), []);
+  assert.deepEqual(readWatchlist({ a: 'b' }), [], 'an object is not a list');
+  const many = Array.from({ length: WATCH_LIMIT + 20 }, (_, index) => `n${index}`);
+  assert.equal(readWatchlist(JSON.stringify(many)).length, WATCH_LIMIT, 'the store is bounded on read, not only on write');
+  assert.deepEqual(toggleWatch([], 'a'), ['a']);
+  assert.deepEqual(toggleWatch(['a'], 'a'), [], 'a second toggle removes');
+  assert.deepEqual(toggleWatch(['a'], ''), ['a'], 'an empty id changes nothing');
+  assert.deepEqual(toggleWatch(['a', 'b'], 'c'), ['a', 'b', 'c'], 'insertion order is kept, oldest first');
+  const overflow = toggleWatch(Array.from({ length: WATCH_LIMIT }, (_, index) => `n${index}`), 'neu');
+  assert.equal(overflow.length, WATCH_LIMIT);
+  assert.equal(overflow[overflow.length - 1], 'neu', 'the newest watch survives, the oldest falls off');
+});
+
+test('wave 27 the watch report judges watched entities like the panels do', () => {
+  const data = normalizeDataset({
+    nodes: [{ key: 'a', name: 'Alpha' }, { key: 'b', name: 'Beta' }, { key: 'c', name: 'Gamma' }, { key: 'd', name: 'Delta' }],
+    evidence: [
+      { id: 'd1', title: 'One', source: 'HR', date: '2024-01-01' },
+      { id: 'd2', title: 'Two', source: 'Presse', date: '2024-06-01' },
+      { id: 'd3', title: 'Three', source: 'Blog', date: '2026-09-01' },
+      { id: 'd4', title: 'Four', source: 'Blog', date: '2026-08-01' },
+    ],
+    edges: [
+      { source: 'a', target: 'b', type: 'OWNS', evidenceIds: ['d1'] },
+      { source: 'b', target: 'a', type: 'SOLD', evidenceIds: ['d2'] },
+      { source: 'c', target: 'a', type: 'OWNS', evidenceIds: ['d3', 'd4'] },
+      { source: 'd', target: 'a', type: 'MET', evidenceIds: ['d4'] },
+    ],
+  });
+  const risk = evidenceRisk(data.nodes, data.edges, data.evidence, '2026-10-21');
+  const conflicts = [{ pair: ['a', 'b'] as [string, string], labels: ['Alpha', 'Beta'] as [string, string], kind: 'conflict' as const,
+    claims: [{ type: 'OWNS', documents: 1, sources: 1 }, { type: 'SOLD', documents: 1, sources: 1 }] }];
+  const report = watchReport(['a', 'b', 'c', 'd', 'gone'], data.nodes, data.edges, data.evidence, { risk, conflicts });
+  assert.deepEqual([report.watched, report.visible, report.gone], [5, 4, ['gone']], 'a vanished watch is reported, never silently dropped');
+  assert.deepEqual(report.entries.map(entry => [entry.id, entry.state ?? '-']), [
+    ['a', '-'], ['b', 'stale'], ['gone', '-'], ['d', 'thin'], ['c', 'thin'],
+  ], 'urgent first: disputes, then vanished, then findings, ties by label');
+  assert.deepEqual(report.entries[0].conflicts, ['OWNS', 'SOLD'], 'the disputed relationship types travel with the entry');
+  assert.deepEqual(report.entries[1].conflicts, ['OWNS', 'SOLD'], 'both ends of a dispute are marked');
+  assert.deepEqual(report.entries[2].conflicts, []);
+  const vanished = report.entries.find(entry => entry.id === 'gone')!;
+  assert.equal(vanished.visible, false);
+  assert.equal(vanished.label, 'gone', 'a vanished watch keeps its id as the label');
+  assert.equal(report.settled, 0, 'thin entities are not "settled"');
+  const clean = normalizeDataset({
+    nodes: [{ key: 'x', name: 'X' }, { key: 'y', name: 'Y' }],
+    evidence: [{ id: 'q1', title: 'Q1', source: 'A', date: '2026-08-01' }, { id: 'q2', title: 'Q2', source: 'B', date: '2026-09-01' }],
+    edges: [{ source: 'x', target: 'y', type: 'OWNS', evidenceIds: ['q1', 'q2'] }],
+  });
+  const healthy = watchReport(['x'], clean.nodes, clean.edges, clean.evidence, { risk: evidenceRisk(clean.nodes, clean.edges, clean.evidence, '2026-10-21') });
+  assert.equal(healthy.settled, 1, 'no finding and no dispute is the honest "nothing flagged"');
+  assert.equal(healthy.entries[0].state, undefined, 'a healthy entity carries no state instead of an invented one');
+  assert.equal(healthy.entries[0].sources, 2);
+  assert.deepEqual(watchReport(['a'], data.nodes, data.edges, data.evidence).entries[0].conflicts, [],
+    'without a conflict report nothing is claimed about disputes');
+  assert.equal(watchReport([], data.nodes, data.edges, data.evidence).watched, 0);
+  assert.equal(watchReport(['a'], data.nodes, data.edges, data.evidence, {}, 1).entries.length, 1, 'bounded');
+  assert.deepEqual(watchReport(['a'], data.nodes, data.edges, data.evidence, { risk, conflicts }), report.entries.length > 0
+    ? watchReport(['a'], data.nodes, data.edges, data.evidence, { risk, conflicts }) : null, 'deterministic');
+  const csv = watchToCSV(report);
+  assert.ok(csv.startsWith('id,label,type,state,sources,documents,last,conflicts,visible\n'));
+  assert.ok(csv.includes('a,Alpha,Other,,3,4,2026-09-01,OWNS | SOLD,yes'), 'the disputed types are exported, not just a flag');
+  assert.ok(csv.includes('gone,gone,Other,,,,,,no'), 'a vanished watch is visible in the export');
 });
