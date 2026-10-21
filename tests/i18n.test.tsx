@@ -15,15 +15,28 @@ import assert from 'node:assert/strict';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 
+import { createRequire } from 'node:module';
+
 import { DICTIONARIES, NUMBER_LOCALE, STRING_KEYS, translate } from '../apps/web/lib/i18n-strings';
-import { FixedLanguageProvider } from '../apps/web/app/dashboard/i18n';
-import StandbyPanelExport, { LoadingStage } from '../apps/web/app/dashboard/BootState';
-import EntityTableExport from '../apps/web/app/dashboard/EntityTable';
 import { describeGraphNode, graphInstructions } from '../apps/web/lib/graph-keyboard';
 
+// The provider and the components must share ONE instance of the context
+// module. The components are compiled as CommonJS and `require('./i18n')`.
+// Node 22 before 22.18 (e.g. 22.16.0, the Cloudflare Pages v3 default image)
+// evaluates a CommonJS file imported from ESM separately from the copy a
+// CommonJS sibling requires: two React contexts, so the English provider was
+// invisible and every Pages build since wave 6 failed while local runs on a
+// newer Node passed. Loading everything through `require` keeps one instance
+// on every supported Node version.
+const requireCjs = createRequire(import.meta.url);
+const { FixedLanguageProvider } = requireCjs('../apps/web/app/dashboard/i18n') as typeof import('../apps/web/app/dashboard/i18n');
+const BootStateModule = requireCjs('../apps/web/app/dashboard/BootState') as typeof import('../apps/web/app/dashboard/BootState');
+const EntityTableModule = requireCjs('../apps/web/app/dashboard/EntityTable') as typeof import('../apps/web/app/dashboard/EntityTable');
+const { LoadingStage } = BootStateModule;
+
 // tsx CJS interop: default exports can arrive wrapped (same shim as a11y.test.tsx).
-const StandbyPanel = (StandbyPanelExport as unknown as { default?: typeof StandbyPanelExport }).default ?? StandbyPanelExport;
-const EntityTable = (EntityTableExport as unknown as { default?: typeof EntityTableExport }).default ?? EntityTableExport;
+const StandbyPanel = (BootStateModule.default as unknown as { default?: typeof BootStateModule.default }).default ?? BootStateModule.default;
+const EntityTable = (EntityTableModule.default as unknown as { default?: typeof EntityTableModule.default }).default ?? EntityTableModule.default;
 
 const PARAM_RE = /\{(\w+)\}/g;
 
