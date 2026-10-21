@@ -74,6 +74,10 @@ export interface View {
   sharedSources?: SharedSourceGroup[];
   /** Wave 20: which outlets carry the visible slice and how much of it. */
   sourceRegistry?: SourceRegistryEntry[];
+  /** Wave 21: same pair, different relationship types — conflict or change over time. */
+  conflicts?: PairConflict[];
+  /** Wave 21: how current the documented evidence behind the slice is. */
+  freshness?: Freshness;
 }
 export const LIMITS = { nodes: 200_000, edges: 500_000, bytes: 64 * 1024 * 1024 };
 const record = (v: unknown): Record<string, unknown> => v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {};
@@ -1164,6 +1168,126 @@ export function sharedSourceGroups(nodes: GraphNode[], evidence: Evidence[], lim
   return out.slice(0, Math.max(1, limit));
 }
 
+/** Wave 21: one pair of entities claimed in different ways. `sequence` means the
+ * documented windows do not overlap — most likely a change over time, not a
+ * contradiction. `conflict` means both claims are documented inside the same
+ * period, which needs a decision instead of a guess. `undated` means at least
+ * one side has no dates, so nothing can be concluded. */
+export type ConflictKind = 'conflict' | 'sequence' | 'undated';
+export interface PairConflict {
+  pair: [string, string];
+  labels: [string, string];
+  kind: ConflictKind;
+  claims: { type: string; documents: number; sources: number; first?: string; last?: string }[];
+}
+
+/**
+ * Wave 21: conflicting claims on the same pair. A pair carrying two different
+ * relationship types is not automatically a contradiction — an ownership that
+ * ended before a new one began is a history, not a dispute. So every type group
+ * gets its documented window, and only overlapping windows count as a conflict;
+ * undated groups stay 'undated' instead of being guessed either way. Deterministic
+ * (conflicts first, then pair key), bounded, and direction-agnostic.
+ */
+export function pairConflicts(nodes: GraphNode[], edges: GraphEdge[], evidence: Evidence[], limit = 8): PairConflict[] {
+  const labels = new Map(nodes.map(node => [node.id, node.label]));
+  const dates = new Map(evidence.map(doc => [doc.id, isoDate(doc.date)]));
+  const sources = new Map(evidence.map(doc => [doc.id, (doc.source ?? '').trim().toLowerCase()]));
+  const groups = new Map<string, Map<string, { documents: Set<string>; sources: Set<string>; first?: string; last?: string }>>();
+  for (const edge of edges) {
+    if (edge.source === edge.target || edge.type === 'AGGREGATED') continue;
+    const [a, b] = edge.source <= edge.target ? [edge.source, edge.target] : [edge.target, edge.source];
+    const key = `${a}|${b}`;
+    const byType = groups.get(key) ?? new Map();
+    groups.set(key, byType);
+    const claim = byType.get(edge.type) ?? { documents: new Set<string>(), sources: new Set<string>() };
+    byType.set(edge.type, claim);
+    for (const docId of edge.evidenceIds) {
+      claim.documents.add(docId);
+      const source = sources.get(docId);
+      if (source) claim.sources.add(source);
+      const day = dates.get(docId);
+      if (day) {
+        if (!claim.first || day < claim.first) claim.first = day;
+        if (!claim.last || day > claim.last) claim.last = day;
+      }
+    }
+  }
+  const out: PairConflict[] = [];
+  for (const [key, byType] of groups) {
+    if (byType.size < 2) continue;
+    const claims = [...byType.entries()]
+      .map(([type, claim]) => ({
+        type,
+        documents: claim.documents.size,
+        sources: claim.sources.size,
+        ...(claim.first ? { first: claim.first } : {}),
+        ...(claim.last ? { last: claim.last } : {}),
+      }))
+      .sort((a, b) => (a.type < b.type ? -1 : a.type > b.type ? 1 : 0));
+    let kind: ConflictKind = 'undated';
+    if (claims.every(claim => claim.first && claim.last)) {
+      const overlapping = claims.some((left, i) => claims.slice(i + 1).some(right => left.first! <= right.last! && right.first! <= left.last!));
+      kind = overlapping ? 'conflict' : 'sequence';
+    }
+    const [a, b] = key.split('|');
+    out.push({ pair: [a, b], labels: [labels.get(a) ?? a, labels.get(b) ?? b], kind, claims });
+  }
+  const rank: Record<ConflictKind, number> = { conflict: 0, sequence: 1, undated: 2 };
+  out.sort((x, y) => rank[x.kind] - rank[y.kind] || (x.pair[0] < y.pair[0] ? -1 : x.pair[0] > y.pair[0] ? 1 : x.pair[1] < y.pair[1] ? -1 : x.pair[1] > y.pair[1] ? 1 : 0));
+  return out.slice(0, Math.max(1, limit));
+}
+
+export interface Freshness {
+  reference: string;
+  months: number;
+  /** Entities whose newest document is older than the window. */
+  stale: { id: string; label: string; last?: string }[];
+  staleCount: number;
+  /** Entities with documents that carry no usable date at all. */
+  undatedCount: number;
+  entities: number;
+}
+
+/** Wave 21: subtracts whole months from an ISO day, clamping the day of month
+ * (31 Jan minus one month stays valid instead of rolling into March). */
+export function monthsBefore(reference: string, months: number): string | null {
+  const day = isoDate(reference);
+  if (!day) return null;
+  const year = Number(day.slice(0, 4)), month = Number(day.slice(5, 7)) - 1, date = Number(day.slice(8, 10));
+  const target = new Date(Date.UTC(year, month - Math.max(0, Math.trunc(months)), 1));
+  const lastDay = new Date(Date.UTC(target.getUTCFullYear(), target.getUTCMonth() + 1, 0)).getUTCDate();
+  const safeDay = Math.min(date, lastDay);
+  return `${target.getUTCFullYear()}-${String(target.getUTCMonth() + 1).padStart(2, '0')}-${String(safeDay).padStart(2, '0')}`;
+}
+
+/**
+ * Wave 21: is the case still current? Counts, per visible entity, the newest
+ * document date and compares it with a window counted back from `reference`.
+ * Entities without any documented date are reported separately — "unknown" is
+ * not "old". The reference date is passed in, so the result is reproducible.
+ */
+export function evidenceFreshness(nodes: GraphNode[], evidence: Evidence[], reference: string, months = 12, limit = 8): Freshness | null {
+  const cutoff = monthsBefore(reference, months), day = isoDate(reference);
+  if (!cutoff || !day) return null;
+  const dates = new Map(evidence.map(doc => [doc.id, isoDate(doc.date)]));
+  const stale: { id: string; label: string; last?: string }[] = [];
+  let undatedCount = 0, entities = 0;
+  for (const node of nodes) {
+    if (node.group) continue;
+    entities++;
+    let newest: string | undefined;
+    for (const docId of node.evidenceIds) {
+      const documentDay = dates.get(docId);
+      if (documentDay && (!newest || documentDay > newest)) newest = documentDay;
+    }
+    if (!newest) { undatedCount++; continue; }
+    if (newest < cutoff) stale.push({ id: node.id, label: node.label, last: newest });
+  }
+  stale.sort((a, b) => (a.last! < b.last! ? -1 : a.last! > b.last! ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  return { reference: day, months: Math.max(1, Math.trunc(months)), stale: stale.slice(0, Math.max(1, limit)), staleCount: stale.length, undatedCount, entities };
+}
+
 export const CONFIDENCE_THRESHOLD = 0.5;
 
 /**
@@ -1225,6 +1349,8 @@ export interface CaseReportInput {
   vulnerability?: Vulnerability;
   gaps?: ProvenanceGaps;
   sharedSources?: { document: string; entities: { id: string; label: string }[] }[];
+  conflicts?: PairConflict[];
+  freshness?: Freshness;
   notes?: Record<string, string>;
 }
 /** Wave 11 case report: a deterministic Markdown file for the case folder —
@@ -1243,6 +1369,7 @@ const CASE_REPORT_TEXT = {
     articulation: 'Artikulationspunkt', degree: 'Grad', splits: 'zerfällt in {parts} Teile, größter {largest}',
     rules: 'Regelhinweise', duplicates: 'Mögliche Dubletten', mixed: 'gemischte Typen',
     timeline: 'Erwähnungen pro Monat',
+    conflicts: 'Widersprüchliche Aussagen', conflictsNone: 'keine abweichenden Aussagen', currency: 'Aktualität der Belege',
     footer: 'Hinweise, keine Beweise: Quellen prüfen; personenbezogene Daten nur mit Rechtsgrundlage verarbeiten.',
   },
   en: {
@@ -1255,6 +1382,7 @@ const CASE_REPORT_TEXT = {
     articulation: 'Articulation point', degree: 'degree', splits: 'splits into {parts} parts, largest {largest}',
     rules: 'Rule hits', duplicates: 'Possible duplicates', mixed: 'mixed types',
     timeline: 'Mentions per month',
+    conflicts: 'Conflicting claims', conflictsNone: 'no differing claims', currency: 'Currency of the evidence',
     footer: 'Hints, not proof: verify the sources; process personal data only with a legal basis.',
   },
 } as const;
@@ -1309,6 +1437,21 @@ export function caseReport(input: CaseReportInput, generated: string, lang: 'de'
   if (input.duplicates?.length) {
     lines.push('', `## ${text.duplicates}`, '');
     for (const group of input.duplicates) lines.push(`- ${clean(group.label)} — ${group.ids.map(id => `\`${id}\``).join(', ')}${group.sameType ? '' : ` (${text.mixed})`}`);
+  }
+  if (input.freshness) {
+    const f = input.freshness;
+    lines.push('', `## ${text.currency}`, '');
+    lines.push(`- ${text.generated}: ${f.reference} · ${f.months} ${lang === 'en' ? 'months' : 'Monate'}`);
+    lines.push(`- ${f.staleCount}/${f.entities} ${lang === 'en' ? 'entities without evidence inside the window' : 'Entitäten ohne Beleg im Fenster'} · ${f.undatedCount} ${lang === 'en' ? 'undated' : 'ohne Datum'}`);
+    if (f.stale.length) lines.push(`  - ${f.stale.map(entity => `${clean(entity.label)} (${entity.last})`).join(', ')}`);
+  }
+  if (input.conflicts) {
+    lines.push('', `## ${text.conflicts}`, '');
+    if (!input.conflicts.length) lines.push(`- ${text.conflictsNone}`);
+    for (const conflict of input.conflicts) {
+      lines.push(`- ${clean(conflict.labels[0])} ↔ ${clean(conflict.labels[1])} — ${conflict.kind}`);
+      for (const claim of conflict.claims) lines.push(`  - ${clean(claim.type)}: ${claim.documents} ${lang === 'en' ? 'doc(s)' : 'Beleg(e)'}${claim.first ? ` · ${claim.first}${claim.last && claim.last !== claim.first ? ` → ${claim.last}` : ''}` : ''}`);
+    }
   }
   if (input.timeline?.length) {
     lines.push('', `## ${text.timeline}`, '');

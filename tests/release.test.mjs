@@ -362,3 +362,19 @@ test('wave 20: the source registry and outlet filter stay deterministic and hone
   assert.ok(dashboard.includes("t('dash.registryUnnamed')"), 'documents without a source are named, not dropped');
   assert.ok(dashboard.includes("t('dash.registryClear')"), 'the outlet filter can always be undone');
 });
+
+test('wave 21: contradictions and currency are judged, never guessed', () => {
+  const data = read('apps/web/app/dashboard/graph-data.ts');
+  assert.match(data, /export function pairConflicts\(nodes: GraphNode\[\], edges: GraphEdge\[\], evidence: Evidence\[\], limit = 8\): PairConflict\[\]/, 'conflict detection is pure and bounded');
+  assert.match(data, /const overlapping = claims\.some/, 'overlap decides between conflict and development');
+  assert.match(data, /export function monthsBefore\(reference: string, months: number\): string \| null/, 'date arithmetic is a testable pure helper');
+  assert.match(data, /export function evidenceFreshness\(nodes: GraphNode\[\], evidence: Evidence\[\], reference: string, months = 12, limit = 8\): Freshness \| null/, 'freshness takes its reference date from outside');
+  assert.doesNotMatch(data.match(/export function evidenceFreshness[\s\S]*?\n}/)?.[0] ?? '', /Date\.now/, 'no hidden clock in the analysis');
+  const worker = read('apps/web/app/dashboard/graph.worker.ts');
+  assert.match(worker, /const conflicts = pairConflicts\(filtered\.nodes, filtered\.edges, dataset\.evidence\)/, 'conflicts run on the visible slice');
+  assert.match(worker, /evidenceFreshness\(filtered\.nodes, dataset\.evidence, new Date\(\)\.toISOString\(\)\.slice\(0, 10\)\)/, 'the UI passes today as a plain day');
+  const dashboard = read('apps/web/app/dashboard/Dashboard.tsx');
+  assert.ok(dashboard.includes("t('dash.conflictText')"), 'the conflict panel explains development vs contradiction');
+  assert.ok(dashboard.includes("t('dash.freshText',"), 'the currency panel explains unknown-is-not-old');
+  assert.ok(dashboard.includes("t('dash.freshNone')"), 'a current case is stated positively');
+});

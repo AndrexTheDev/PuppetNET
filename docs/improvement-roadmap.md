@@ -486,6 +486,33 @@ Register-Panel + Quellenfilter (DE/EN, Statuszeile, Aufheben), token-only CSS, 2
 Datenlagen-Tests (dashboard 47) + 1 neuer Release-Pin (release 26) — `ci:pages` grün,
 0 zusätzliche Actions-Minuten.
 
+### Welle 21 — Widersprüche & Aktualität — ✅ umgesetzt (2026-10-21)
+
+- **Widersprüchliche Aussagen**: Trägt dasselbe Entitätenpaar mehrere Beziehungstypen,
+  wird das nicht pauschal als Widerspruch verkauft. Jeder Typ bekommt sein belegtes
+  Zeitfenster, und erst der Vergleich entscheidet:
+  **„Widerspruch"** (Fenster überlappen — beide Aussagen gelten im selben Zeitraum,
+  das braucht eine Entscheidung), **„Entwicklung"** (Fenster getrennt — z. B. erst
+  Eigentum 2020, später Verkauf 2021: eine Geschichte, kein Streit) und
+  **„nicht bewertbar"** (mindestens eine Seite ohne Datum). Gleicher Typ aus mehreren
+  Quellen ist Korroboration und erscheint gar nicht erst.
+- **Aktualität der Belege**: Wie alt ist das, worauf die Aussagen beruhen? Je Entität
+  wird das jüngste Dokument gegen ein Fenster (Standard 12 Monate) geprüft; das
+  Referenzdatum wird von außen übergeben, damit das Ergebnis reproduzierbar ist.
+  Entitäten **ohne jede Datumsangabe** werden getrennt gezählt — „unbekannt" ist nicht
+  „alt". Die Monatsarithmetik klemmt den Tag (31.01. minus 1 Monat = 31.12., 31.03. =
+  28.02., Schaltjahre echt), LoD-Gruppen sind keine Entitäten.
+- Beide Abschnitte wandern in den **Fallbericht** (DE/EN): eine Fallakte, die
+  Widersprüche und veraltete Belege verschweigt, wäre unvollständig.
+
+**Geliefert (Welle 21)**: `pairConflicts()` + `evidenceFreshness()` + `monthsBefore()`
+(reine, getestete Funktionen), `View.conflicts` + `View.freshness` aus dem Worker,
+Widerspruchs- und Aktualitäts-Panel (DE/EN, Farbcodierung nach Art, fokussierbare
+Entitäten), Berichtsabschnitte, token-only CSS, 2 neue Datenlagen-Tests (dashboard 49) +
+1 neuer Release-Pin (release 27) — `ci:pages` grün, 0 zusätzliche Actions-Minuten.
+Der i18n-Paritätstest hat dabei einen echten Platzhalter-Fehler (`{entity}`/`{label}`)
+vor dem Commit gefangen.
+
 ## 4. Budget-Zusammenfassung
 
 | Welle | Ort | Zusätzliche Actions-Minuten | Status |
@@ -510,6 +537,7 @@ Datenlagen-Tests (dashboard 47) + 1 neuer Release-Pin (release 26) — `ci:pages
 | 18 Belegqualität/gemeinsame Belege | Browser/Web Worker | **0** | ✅ umgesetzt |
 | 19 Quellen-Filter | Browser/Worker | **0** | ✅ umgesetzt |
 | 20 Quellen-Register | Browser/Worker | **0** | ✅ umgesetzt |
+| 21 Widersprüche/Aktualität | Browser/Worker | **0** | ✅ umgesetzt |
 
 Kein Schritt erzeugt neue Workflows, neue Cron-Jobs, längere Jobs oder bezahlte
 Dienste. Die einzigen verbrauchsrelevanten Grenzen sind die bestehenden: 3
@@ -986,6 +1014,30 @@ document ids), `Filters.outlet`, `View.sourceRegistry`, registry panel + outlet 
 (DE/EN, status line, undo), token-only CSS, 2 new data-layer tests (dashboard 47) +
 1 new release pin (release 26) — `ci:pages` green, 0 extra Actions minutes.
 
+### Wave 21 — contradictions & currency — ✅ implemented (2026-10-21)
+
+- **Conflicting claims**: when one entity pair carries several relationship types, that
+  is not sold as a blanket contradiction. Every type gets its documented window and the
+  comparison decides: **"conflict"** (windows overlap — both claims hold in the same
+  period, a decision is needed), **"development"** (windows separate — ownership in 2020,
+  sale in 2021 is a story, not a dispute) and **"cannot be assessed"** (at least one side
+  undated). The same type from several sources is corroboration and does not appear.
+- **Currency of the evidence**: how old is what the claims rest on? Per entity the newest
+  document is compared against a window (12 months by default); the reference date is
+  passed in so the result is reproducible. Entities **without any date** are counted
+  separately — "unknown" is not "old". Month arithmetic clamps the day of month
+  (31 Jan minus one month = 31 Dec, 31 Mar = 28 Feb, real leap years), LoD groups are not
+  entities.
+- Both sections travel into the **case report** (DE/EN): a case file that hides
+  contradictions and stale evidence would be incomplete.
+
+**Delivered (Wave 21)**: `pairConflicts()` + `evidenceFreshness()` + `monthsBefore()`
+(pure, tested functions), `View.conflicts` + `View.freshness` from the worker, conflict
+and currency panels (DE/EN, kind-based colouring, focusable entities), report sections,
+token-only CSS, 2 new data-layer tests (dashboard 49) + 1 new release pin (release 27) —
+`ci:pages` green, 0 extra Actions minutes. The i18n parity test caught a real
+placeholder mismatch (`{entity}`/`{label}`) before the commit.
+
 ## 4. Budget summary
 
 | Wave | Location | Additional Actions minutes | Status |
@@ -1010,6 +1062,7 @@ document ids), `Filters.outlet`, `View.sourceRegistry`, registry panel + outlet 
 | 18 evidence quality/shared documents | browser/web worker | **0** | ✅ implemented |
 | 19 evidence-quality filter | browser/worker | **0** | ✅ implemented |
 | 20 source registry | browser/worker | **0** | ✅ implemented |
+| 21 contradictions/currency | browser/worker | **0** | ✅ implemented |
 
 No step creates new workflows, new cron jobs, longer jobs or paid services. The only
 consumption-relevant limits remain the existing ones: 3 reservations/UTC day, 5-minute

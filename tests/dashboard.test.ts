@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
-import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, monthWindow, bundleEdges, structuralVulnerability, pathTimeline, normalizeNote, readNotes, caseReport, nextPlaybackMonth, evidenceWindow, compareDuplicates, multiFailureImpact, normalizeSavedName, readSavedViews, upsertSavedView, removeSavedView, evidenceToCSV, parseCaseNotes, mergeNotes, searchNoteIndex, caseBundle, readCaseBundle, provenanceGaps, edgeSources, sharedSourceGroups, normalizeEvidence, edgeSourceStatus, sourceRegistry, SAVED_VIEW_LIMIT, NOTE_LIMIT, EGO_DEPTH_LIMIT, VULNERABILITY_NODE_LIMIT, normalizeInsights, ANALYSIS_LIMITS, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
+import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, monthWindow, bundleEdges, structuralVulnerability, pathTimeline, normalizeNote, readNotes, caseReport, nextPlaybackMonth, evidenceWindow, compareDuplicates, multiFailureImpact, normalizeSavedName, readSavedViews, upsertSavedView, removeSavedView, evidenceToCSV, parseCaseNotes, mergeNotes, searchNoteIndex, caseBundle, readCaseBundle, provenanceGaps, edgeSources, sharedSourceGroups, normalizeEvidence, edgeSourceStatus, sourceRegistry, pairConflicts, evidenceFreshness, monthsBefore, SAVED_VIEW_LIMIT, NOTE_LIMIT, EGO_DEPTH_LIMIT, VULNERABILITY_NODE_LIMIT, normalizeInsights, ANALYSIS_LIMITS, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
 import { apiBase, readResponse } from '../apps/web/app/dashboard/api';
 const filters: Filters = { confidence: 0, weight: 0, types: [...TYPES], lod: true, ratio: 1 };
 test('normalizes Worker and Graphology nodes without inventing coordinates', () => {
@@ -901,4 +901,77 @@ test('wave 20 outlet filter shows one source and nothing else', () => {
   assert.equal(encodeViewState({ outlet: 'Presse' }), 'outlet=Presse');
   assert.equal(decodeViewState('?outlet=Presse').outlet, 'Presse');
   assert.equal(decodeViewState(`?outlet=${'x'.repeat(200)}`).outlet, undefined, 'oversized outlet names are ignored');
+});
+
+test('wave 21 conflicting claims separate contradictions from developments', () => {
+  const data = normalizeDataset({
+    nodes: [{ key: 'a', name: 'Alpha' }, { key: 'b', name: 'Beta' }, { key: 'c', name: 'Gamma' }, { key: 'd', name: 'Delta' }, { key: 'e', name: 'Epsilon' }],
+    evidence: [
+      { id: 'old', title: 'R', source: 'HR', date: '2020-01-10' },
+      { id: 'new', title: 'A', source: 'Presse', date: '2021-06-01' },
+      { id: 'late', title: 'B', source: 'Presse', date: '2023-02-01' },
+      { id: 'late2', title: 'B2', source: 'Blog', date: '2023-04-01' },
+      { id: 'mid', title: 'C', source: 'Blog', date: '2023-03-01' },
+    ],
+    edges: [
+      { source: 'a', target: 'b', type: 'OWNS', evidenceIds: ['old'] },
+      { source: 'b', target: 'a', type: 'SOLD', evidenceIds: ['new'] },
+      { source: 'c', target: 'd', type: 'OWNS', evidenceIds: ['late', 'late2'] },
+      { source: 'd', target: 'c', type: 'DISPUTED', evidenceIds: ['mid'] },
+      { source: 'e', target: 'a', type: 'OWNS', evidenceIds: ['mid'] },
+      { source: 'a', target: 'e', type: 'MET', evidenceIds: [] },
+    ],
+  });
+  const conflicts = pairConflicts(data.nodes, data.edges, data.evidence);
+  assert.deepEqual(conflicts.map(entry => [entry.pair.join('|'), entry.kind]), [
+    ['c|d', 'conflict'],
+    ['a|b', 'sequence'],
+    ['a|e', 'undated'],
+  ], 'contradictions first, then developments, then the undatable');
+  assert.deepEqual(conflicts[0].claims.map(claim => [claim.type, claim.documents, claim.sources]), [['DISPUTED', 1, 1], ['OWNS', 2, 2]],
+    'the OWNS window 02-01 → 04-01 encloses the DISPUTED day, so both claims cover the same period');
+  assert.equal(conflicts[1].claims[0].first, '2020-01-10', 'the window travels with the claim');
+  assert.deepEqual(conflicts[1].labels, ['Alpha', 'Beta'], 'labels resolve, direction is ignored');
+  const same = normalizeDataset({
+    nodes: [{ key: 'x', name: 'X' }, { key: 'y', name: 'Y' }],
+    evidence: [{ id: 'd1', title: 'R', source: 'HR', date: '2024-01-01' }, { id: 'd2', title: 'A', source: 'Presse', date: '2024-02-01' }],
+    edges: [{ source: 'x', target: 'y', type: 'OWNS', evidenceIds: ['d1'] }, { source: 'y', target: 'x', type: 'OWNS', evidenceIds: ['d2'] }],
+  });
+  assert.deepEqual(pairConflicts(same.nodes, same.edges, same.evidence), [], 'the same type from two sources is corroboration, not a conflict');
+  assert.equal(pairConflicts(data.nodes, data.edges, data.evidence, 1).length, 1, 'the list is bounded');
+  assert.deepEqual(pairConflicts(data.nodes, data.edges, data.evidence), conflicts, 'deterministic');
+});
+
+test('wave 21 evidence currency separates old from unknown', () => {
+  assert.equal(monthsBefore('2026-01-31', 1), '2025-12-31', 'the day of month is clamped, never rolled over');
+  assert.equal(monthsBefore('2026-03-31', 1), '2026-02-28');
+  assert.equal(monthsBefore('2024-03-31', 1), '2024-02-29', 'leap years are real');
+  assert.equal(monthsBefore('2026-10-21', 12), '2025-10-21');
+  assert.equal(monthsBefore('kein Datum', 2), null);
+  const data = normalizeDataset({
+    nodes: [
+      { key: 'old', name: 'Old', evidenceIds: ['d1'] },
+      { key: 'fresh', name: 'Fresh', evidenceIds: ['d2'] },
+      { key: 'undated', name: 'Undated', evidenceIds: ['d3'] },
+      { key: 'nothing', name: 'Nothing' },
+    ],
+    evidence: [
+      { id: 'd1', title: 'A', date: '2020-01-10' },
+      { id: 'd2', title: 'B', date: '2026-05-01' },
+      { id: 'd3', title: 'C' },
+    ],
+    edges: [],
+  });
+  const freshness = evidenceFreshness(data.nodes, data.evidence, '2026-10-21');
+  assert.deepEqual([freshness?.reference, freshness?.months], ['2026-10-21', 12]);
+  assert.deepEqual([freshness?.staleCount, freshness?.undatedCount, freshness?.entities], [1, 2, 4]);
+  assert.deepEqual(freshness?.stale.map(entry => [entry.id, entry.last]), [['old', '2020-01-10']]);
+  assert.equal(freshness?.stale[0].label, 'Old');
+  assert.deepEqual(evidenceFreshness(data.nodes, data.evidence, '2026-10-21'), freshness, 'deterministic');
+  assert.equal(evidenceFreshness(data.nodes, data.evidence, 'junk'), null, 'an unusable reference is null, not a silent default');
+  const recent = evidenceFreshness(data.nodes, data.evidence, '2026-10-21', 120);
+  assert.equal(recent?.staleCount, 0, 'a wider window counts nothing as stale');
+  assert.equal(evidenceFreshness([], [], '2026-10-21')?.entities, 0);
+  const grouped = [{ ...data.nodes[0], id: 'group:x', group: true, evidenceIds: ['d1'] }, ...data.nodes];
+  assert.equal(evidenceFreshness(grouped, data.evidence, '2026-10-21')?.entities, 4, 'LoD display groups are not entities');
 });

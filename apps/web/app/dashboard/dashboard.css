@@ -212,3 +212,14 @@
 .registry-name{font-weight:600;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .registry-counts{font-size:.8em;opacity:.8;font-variant-numeric:tabular-nums}
 .registry-window{grid-column:1/-1;font-size:.75em;opacity:.65;font-variant-numeric:tabular-nums}
+
+/* Wave 21: conflicting claims + evidence currency (token-only) */
+.conflict-panel,.fresh-panel{margin-top:var(--space-3,1rem);border-top:1px solid var(--line);padding-top:var(--space-2,0.5rem)}
+.conflict-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:var(--space-2,0.5rem)}
+.conflict-list li{display:flex;flex-direction:column;gap:0.15rem;border-left:2px solid var(--line);padding-left:var(--space-2,0.5rem)}
+.conflict-list li.conflict-conflict{border-left-color:var(--color-danger)}
+.conflict-list li.conflict-sequence{border-left-color:var(--color-green-muted)}
+.conflict-list li.conflict-undated{border-left-color:var(--color-gold)}
+.conflict-pair{font-weight:600;overflow-wrap:anywhere}
+.conflict-kind{font-size:.8em;opacity:.8}
+.conflict-claims{list-style:none;margin:0;padding:0;font-size:.8em;opacity:.85;display:flex;flex-direction:column;gap:0.1rem;font-variant-numeric:tabular-nums}
