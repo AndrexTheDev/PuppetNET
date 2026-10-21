@@ -26,6 +26,7 @@
     "emit:sitemap": "node scripts/generate-sitemap.mjs",
     "test:seo": "node --import tsx --test tests/seo.test.ts",
     "test:a11y": "node --import tsx --test tests/a11y.test.tsx",
+    "test:i18n": "node --import tsx --test tests/i18n.test.tsx",
     "deploy:pages": "npm exec --workspace=@puppetnet/worker -- wrangler pages deploy --cwd ../web",
     "test:worker:legacy": "node tests/worker_smoke.mjs && node tests/worker_hardening.mjs",
     "test:data-fetcher": "node --import tsx --test tests/data_fetcher.test.ts"

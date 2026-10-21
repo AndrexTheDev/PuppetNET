@@ -51,6 +51,187 @@ def test_export_is_stable_and_stale_files_removed(tmp_path):
     assert json.loads((tmp_path / "graph_latest.json").read_text())["edges"] == []
 
 
+def analytics_graph():
+    """Two disconnected triangles: deterministic communities, degrees and dates."""
+    return {"nodes": [
+        {"id": "person:a", "name": "Anna", "type": "Person", "public": True,
+         "doc_ids": ["doc:2", "doc:1"]},
+        {"id": "org:b", "name": "Beta GmbH", "type": "Organization", "public": True},
+        {"id": "org:c", "name": "Centaur AG", "type": "Organization", "public": True},
+        {"id": "loc:d", "name": "Davos", "type": "Location", "public": True},
+        {"id": "loc:e", "name": "Engadin", "type": "Location", "public": True},
+        {"id": "loc:f", "name": "Flims", "type": "Location", "public": True},
+    ], "edges": [
+        {"source": "person:a", "target": "org:b", "type": "FOUNDED", "public": True},
+        {"source": "person:a", "target": "org:c", "type": "OWNS", "public": True},
+        {"source": "org:b", "target": "org:c", "type": "ASSOCIATED_WITH", "public": True},
+        {"source": "loc:d", "target": "loc:e", "type": "ASSOCIATED_WITH", "public": True},
+        {"source": "loc:e", "target": "loc:f", "type": "ASSOCIATED_WITH", "public": True},
+        {"source": "loc:f", "target": "loc:d", "type": "ASSOCIATED_WITH", "public": True},
+    ], "evidence": [
+        {"id": "doc:1", "title": "Register", "public": True, "date": "2026-03-01T10:00:00Z"},
+        {"id": "doc:2", "title": "Bericht", "public": True, "date": "2026-01-15"},
+        {"id": "doc:bad", "title": "Ohne Datum", "public": True, "date": "unknown"},
+    ]}
+
+
+def test_export_analytics_communities_degrees_and_temporal_spans(tmp_path):
+    data = export_slices(analytics_graph(), tmp_path)
+    by_id = {node["id"]: node for node in data["nodes"]}
+    analytics = data["analytics"]
+    # Two disconnected triangles => exactly two communities, stable naming.
+    assert analytics["communities"] == 2
+    assert analytics["largestCommunity"] == 3
+    assert {by_id["person:a"]["community"], by_id["loc:d"]["community"]} == {"c000", "c001"}
+    assert by_id["org:b"]["community"] == by_id["person:a"]["community"]
+    assert by_id["loc:e"]["community"] == by_id["loc:d"]["community"]
+    # Undirected degrees over published edges only.
+    assert by_id["person:a"]["degree"] == 2
+    assert by_id["org:b"]["degree"] == 2
+    # PageRank: normalized, positive, hub list sorted by rank descending.
+    assert abs(sum(node["rank"] for node in data["nodes"]) - 1.0) < 1e-3
+    assert all(node["rank"] > 0 for node in data["nodes"])
+    ranks = [hub["rank"] for hub in analytics["hubs"]]
+    assert ranks == sorted(ranks, reverse=True) and len(analytics["hubs"]) == 6
+    assert analytics["nodes"] == 6 and analytics["edges"] == 6
+    assert analytics["density"] == round(6 / 30, 6)
+    # Temporal spans aggregate ISO dates of published evidence only.
+    assert by_id["person:a"]["firstSeen"] == "2026-01-15"
+    assert by_id["person:a"]["lastSeen"] == "2026-03-01"
+    assert "firstSeen" not in by_id["loc:d"] and "lastSeen" not in by_id["loc:d"]
+    assert analytics["temporalRange"] == {"first": "2026-01-15", "last": "2026-03-01"}
+    # Entity slices inherit the enrichment.
+    entity_files = list((tmp_path / "entities").glob("*.json"))
+    assert len(entity_files) == 6
+    assert all("rank" in json.loads(path.read_text())["entity"] for path in entity_files)
+
+
+def test_export_analytics_are_deterministic_and_handle_empty_graphs(tmp_path):
+    first = export_slices(analytics_graph(), tmp_path)
+    second_dir = tmp_path / "again"
+    second = export_slices(analytics_graph(), second_dir)
+    assert first == second  # stable revision digest requires reproducible analytics
+    assert (tmp_path / "graph_latest.json").read_bytes() == (second_dir / "graph_latest.json").read_bytes()
+    empty = export_slices({"nodes": [], "edges": []}, tmp_path / "empty", allow_empty=True)
+    assert empty["analytics"] == {"version": 1, "nodes": 0, "edges": 0, "communities": 0,
+                                  "largestCommunity": 0, "density": 0.0, "hubs": []}
+
+
+def test_export_analytics_scale_is_bounded(tmp_path):
+    import time
+    count = 1500
+    nodes = [{"id": f"org:{i}", "name": f"Org {i}", "type": "Organization", "public": True}
+             for i in range(count)]
+    edges = [{"source": f"org:{i}", "target": f"org:{(i * 7 + 1) % count}", "type": "ASSOCIATED_WITH",
+              "public": True} for i in range(count)]
+    edges += [{"source": f"org:{i}", "target": f"org:{(i + 1) % count}", "type": "ASSOCIATED_WITH",
+               "public": True} for i in range(count)]
+    started = time.monotonic()
+    data = export_slices({"nodes": nodes, "edges": edges, "evidence": []}, tmp_path)
+    assert time.monotonic() - started < 10  # export budget is 45s; analytics stay far below
+    assert data["analytics"]["nodes"] == count
+    assert all("rank" in node and "community" in node and "degree" in node for node in data["nodes"])
+
+
+def insights_graph():
+    """One pattern per Wave-4 correlation rule; ids chosen so export LPA stays empirically stable."""
+    nodes = [
+        {"id": "person:p", "name": "Proxy Person", "type": "Person", "public": True},
+        {"id": "org:m", "name": "Mittler AG", "type": "Organization", "public": True},
+        {"id": "org:t", "name": "Target Ltd", "type": "Organization", "public": True},
+        {"id": "person:o", "name": "Officer Person", "type": "Person", "public": True},
+        {"id": "org:x", "name": "X GmbH", "type": "Organization", "public": True},
+        {"id": "org:y", "name": "Y GmbH", "type": "Organization", "public": True},
+        {"id": "org:h1", "name": "Stern Hub AG", "type": "Organization", "public": True},
+    ]
+    edges = [
+        {"source": "person:p", "target": "org:m", "type": "NOMINEE_OF", "public": True, "confidence": .8},
+        {"source": "org:m", "target": "org:t", "type": "OWNS", "public": True, "confidence": .9},
+        {"source": "person:o", "target": "org:x", "type": "OFFICER_OF", "public": True, "confidence": .9},
+        {"source": "person:o", "target": "org:y", "type": "DIRECTOR_OF", "public": True, "confidence": .9},
+        {"source": "org:x", "target": "org:y", "type": "CONTRACTED_WITH", "public": True, "confidence": .8},
+    ]
+    for i in range(8):  # star: hub with eight unconnected spokes
+        nodes.append({"id": f"org:h1-s{i}", "name": f"Spoke {i}", "type": "Organization", "public": True})
+        edges.append({"source": "org:h1", "target": f"org:h1-s{i}", "type": "ASSOCIATED_WITH", "public": True, "confidence": .8})
+    for side in ("aa", "bb"):  # bridge: two 4-cliques joined by exactly one edge
+        keys = [f"org:{side}-{j}" for j in range(4)]
+        nodes += [{"id": key, "name": key, "type": "Organization", "public": True} for key in keys]
+        edges += [{"source": a, "target": b, "type": "ASSOCIATED_WITH", "public": True, "confidence": .8}
+                  for index, a in enumerate(keys) for b in keys[index + 1:]]
+    edges.append({"source": "org:aa-0", "target": "org:bb-0", "type": "ASSOCIATED_WITH", "public": True, "confidence": .85})
+    return {"nodes": nodes, "edges": edges, "evidence": []}
+
+
+def test_export_insights_find_one_pattern_per_rule_family(tmp_path):
+    data = export_slices(insights_graph(), tmp_path)
+    insights = data["insights"]
+    assert insights["version"] == 1
+    assert insights["rules"] == {"nominee-chain": 1, "hub-spoke": 1, "community-bridge": 1, "shared-officer": 1}
+    items = insights["items"]
+    assert sorted(item["rule"] for item in items) == ["community-bridge", "hub-spoke", "nominee-chain", "shared-officer"]
+    edge_ids = {edge["id"] for edge in data["edges"]}
+    node_ids = {node["id"] for node in data["nodes"]}
+    for item in items:
+        assert item["title"] and item["description"] and 0 <= item["support"] <= 1
+        assert all(reference in edge_ids for reference in item["evidence"]), "insights must cite real edges"
+        assert all(entity["id"] in node_ids and entity["name"] for entity in item["entities"])
+    chain = next(item for item in items if item["rule"] == "nominee-chain")
+    assert [entity["id"] for entity in chain["entities"]] == ["person:p", "org:m", "org:t"]
+    assert "Strohmann" in chain["description"] and len(chain["evidence"]) == 2
+    officer = next(item for item in items if item["rule"] == "shared-officer")
+    assert len(officer["evidence"]) == 3
+    hub = next(item for item in items if item["rule"] == "hub-spoke")
+    assert hub["entities"][0]["id"] == "org:h1" and len(hub["entities"]) == 5
+    assert hub["evidence"] == []
+
+
+def test_export_insights_are_deterministic_and_absent_without_patterns(tmp_path):
+    first = export_slices(insights_graph(), tmp_path / "a")
+    second = export_slices(insights_graph(), tmp_path / "b")
+    assert first["insights"] == second["insights"]
+    assert first["revision"] == second["revision"]
+    plain = export_slices(analytics_graph(), tmp_path / "plain")
+    assert "insights" not in plain, "graphs without patterns stay byte-identical to pre-Wave-4 exports"
+    empty = export_slices({"nodes": [], "edges": []}, tmp_path / "empty", allow_empty=True)
+    assert "insights" not in empty
+
+
+def test_export_insights_stay_bounded_under_a_flood_of_patterns(tmp_path):
+    from collections import Counter
+    nodes, edges = [], []
+    for i in range(10):  # ten nominee chains
+        nodes += [{"id": f"person:p{i}", "name": f"P{i}", "type": "Person", "public": True},
+                  {"id": f"org:m{i}", "name": f"M{i}", "type": "Organization", "public": True},
+                  {"id": f"org:t{i}", "name": f"T{i}", "type": "Organization", "public": True}]
+        edges += [{"source": f"person:p{i}", "target": f"org:m{i}", "type": "NOMINEE_OF", "public": True, "confidence": .8},
+                  {"source": f"org:m{i}", "target": f"org:t{i}", "type": "OWNS", "public": True, "confidence": .9}]
+    for i in range(10):  # ten shared-officer triples
+        nodes += [{"id": f"person:o{i}", "name": f"O{i}", "type": "Person", "public": True},
+                  {"id": f"org:x{i}", "name": f"X{i}", "type": "Organization", "public": True},
+                  {"id": f"org:y{i}", "name": f"Y{i}", "type": "Organization", "public": True}]
+        edges += [{"source": f"person:o{i}", "target": f"org:x{i}", "type": "OFFICER_OF", "public": True, "confidence": .9},
+                  {"source": f"person:o{i}", "target": f"org:y{i}", "type": "DIRECTOR_OF", "public": True, "confidence": .9},
+                  {"source": f"org:x{i}", "target": f"org:y{i}", "type": "OWNS", "public": True, "confidence": .8}]
+    for i in range(10):  # ten clique-pair bridges
+        for side in ("a", "b"):
+            keys = [f"org:{side}{i}-{j}" for j in range(4)]
+            nodes += [{"id": key, "name": key, "type": "Organization", "public": True} for key in keys]
+            edges += [{"source": a, "target": b, "type": "ASSOCIATED_WITH", "public": True, "confidence": .8}
+                      for index, a in enumerate(keys) for b in keys[index + 1:]]
+        edges += [{"source": f"org:a{i}-0", "target": f"org:b{i}-0", "type": "ASSOCIATED_WITH", "public": True, "confidence": .85}]
+    nodes.append({"id": "org:hub", "name": "HUB", "type": "Organization", "public": True})
+    for i in range(8):  # one star
+        nodes.append({"id": f"org:hub-s{i}", "name": f"S{i}", "type": "Organization", "public": True})
+        edges.append({"source": "org:hub", "target": f"org:hub-s{i}", "type": "ASSOCIATED_WITH", "public": True, "confidence": .8})
+    data = export_slices({"nodes": nodes, "edges": edges, "evidence": []}, tmp_path)
+    insights = data["insights"]
+    assert insights["rules"] == {"nominee-chain": 10, "hub-spoke": 1, "community-bridge": 10, "shared-officer": 10}
+    assert len(insights["items"]) == 24, "8 per rule and 24 overall, honest caps"
+    assert Counter(item["rule"] for item in insights["items"]) == Counter(
+        {"nominee-chain": 8, "hub-spoke": 1, "community-bridge": 8, "shared-officer": 7})
+
+
 def test_empty_refuses_to_erase_existing(tmp_path):
     export_slices(graph(), tmp_path)
     original = (tmp_path / "graph_latest.json").read_bytes()
@@ -87,14 +268,33 @@ def test_duplicate_node_rejected_and_limits_closed():
 
 def test_daily_quota_is_durable_and_shared(tmp_path):
     path = tmp_path / "budget.json"
+    # Two cron slots per UTC day guarantee the twice-daily publication ...
+    assert reserve_run(path, "schedule", "2026-10-19")
     assert reserve_run(path, "schedule", "2026-10-19")
     assert not reserve_run(path, "schedule", "2026-10-19")
+    # ... plus exactly one manual slot; afterwards the day is closed.
     assert reserve_run(path, "repository_dispatch", "2026-10-19")
-    assert not reserve_run(path, "repository_dispatch", "2026-10-19")
+    assert not reserve_run(path, "workflow_dispatch", "2026-10-19")
+    assert json.loads(path.read_text()) == {"day": "2026-10-19", "total": 3, "scheduled": 2, "manual": 1}
+    # A new UTC day replenishes; a corrupt ledger still fails closed.
     assert reserve_run(path, "schedule", "2026-10-20")
     path.write_text("CORRUPT")
     with pytest.raises(ValueError):
         reserve_run(path, "schedule")
+
+
+def test_daily_quota_accepts_legacy_two_total_ledger_and_rejects_manual_overflow(tmp_path):
+    path = tmp_path / "budget.json"
+    # Old policy shape (total 2 = 1 cron + 1 manual) stays valid: the second
+    # cron slot may still be taken, the manual slot is already spent.
+    path.write_text(json.dumps({"day": "2026-10-19", "total": 2, "scheduled": 1, "manual": 1}))
+    assert not reserve_run(path, "workflow_dispatch", "2026-10-19")
+    assert reserve_run(path, "schedule", "2026-10-19")
+    # A legacy ledger with 2 manual entries exceeds the new manual bound and
+    # fails closed instead of silently rebalancing.
+    path.write_text(json.dumps({"day": "2026-10-19", "total": 2, "scheduled": 0, "manual": 2}))
+    with pytest.raises(ValueError, match="Invalid"):
+        reserve_run(path, "schedule", "2026-10-19")
 
 
 def test_cleanup_removes_boilerplate_and_deduplicates():
@@ -245,13 +445,118 @@ def test_negation_cannot_be_sent_to_cloud():
     assert engine.parse_document(Document(doc_id="d1", source_id="s", url="", text="x")).relations == []
 
 
+def synthetic_nlp(words, heads, deps, pos, lemmas, ents):
+    """A dependency tree as a spaCy ``Doc`` — the offline stand-in for de_core_news_sm."""
+    import spacy
+    from spacy.tokens import Doc, Span
+    doc = Doc(spacy.blank("de").vocab, words=words, heads=heads, deps=deps, pos=pos, lemmas=lemmas)
+    doc.ents = [Span(doc, start, end, label=label) for start, end, label in ents]
+
+    class LocalNLP:
+        def has_pipe(self, name):
+            return True
+
+        def __call__(self, text):
+            return doc
+
+    return LocalNLP()
+
+
+class NeverCloud:
+    """Proves the Wave-4 German copula path never reaches the Gemini fallback."""
+    enabled = True
+
+    def classify(self, *args):
+        raise AssertionError("must not call cloud")
+
+
+def test_wave4_german_lexicons_stay_inside_the_closed_vocabulary():
+    from src.token_saver_nlp import KINSHIP_OR_CORPORATE, REVERSED_VERBS, ROLE_NOUNS, VERBS
+
+    from puppetnet.models import RelationType
+    names = set(RelationType.names())
+    assert all(predicate in names for predicate in VERBS.values())
+    assert all(predicate in names for predicate in REVERSED_VERBS.values())
+    assert all(predicate in names for predicate in ROLE_NOUNS.values())
+    for family, corporate in KINSHIP_OR_CORPORATE.values():
+        assert family in names and (not corporate or corporate in names)
+    assert len(VERBS) >= 30 and len(ROLE_NOUNS) >= 40, "Wave 4 promised substantial German lexicons"
+    assert VERBS["gründen"] == "FOUNDED" and REVERSED_VERBS["sanktionieren"] == "SANCTIONED_BY"
+
+
+def test_copula_role_noun_becomes_typed_officer_edge_without_cloud():
+    from puppetnet.models import Document
+    engine = TokenSaverEngine(nlp=synthetic_nlp(
+        ["Anna", "ist", "Geschäftsführerin", "der", "Acme", "GmbH"],
+        [1, 1, 1, 4, 1, 4], ["sb", "ROOT", "pd", "nk", "ag", "nk"],
+        ["PROPN", "AUX", "NOUN", "DET", "PROPN", "PROPN"],
+        ["Anna", "sein", "geschäftsführerin", "der", "Acme", "GmbH"],
+        [(0, 1, "PER"), (4, 6, "ORG")]), fallback=NeverCloud())
+    result = engine.parse_document(Document(doc_id="d1", source_id="s", url="", text="Anna ist Geschäftsführerin der Acme GmbH."))
+    assert [(r.subject.name, r.predicate.value, r.obj.name) for r in result.relations] == [("Anna", "OFFICER_OF", "Acme GmbH")]
+    relation = result.relations[0]
+    assert relation.extra["role"] == "geschäftsführerin"
+    assert relation.extra["public"] is False and relation.extra["requires_review"] is True
+
+
+def test_copula_von_pp_and_kinship_disambiguation_by_entity_type():
+    from puppetnet.models import Document
+    tree = ([1, 1, 1, 2, 3], ["sb", "ROOT", "pd", "op", "nk"],
+            ["PROPN", "AUX", "NOUN", "ADP", "PROPN"])
+
+    def parse(words, lemmas, ents):
+        heads, deps, pos = tree
+        engine = TokenSaverEngine(nlp=synthetic_nlp(words, heads, deps, pos, lemmas, ents), fallback=NeverCloud())
+        result = engine.parse_document(Document(doc_id="d1", source_id="s", url="", text="x"))
+        return [(r.subject.name, r.predicate.value, r.obj.name) for r in result.relations]
+
+    # Same grammar, two organisations: the corporate reading wins.
+    assert parse(["Scania", "ist", "Tochter", "von", "VW"],
+                 ["Scania", "sein", "tochter", "von", "VW"],
+                 [(0, 1, "ORG"), (4, 5, "ORG")]) == [("Scania", "SUBSIDIARY_OF", "VW")]
+    # Same grammar, two people: the family reading wins.
+    assert parse(["Anna", "ist", "Tochter", "von", "Maria"],
+                 ["Anna", "sein", "tochter", "von", "Maria"],
+                 [(0, 1, "PER"), (4, 5, "PER")]) == [("Anna", "FAMILY_OF", "Maria")]
+
+
+def test_copula_without_role_or_with_negation_yields_nothing_and_never_calls_cloud():
+    from puppetnet.models import Document
+    bare = TokenSaverEngine(nlp=synthetic_nlp(
+        ["Anna", "ist", "klug"], [1, 1, 1], ["sb", "ROOT", "pd"],
+        ["PROPN", "AUX", "ADJ"], ["Anna", "sein", "klug"], [(0, 1, "PER")]), fallback=NeverCloud())
+    assert bare.parse_document(Document(doc_id="d1", source_id="s", url="", text="x")).relations == []
+    negated = TokenSaverEngine(nlp=synthetic_nlp(
+        ["Anna", "ist", "nicht", "Geschäftsführerin", "der", "Acme", "GmbH"],
+        [1, 1, 1, 1, 6, 1, 6], ["sb", "ROOT", "adv", "pd", "nk", "ag", "nk"],
+        ["PROPN", "AUX", "ADV", "NOUN", "DET", "PROPN", "PROPN"],
+        ["Anna", "sein", "nicht", "geschäftsführerin", "der", "Acme", "GmbH"],
+        [(0, 1, "PER"), (5, 7, "ORG")]), fallback=NeverCloud())
+    assert negated.parse_document(Document(doc_id="d2", source_id="s", url="", text="x")).relations == []
+
+
+def test_german_reversed_and_direct_verbs_keep_canonical_direction():
+    from puppetnet.models import Document
+
+    def triples(words, lemmas, ents):
+        engine = TokenSaverEngine(nlp=synthetic_nlp(words, [1, 1, 1], ["sb", "ROOT", "oa"],
+                                                    ["PROPN", "VERB", "PROPN"], lemmas, ents), fallback=NeverCloud())
+        result = engine.parse_document(Document(doc_id="d", source_id="s", url="", text="x"))
+        return [(r.subject.name, r.predicate.value, r.obj.name) for r in result.relations]
+
+    orgs = [(0, 1, "ORG"), (2, 3, "ORG")]
+    assert triples(["USA", "sanktionieren", "Rosneft"], ["USA", "sanktionieren", "Rosneft"], orgs) == [("Rosneft", "SANCTIONED_BY", "USA")]
+    assert triples(["Siemens", "übernimmt", "Acme"], ["Siemens", "übernehmen", "Acme"], orgs) == [("Siemens", "ACQUIRED", "Acme")]
+
+
 def test_workflow_is_five_minutes_opt_in_serialized_and_no_payload_shell():
     root = Path(__file__).resolve().parents[1]
     text = (root / ".github/workflows/daily_ingestion.yml").read_text()
     data = yaml.safe_load(text)
     # YAML 1.1 treats 'on' as bool; GitHub uses YAML 1.2.
     triggers = data.get("on", data.get(True))
-    assert triggers["schedule"][0]["cron"] == "0 3 * * *"
+    # Two bounded cron runs per UTC day, twelve hours apart (since 2026-10-20).
+    assert [entry["cron"] for entry in triggers["schedule"]] == ["0 3 * * *", "0 15 * * *"]
     job = data["jobs"]["publish"]
     assert job["timeout-minutes"] == 5
     assert job["env"]["MAX_RUNTIME_SECONDS"] == "90"

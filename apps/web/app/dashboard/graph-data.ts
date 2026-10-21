@@ -4,25 +4,130 @@ export const TYPES = ['Person', 'Organization', 'Location', 'Craft', 'Document',
 export type EntityType = typeof TYPES[number];
 export const COLORS: Record<EntityType, string> = { Person: palette.green, Organization: palette.gold, Location: palette['green-muted'], Craft: palette.danger, Document: palette['gold-muted'], Other: palette.muted };
 export interface Evidence { id: string; title: string; url?: string; source?: string; date?: string }
+/** Wave-1 export analytics (deterministic, precomputed at publication time). */
+export interface GraphAnalytics {
+  version: number; nodes: number; edges: number; communities: number; largestCommunity: number;
+  density: number; hubs: { id: string; name: string; rank: number; degree: number }[];
+  temporalRange?: { first: string; last: string };
+}
+/** Wave-4 correlation insights: bounded deterministic rule hits from the export
+ *  (nominee chains, star structures, community bridges, shared officers).
+ *  Structural hints with edge-id evidence, never accusations. */
+export interface GraphInsight {
+  rule: string; version: number; title: string; description: string; support: number;
+  entities: { id: string; name: string; type?: string }[];
+  evidence: string[];
+}
 export interface GraphNode {
   id: string; label: string; type: EntityType; confidence: number; x: number; y: number;
   cluster: string; lat?: number; lon?: number; evidenceIds: string[];
   count?: number; examples?: string[]; internalEdges?: number; group?: boolean;
+  degree?: number; rank?: number; community?: string; firstSeen?: string; lastSeen?: string;
 }
-export interface GraphEdge { id: string; source: string; target: string; type: string; confidence: number; weight: number; evidenceIds: string[]; count?: number }
-export interface Dataset { nodes: GraphNode[]; edges: GraphEdge[]; evidence: Evidence[]; truncated?: boolean }
-export interface Filters { confidence: number; weight: number; types: EntityType[]; lod: boolean; ratio: number }
+export interface GraphEdge { id: string; source: string; target: string; type: string; confidence: number; weight: number; evidenceIds: string[]; count?: number; types?: string[] }
+export interface Dataset { nodes: GraphNode[]; edges: GraphEdge[]; evidence: Evidence[]; truncated?: boolean; analytics?: GraphAnalytics; insights?: GraphInsight[] }
+export interface Filters { confidence: number; weight: number; types: EntityType[]; lod: boolean; ratio: number; community?: string; from?: string; to?: string; bundle?: boolean; sources?: SourceFilter; outlet?: string; fresh?: FreshWindow; dispute?: boolean; weak?: boolean }
+export interface Vulnerability {
+  cutVertices: { id: string; label: string; degree: number; impact: { components: number; largest: number } }[];
+  cutEdges: number;
+  maxCore: number;
+  maxCoreSize: number;
+}
+/** Wave 17: provenance coverage of the visible slice — the methodology rule
+ * "high-confidence links need two independent sources" made checkable. */
+export interface ProvenanceGaps {
+  nodes: number; nodesBacked: number;
+  edges: number; edgesBacked: number;
+  /** High-confidence relationships documented by a single source. */
+  singleSource: { id: string; source: string; target: string; type: string; confidence: number; evidence: number }[];
+  /** Entities without any backing document. */
+  unbacked: { id: string; label: string; type: EntityType }[];
+  singleSourceCount: number;
+  unbackedNodeCount: number;
+}
+/** Wave 10: one hop of a link chain with the documented window of the
+ * relationship(s) connecting its two nodes. `ordered` is false when the hop is
+ * documented entirely before the previous hop began — an anachronism that needs
+ * an explanation instead of a hunch. */
+export interface PathTimelineHop {
+  from: string; to: string; type: string;
+  first?: string; last?: string;
+  evidence: number;
+  ordered: boolean;
+}
+export interface PathTimeline { hops: PathTimelineHop[]; first?: string; last?: string; anachronisms: number }
 export interface MapPoint { id: string; lat: number; lon: number; count: number; label: string; exampleId: string }
 export interface View {
   version: number; nodes: GraphNode[]; edges: GraphEdge[]; mapPoints: MapPoint[];
   stats: { totalNodes: number; totalEdges: number; filteredNodes: number; filteredEdges: number; locatedNodes: number; grouped: boolean; level: string; focused: boolean; truncated: boolean };
+  analytics?: GraphAnalytics;
+  insights?: GraphInsight[];
+  /** Wave 7: first mentions per month in the filtered slice (deterministic buckets). */
+  timeline?: { month: string; count: number }[];
+  /** Wave 8: entity-resolution hints — same normalized label, different ids. */
+  duplicates?: { label: string; ids: string[]; sameType: boolean }[];
+  /** Wave 9: articulation points, bridges and the k-core nucleus. */
+  vulnerability?: Vulnerability;
+  /** Wave 17: provenance coverage and the gaps behind the visible claims. */
+  gaps?: ProvenanceGaps;
+  /** Wave 18: documents that back several visible entities at once. */
+  sharedSources?: SharedSourceGroup[];
+  /** Wave 20: which outlets carry the visible slice and how much of it. */
+  sourceRegistry?: SourceRegistryEntry[];
+  /** Wave 21: same pair, different relationship types — conflict or change over time. */
+  conflicts?: PairConflict[];
+  /** Wave 21: how current the documented evidence behind the slice is. */
+  freshness?: Freshness;
+  /** Wave 23: which claims are thin and/or old — the follow-up list. */
+  risk?: RiskReport;
+  /** Wave 32: who reported a relationship first. */
+  primacy?: PrimacyReport;
+  /** Wave 33: what each source is worth in context. */
+  scorecard?: SourceScorecardReport;
 }
 export const LIMITS = { nodes: 200_000, edges: 500_000, bytes: 64 * 1024 * 1024 };
 const record = (v: unknown): Record<string, unknown> => v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {};
 const text = (v: unknown, max = 500) => typeof v === 'string' || typeof v === 'number' ? String(v).slice(0, max) : '';
 const score = (v: unknown) => v === null || v === '' || !Number.isFinite(Number(v)) ? 0 : Math.max(0, Math.min(1, Number(v)));
 const ids = (v: unknown) => Array.isArray(v) ? v.slice(0, 200).map(x => text(x)).filter(Boolean) : [];
+const isoDate = (v: unknown): string | undefined => { const s = text(v, 40); return /^\d{4}-\d{2}-\d{2}/.test(s) ? s.slice(0, 10) : undefined; };
+const optInt = (v: unknown): number | undefined => v === null || v === '' || v === undefined ? undefined : Number.isFinite(Number(v)) && Number(v) >= 0 ? Math.trunc(Number(v)) : undefined;
 export function hash(value: string): number { let n = 2166136261; for (let i = 0; i < value.length; i++) n = Math.imul(n ^ value.charCodeAt(i), 16777619); return n >>> 0; }
+/** Deterministic community colour: stable hue per community id, no palette file needed. */
+export function communityColor(community: string): string { return `hsl(${hash(community) % 360} 58% 58%)`; }
+/** Validates the optional Wave-1 `analytics` block; anything malformed is dropped, never trusted. */
+export function normalizeAnalytics(value: unknown): GraphAnalytics | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const a = record(value);
+  const num = (v: unknown) => Number.isFinite(Number(v)) && Number(v) >= 0 ? Math.trunc(Number(v)) : 0;
+  const hubs = (Array.isArray(a.hubs) ? a.hubs : []).slice(0, 10).map(item => {
+    const h = record(item);
+    return { id: text(h.id, 200), name: text(h.name, 200), rank: score(h.rank), degree: num(h.degree) };
+  }).filter(h => h.id);
+  const out: GraphAnalytics = { version: num(a.version) || 1, nodes: num(a.nodes), edges: num(a.edges),
+    communities: num(a.communities), largestCommunity: num(a.largestCommunity), density: score(a.density), hubs };
+  const range = record(a.temporalRange), first = isoDate(range.first), last = isoDate(range.last);
+  if (first && last) out.temporalRange = { first, last };
+  return out;
+}
+/** Validates the optional Wave-4 `insights` block; malformed items are dropped. */
+export function normalizeInsights(value: unknown): GraphInsight[] {
+  if (!Array.isArray(value)) return [];
+  const out: GraphInsight[] = [];
+  for (const item of value.slice(0, 24)) {
+    const i = record(item);
+    const rule = text(i.rule, 40), title = text(i.title, 120), description = text(i.description, 400);
+    if (!rule || !title) continue;
+    const entities = (Array.isArray(i.entities) ? i.entities : []).slice(0, 5).map(raw => {
+      const e = record(raw);
+      return { id: text(e.id, 200), name: text(e.name, 200), ...(text(e.type, 40) ? { type: text(e.type, 40) } : {}) };
+    }).filter(e => e.id && e.name);
+    out.push({ rule, version: Number.isFinite(Number(i.version)) ? Math.trunc(Number(i.version)) : 1,
+      title, description, support: score(i.support), entities,
+      evidence: (Array.isArray(i.evidence) ? i.evidence : []).slice(0, 4).map(x => text(x, 64)).filter(Boolean) });
+  }
+  return out;
+}
 export function safeUrl(value: unknown): string | undefined {
   try { const url = new URL(String(value)); return ['https:', 'http:'].includes(url.protocol) ? url.href : undefined; } catch { return undefined; }
 }
@@ -67,7 +172,12 @@ export function normalizeDataset(input: unknown): Dataset {
     return { id, label: text(attr.label ?? attr.name ?? id), type,
       confidence: score(attr.confidence), x: Number.isFinite(attr.x) ? Number(attr.x) : Math.cos(angle) * radius,
       y: Number.isFinite(attr.y) ? Number(attr.y) : Math.sin(angle) * radius, cluster: text(attr.cluster_id ?? attr.cluster ?? props.cluster_id ?? 'unassigned'),
-      ...(hasGeo ? { lat: latitude, lon: longitude } : {}), evidenceIds: [...ids(attr.evidenceIds ?? attr.doc_ids), ...embedded.map(d => d.id)] };
+      ...(hasGeo ? { lat: latitude, lon: longitude } : {}), evidenceIds: [...ids(attr.evidenceIds ?? attr.doc_ids), ...embedded.map(d => d.id)],
+      ...(optInt(attr.degree) !== undefined ? { degree: optInt(attr.degree) } : {}),
+      ...(Number.isFinite(Number(attr.rank)) && attr.rank !== null && attr.rank !== '' ? { rank: score(attr.rank) } : {}),
+      ...(text(attr.community, 24) ? { community: text(attr.community, 24) } : {}),
+      ...(isoDate(attr.firstSeen) ? { firstSeen: isoDate(attr.firstSeen) } : {}),
+      ...(isoDate(attr.lastSeen) ? { lastSeen: isoDate(attr.lastSeen) } : {}) };
   });
   let dangling = 0;
   const edges = raw.edges.map((item, i): GraphEdge | null => {
@@ -76,14 +186,150 @@ export function normalizeDataset(input: unknown): Dataset {
     return { id: `${text(attr.id ?? attr.key ?? 'edge')}:${i}`, source, target, type: text(attr.type ?? 'RELATED_TO', 80), confidence: score(attr.confidence), weight: score(attr.weight), evidenceIds: [...ids(attr.evidenceIds ?? attr.doc_ids), ...(attr.doc_id ? [text(attr.doc_id)] : [])] };
   }).filter((e): e is GraphEdge => e !== null);
   if (dangling) throw new Error(`${dangling} Kanten verweisen auf fehlende Knoten. Bitte einen geschlossenen Teilgraphen importieren.`);
-  return { nodes, edges, evidence, truncated: raw.truncated === true };
+  const analytics = normalizeAnalytics(raw.analytics);
+  const insights = normalizeInsights(raw.insights);
+  return { nodes, edges, evidence, truncated: raw.truncated === true, ...(analytics ? { analytics } : {}),
+    ...(insights.length ? { insights } : {}) };
 }
+/** Wave 20: one outlet in the source registry. `name` is the published source
+ * name; unnamed documents collect under '' and are reported as such instead of
+ * being dropped — an untraceable document is a fact worth seeing. */
+export interface SourceRegistryEntry {
+  name: string;
+  documents: number;
+  entities: number;
+  edges: number;
+  first?: string;
+  last?: string;
+}
+
+/**
+ * Wave 20: which outlets carry the visible slice. Aggregates the documents
+ * behind the visible entities and relationships per source name (case-folded,
+ * trimmed): how many documents, entities and relationships each outlet supports
+ * and the documented window it spans. Deterministic (documents desc, then
+ * name), bounded. This is the "who is saying this" view that per-node evidence
+ * lists cannot give.
+ */
+export function sourceRegistry(data: Dataset, nodes: GraphNode[], edges: GraphEdge[], limit = 12): SourceRegistryEntry[] {
+  const documentById = new Map(data.evidence.map(doc => [doc.id, doc]));
+  const uses = new Map<string, { entities: Set<string>; edges: Set<string> }>();
+  const use = (docId: string) => {
+    let entry = uses.get(docId);
+    if (!entry) { entry = { entities: new Set(), edges: new Set() }; uses.set(docId, entry); }
+    return entry;
+  };
+  const visible = new Set(nodes.filter(node => !node.group).map(node => node.id));
+  for (const node of nodes) {
+    if (node.group) continue;
+    for (const docId of new Set(node.evidenceIds)) if (docId) use(docId).entities.add(node.id);
+  }
+  for (const edge of edges) {
+    if (!visible.has(edge.source) || !visible.has(edge.target)) continue;
+    for (const docId of new Set(edge.evidenceIds)) if (docId) use(docId).edges.add(edge.id);
+  }
+  // Documents are visited in id order, so the displayed spelling of a source is
+  // the first published name in a stable order — never a side effect of data order.
+  const entries = new Map<string, { name: string; docs: Set<string>; entities: Set<string>; edges: Set<string>; first?: string; last?: string }>();
+  for (const docId of [...uses.keys()].sort()) {
+    const doc = documentById.get(docId), used = uses.get(docId)!;
+    const published = (doc?.source ?? '').trim();
+    const key = published.toLowerCase();
+    let entry = entries.get(key);
+    if (!entry) { entry = { name: published, docs: new Set(), entities: new Set(), edges: new Set() }; entries.set(key, entry); }
+    entry.docs.add(docId);
+    for (const id of used.entities) entry.entities.add(id);
+    for (const id of used.edges) entry.edges.add(id);
+    const day = isoDate(doc?.date);
+    if (day) {
+      if (!entry.first || day < entry.first) entry.first = day;
+      if (!entry.last || day > entry.last) entry.last = day;
+    }
+  }
+  return [...entries.values()]
+    .map(entry => ({
+      name: entry.name,
+      documents: entry.docs.size,
+      entities: entry.entities.size,
+      edges: entry.edges.size,
+      ...(entry.first ? { first: entry.first } : {}),
+      ...(entry.last ? { last: entry.last } : {}),
+    }))
+    .sort((a, b) => b.documents - a.documents || b.entities - a.entities
+      || (a.name.toLowerCase() < b.name.toLowerCase() ? -1 : a.name.toLowerCase() > b.name.toLowerCase() ? 1 : 0))
+    .slice(0, Math.max(1, limit));
+}
+
+/** Wave 19: work on claims that stand up. `corroborated` keeps relationships
+ * with at least two distinct named sources, `thin` keeps the rest — the edges
+ * that still need a second source. Entities are never dropped by this filter:
+ * it narrows *claims*, not people. */
+export type SourceFilter = 'any' | 'corroborated' | 'thin';
+const SOURCE_FILTERS: SourceFilter[] = ['corroborated', 'thin'];
+export function edgeSourceStatus(edge: GraphEdge, evidence: Evidence[]): SourceIndependence {
+  const documents = new Set(edge.evidenceIds);
+  return edgeSources(evidence.filter(doc => documents.has(doc.id))).independence;
+}
+
 export function filterDataset(data: Dataset, filters: Filters): Dataset {
   const types = new Set(filters.types);
-  const nodes = data.nodes.filter(n => types.has(n.type) && n.confidence >= filters.confidence);
+  let nodes = data.nodes.filter(n => types.has(n.type) && n.confidence >= filters.confidence);
+  if (filters.community) nodes = nodes.filter(n => n.community === filters.community);
+  const from = isoDate(filters.from), to = isoDate(filters.to);
+  if (from || to) {
+    // Time window over published evidence spans; undated nodes drop out (honest
+    // absence, no guessing). ISO dates compare lexicographically.
+    nodes = nodes.filter(n => {
+      const start = n.firstSeen, end = n.lastSeen ?? n.firstSeen;
+      if (!start) return false;
+      if (from && (end ?? start) < from) return false;
+      if (to && start > to) return false;
+      return true;
+    });
+  }
   const keep = new Set(nodes.map(n => n.id));
-  const edges = data.edges.filter(e => e.confidence >= filters.confidence && e.weight >= filters.weight && keep.has(e.source) && keep.has(e.target));
-  return { nodes, edges, evidence: data.evidence };
+  let edges = data.edges.filter(e => e.confidence >= filters.confidence && e.weight >= filters.weight && keep.has(e.source) && keep.has(e.target));
+  if (filters.sources === 'corroborated') edges = edges.filter(e => edgeSourceStatus(e, data.evidence) === 'independent');
+  else if (filters.sources === 'thin') edges = edges.filter(e => edgeSourceStatus(e, data.evidence) !== 'independent');
+  // Wave 20: evidence-scoped view — "what does this outlet report?". Unlike the
+  // claim filter this one is meant to narrow entities too, because the question
+  // is about one source's coverage; it is opt-in, named in the UI and cleared
+  // with one click.
+  const outlet = (filters.outlet ?? '').trim().toLowerCase().slice(0, 80);
+  if (outlet) {
+    const documents = new Set(data.evidence.filter(doc => (doc.source ?? '').trim().toLowerCase() === outlet).map(doc => doc.id));
+    edges = edges.filter(e => e.evidenceIds.some(docId => documents.has(docId)));
+    const touched = new Set<string>();
+    for (const node of nodes) if (node.evidenceIds.some(docId => documents.has(docId))) touched.add(node.id);
+    for (const edge of edges) { touched.add(edge.source); touched.add(edge.target); }
+    nodes = nodes.filter(node => touched.has(node.id));
+    const allowed = new Set(nodes.map(node => node.id));
+    edges = edges.filter(edge => allowed.has(edge.source) && allowed.has(edge.target));
+  }
+  // Wave 22: dispute view — only the pairs whose claims genuinely clash. The
+  // conflict set is derived from the edges that survived every other filter, so
+  // switching the view on and off can never feed back into itself.
+  if (filters.dispute) {
+    const disputed = new Set(pairConflicts(nodes, edges, data.evidence, Number.POSITIVE_INFINITY)
+      .filter(entry => entry.kind === 'conflict')
+      .map(entry => `${entry.pair[0]}|${entry.pair[1]}`));
+    edges = edges.filter(edge => disputed.has(edge.source <= edge.target ? `${edge.source}|${edge.target}` : `${edge.target}|${edge.source}`));
+    const touched = new Set<string>();
+    for (const edge of edges) { touched.add(edge.source); touched.add(edge.target); }
+    nodes = nodes.filter(node => touched.has(node.id));
+  }
+  // Wave 23: thin-file view — only entities that rest on at most one independent
+  // source. Deliberately date-free: the filter must be reproducible without a
+  // clock, so it narrows the dimension that is fixable (add a second source), and
+  // the panel keeps the two-dimensional judgment (thin *and* old) for reading.
+  if (filters.weak) {
+    const backing = nodeBacking(nodes, edges, data.evidence);
+    nodes = nodes.filter(node => (backing.get(node.id)?.sources ?? 0) <= 1);
+    const allowed = new Set(nodes.map(node => node.id));
+    edges = edges.filter(edge => allowed.has(edge.source) && allowed.has(edge.target));
+  }
+  return { nodes, edges, evidence: data.evidence, ...(data.analytics ? { analytics: data.analytics } : {}),
+    ...(data.insights ? { insights: data.insights } : {}) };
 }
 export function levelFor(count: number, filters: Filters): string {
   if (!filters.lod || count <= 5000) return 'Einzelknoten';
@@ -144,6 +390,13 @@ export function evidenceFor(data: Dataset, id: string): Evidence[] {
   }
   return [...docs].map(doc => data.evidence.find(e => e.id === doc) ?? { id: doc, title: data.nodes.find(n => n.id === doc)?.label ?? doc });
 }
+/** Wave 5 edge provenance: the documents behind ONE edge, in publication order.
+ *  Unknown references degrade to honest placeholders, never invented titles. */
+export function evidenceForEdge(data: Dataset, edgeId: string): Evidence[] {
+  const edge = data.edges.find(e => e.id === edgeId);
+  if (!edge) return [];
+  return edge.evidenceIds.map(doc => data.evidence.find(e => e.id === doc) ?? { id: doc, title: data.nodes.find(n => n.id === doc)?.label ?? doc });
+}
 export const CYPHER = 'MATCH (n:Entity {canonical_key: $key})\nOPTIONAL MATCH (n)-[:EVIDENCED_BY]->(d:Document)\nOPTIONAL MATCH (m:Document)-[:MENTIONS]->(n)\nRETURN n, collect(DISTINCT d) + collect(DISTINCT m) AS evidence';
 export function cypherExport(key: string) { return { query: CYPHER, parameters: { key } }; }
 export function demoDataset(count = 900): Dataset {
@@ -160,4 +413,2556 @@ export function demoDataset(count = 900): Dataset {
     for (let k = 1; k <= 3; k++) edges.push({ id: `demo-edge:${i}:${k}`, source: `demo:${i}`, target: `demo:${(i + (k === 3 ? 1 : k * 24)) % count}`, type: k === 1 ? 'OWNS' : k === 2 ? 'ASSOCIATED_WITH' : 'MENTIONED_WITH', confidence: .3 + (hash(`${i}:${k}`) % 701) / 1000, weight: k === 1 ? .9 : k === 2 ? .6 : .3, evidenceIds: ['demo-document'] });
   }
   return { nodes, edges, evidence: [{ id: 'demo-document', title: 'Fiktiver Beispieldatensatz – keine realen Rechercheergebnisse', source: 'PuppetNET Demo', date: '2026-10-19' }] };
+}
+
+/* ---------------------------------------------------------------------------
+ * Wave 2 analysis primitives — pure, deterministic, unit-tested. They run in
+ * the browser/worker (free compute); none of them touches the CI budget.
+ * ------------------------------------------------------------------------- */
+
+/** Undirected BFS shortest path over a (filtered) dataset, hop-bounded.
+ * Deterministic: adjacency lists are sorted, so the same input always yields
+ * the same path. Returns null when no path exists within maxHops. */
+export function shortestPath(data: Dataset, source: string, target: string, maxHops = 6):
+    { nodes: string[]; edges: GraphEdge[] } | null {
+  const present = new Set(data.nodes.map(n => n.id));
+  if (!present.has(source) || !present.has(target)) return null;
+  if (source === target) return { nodes: [source], edges: [] };
+  const adjacency = new Map<string, { peer: string; edge: GraphEdge }[]>();
+  for (const edge of data.edges) {
+    if (!present.has(edge.source) || !present.has(edge.target)) continue;
+    for (const [from, to] of [[edge.source, edge.target], [edge.target, edge.source]] as const) {
+      const list = adjacency.get(from);
+      if (list) list.push({ peer: to, edge }); else adjacency.set(from, [{ peer: to, edge }]);
+    }
+  }
+  for (const list of adjacency.values()) {
+    list.sort((a, b) => a.peer < b.peer ? -1 : a.peer > b.peer ? 1 : a.edge.id < b.edge.id ? -1 : 1);
+  }
+  const previous = new Map<string, { peer: string; edge: GraphEdge }>();
+  const seen = new Set<string>([source]);
+  let frontier = [source];
+  for (let hop = 0; hop < maxHops && frontier.length; hop++) {
+    const next: string[] = [];
+    for (const id of frontier) {
+      for (const step of adjacency.get(id) ?? []) {
+        if (seen.has(step.peer)) continue;
+        seen.add(step.peer);
+        previous.set(step.peer, { peer: id, edge: step.edge });
+        if (step.peer === target) {
+          const nodes = [target], edges: GraphEdge[] = [];
+          let cursor = target;
+          while (cursor !== source) {
+            const step2 = previous.get(cursor)!;
+            edges.unshift(step2.edge);
+            nodes.unshift(step2.peer);
+            cursor = step2.peer;
+          }
+          return { nodes, edges };
+        }
+        next.push(step.peer);
+      }
+    }
+    frontier = next;
+  }
+  return null;
+}
+
+/** Fuzzy relevance: exact substring beats subsequence; earlier and denser wins. */
+/** Wave 7 ego expansion: deterministic breadth-first neighborhood around one
+ * entity inside the given (already filtered) slice. Depth is clamped to 1–3 —
+ * Maltego-style multi-hop expansion, bounded so a hub node cannot swallow the
+ * whole graph by accident. Direction is ignored (a connection is a connection);
+ * adjacency lists are sorted, so the same slice always yields the same order.
+ * Returns the member ids (center first) or null when the center is not in the
+ * slice — an honest "not found", never a fabricated neighborhood. */
+export const EGO_DEPTH_LIMIT = 3;
+export function egoNetwork(data: Dataset, id: string, depth = 2): string[] | null {
+  const present = new Set(data.nodes.map(n => n.id));
+  if (!present.has(id)) return null;
+  const hops = Math.max(1, Math.min(EGO_DEPTH_LIMIT, Math.trunc(Number(depth)) || 1));
+  const adjacency = new Map<string, string[]>();
+  for (const edge of data.edges) {
+    if (!present.has(edge.source) || !present.has(edge.target)) continue;
+    for (const [from, to] of [[edge.source, edge.target], [edge.target, edge.source]] as const) {
+      const list = adjacency.get(from);
+      if (list) list.push(to); else adjacency.set(from, [to]);
+    }
+  }
+  for (const list of adjacency.values()) list.sort();
+  const seen = new Set<string>([id]);
+  let frontier = [id];
+  for (let hop = 0; hop < hops && frontier.length; hop++) {
+    const next: string[] = [];
+    for (const node of frontier) {
+      for (const peer of adjacency.get(node) ?? []) {
+        if (seen.has(peer)) continue;
+        seen.add(peer);
+        next.push(peer);
+      }
+    }
+    frontier = next;
+  }
+  return [...seen];
+}
+
+/** Wave 7 temporal analytics: first mentions per calendar month (UTC bucket of
+ * `firstSeen`), ascending, bounded to the most recent `limit` months. Undated
+ * entities are honestly absent — no guessing, no smoothing. */
+export function mentionTimeline(nodes: GraphNode[], limit = 24): { month: string; count: number }[] {
+  const buckets = new Map<string, number>();
+  for (const node of nodes) {
+    const first = isoDate(node.firstSeen);
+    if (!first) continue;
+    const month = first.slice(0, 7);
+    buckets.set(month, (buckets.get(month) ?? 0) + 1);
+  }
+  return [...buckets.entries()]
+    .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+    .slice(-Math.max(1, limit))
+    .map(([month, count]) => ({ month, count }));
+}
+
+/** Wave 8 entity-resolution hints: nodes whose normalized labels collide while
+ * their ids differ — the classic cross-source duplicate. Conservative by
+ * design (case/whitespace folding only, no phonetic guessing): a structural
+ * hint for the investigator, never a merge decision. LoD groups are excluded
+ * (they are display artifacts, not entities). Deterministic order: larger
+ * groups first, then the normalized label; bounded to `limit` groups. */
+export function duplicateCandidates(nodes: GraphNode[], limit = 12): { label: string; ids: string[]; sameType: boolean }[] {
+  const groups = new Map<string, GraphNode[]>();
+  for (const node of nodes) {
+    if (node.group) continue;
+    const key = node.label.toLowerCase().replace(/\s+/g, ' ').trim();
+    if (!key) continue;
+    const list = groups.get(key);
+    if (list) list.push(node); else groups.set(key, [node]);
+  }
+  const out: { label: string; ids: string[]; sameType: boolean }[] = [];
+  for (const members of groups.values()) {
+    if (members.length < 2) continue;
+    out.push({
+      label: members[0].label,
+      ids: members.map(m => m.id),
+      sameType: members.every(m => m.type === members[0].type),
+    });
+  }
+  out.sort((a, b) => b.ids.length - a.ids.length || (a.label.toLowerCase() < b.label.toLowerCase() ? -1 : a.label.toLowerCase() > b.label.toLowerCase() ? 1 : 0));
+  return out.slice(0, Math.max(1, limit));
+}
+
+/** Wave 8: exact UTC calendar window for a `YYYY-MM` histogram bucket — the
+ * click-to-filter contract of the timeline. Invalid months are null, never
+ * guessed; leap years come from the real calendar. */
+export function monthWindow(month: string): { from: string; to: string } | null {
+  if (!/^\d{4}-\d{2}$/.test(month)) return null;
+  const year = Number(month.slice(0, 4)), index = Number(month.slice(5, 7));
+  if (index < 1 || index > 12) return null;
+  const lastDay = new Date(Date.UTC(year, index, 0)).getUTCDate();
+  return { from: `${month}-01`, to: `${month}-${String(lastDay).padStart(2, '0')}` };
+}
+
+/** Wave 13: one side of a duplicate comparison — the facts an investigator
+ * weighs before deciding that two node ids are the same entity. */
+export interface DuplicateProfile {
+  id: string; label: string; type: EntityType;
+  degree: number; community?: string; firstSeen?: string; lastSeen?: string;
+  evidence: number;
+  neighbors: { id: string; label: string }[];
+}
+export interface DuplicateComparison {
+  profiles: DuplicateProfile[];
+  /** Neighbours every compared entity shares — the strongest merge signal. */
+  shared: { id: string; label: string }[];
+  /** Neighbours only this entity has (per id), sorted by label. */
+  unique: Record<string, string[]>;
+  /** Field names that differ across the compared entities (type, community, …). */
+  conflicts: string[];
+}
+
+/**
+ * Wave 13: side-by-side facts for up to four duplicate candidates. Pure and
+ * deterministic; neighbours are read undirected from the same filtered slice the
+ * hints came from, and the compared ids are never counted as neighbours of each
+ * other (a duplicate is not its own evidence). Fewer than two known ids -> null
+ * instead of a one-sided "comparison".
+ */
+export function compareDuplicates(data: Dataset, ids: string[], neighborLimit = 8): DuplicateComparison | null {
+  const known = new Map(data.nodes.map(node => [node.id, node]));
+  const wanted = [...new Set(ids)].filter(id => known.has(id)).slice(0, 4);
+  if (wanted.length < 2) return null;
+  const wantedSet = new Set(wanted);
+  const adjacency = new Map<string, Set<string>>();
+  for (const id of wanted) adjacency.set(id, new Set());
+  for (const edge of data.edges) {
+    for (const [from, to] of [[edge.source, edge.target], [edge.target, edge.source]] as const) {
+      if (!adjacency.has(from) || from === to || wantedSet.has(to)) continue;
+      adjacency.get(from)!.add(to);
+    }
+  }
+  const labelOf = (id: string) => known.get(id)?.label ?? id;
+  const profiles: DuplicateProfile[] = wanted.map(id => {
+    const node = known.get(id)!;
+    const neighbors = [...adjacency.get(id)!]
+      .map(peer => ({ id: peer, label: labelOf(peer) }))
+      .sort((a, b) => (a.label.toLowerCase() < b.label.toLowerCase() ? -1 : a.label.toLowerCase() > b.label.toLowerCase() ? 1 : a.id < b.id ? -1 : 1));
+    return {
+      id, label: node.label, type: node.type, degree: neighbors.length,
+      community: node.community, firstSeen: node.firstSeen, lastSeen: node.lastSeen,
+      evidence: new Set(node.evidenceIds).size,
+      neighbors: neighbors.slice(0, Math.max(1, neighborLimit)),
+    };
+  });
+  const sharedIds = profiles.map(profile => new Set(adjacency.get(profile.id)!)).reduce((left, right) => new Set([...left].filter(id => right.has(id))));
+  const shared = [...sharedIds].map(id => ({ id, label: labelOf(id) }))
+    .sort((a, b) => (a.label.toLowerCase() < b.label.toLowerCase() ? -1 : a.label.toLowerCase() > b.label.toLowerCase() ? 1 : a.id < b.id ? -1 : 1));
+  const unique: Record<string, string[]> = {};
+  for (const profile of profiles) {
+    unique[profile.id] = [...adjacency.get(profile.id)!]
+      .filter(peer => !sharedIds.has(peer) && !profiles.some(other => other.id !== profile.id && adjacency.get(other.id)!.has(peer)))
+      .map(labelOf).sort();
+  }
+  const conflicts: string[] = [];
+  const differs = (field: (profile: DuplicateProfile) => string | undefined) => {
+    const values = new Set(profiles.map(field));
+    return values.size > 1;
+  };
+  if (differs(profile => profile.type)) conflicts.push('type');
+  if (differs(profile => profile.community)) conflicts.push('community');
+  if (differs(profile => profile.firstSeen)) conflicts.push('firstSeen');
+  if (differs(profile => profile.lastSeen)) conflicts.push('lastSeen');
+  return { profiles, shared, unique, conflicts };
+}
+
+/** Wave 13: failure simulation for several entities at once — how many parts
+ * remain, how big the largest survivor is and how many nodes end up isolated.
+ * Only real entities count (LoD groups are display artifacts), the selection is
+ * bounded and unknown ids are ignored instead of silently shrinking the test. */
+export function multiFailureImpact(nodes: GraphNode[], edges: GraphEdge[], ids: string[], maxNodes = 4): { removed: number; components: number; largest: number; isolated: number } | null {
+  const singles = nodes.filter(node => !node.group).map(node => node.id).sort();
+  const known = new Set(singles);
+  const removed = new Set([...new Set(ids)].filter(id => known.has(id)).slice(0, Math.max(1, maxNodes)));
+  if (removed.size === 0) return null;
+  const index = new Map<string, number>();
+  singles.forEach((id, i) => index.set(id, i));
+  const adjacency: number[][] = singles.map(() => []);
+  const seen = new Set<string>();
+  for (const edge of edges) {
+    const a = index.get(edge.source), b = index.get(edge.target);
+    if (a === undefined || b === undefined || a === b) continue;
+    const key = a < b ? `${a}|${b}` : `${b}|${a}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    adjacency[a].push(b); adjacency[b].push(a);
+  }
+  const reached = new Uint8Array(singles.length);
+  for (const id of removed) reached[index.get(id)!] = 1;
+  let components = 0, largest = 0, isolated = 0;
+  for (let start = 0; start < singles.length; start++) {
+    if (reached[start]) continue;
+    components++;
+    let size = 0;
+    const stack = [start];
+    reached[start] = 1;
+    while (stack.length) {
+      const v = stack.pop()!;
+      size++;
+      for (const u of adjacency[v]) if (!reached[u]) { reached[u] = 1; stack.push(u); }
+    }
+    if (size > largest) largest = size;
+    if (size === 1) isolated++;
+  }
+  return { removed: removed.size, components, largest, isolated };
+}
+
+/** Wave 9: bundle parallel relationships of the same unordered pair into one
+ * edge — Maltego-style link charts drown in multi-edges otherwise. The bundle
+ * keeps the strongest documented confidence and the union of provenance; the
+ * count and the sorted type list make the rest visible instead of hiding it.
+ * Self-loops stay untouched, the input is never mutated, the order is stable. */
+export function bundleEdges(edges: GraphEdge[]): GraphEdge[] {
+  const bundles = new Map<string, GraphEdge>();
+  for (const edge of edges) {
+    const [a, b] = edge.source <= edge.target ? [edge.source, edge.target] : [edge.target, edge.source];
+    const key = edge.source === edge.target ? `self:${edge.id}` : `pair:${a}|${b}`;
+    const previous = bundles.get(key);
+    if (!previous) { bundles.set(key, { ...edge, count: edge.count ?? 1, types: [edge.type] }); continue; }
+    const types = [...new Set([...(previous.types ?? [previous.type]), edge.type])].sort();
+    const evidenceIds = [...new Set([...previous.evidenceIds, ...edge.evidenceIds])].sort();
+    const better = edge.confidence > previous.confidence || (edge.confidence === previous.confidence && edge.id < previous.id);
+    const base = better ? edge : previous;
+    bundles.set(key, {
+      ...base,
+      id: base.id, source: a, target: b, type: base.type,
+      confidence: Math.max(previous.confidence, edge.confidence),
+      weight: Number((previous.weight + edge.weight).toFixed(4)),
+      evidenceIds,
+      count: (previous.count ?? 1) + (edge.count ?? 1),
+      types,
+    });
+  }
+  return [...bundles.values()].sort((x, y) =>
+    x.source < y.source ? -1 : x.source > y.source ? 1 :
+    x.target < y.target ? -1 : x.target > y.target ? 1 :
+    x.id < y.id ? -1 : x.id > y.id ? 1 : 0);
+}
+
+export const VULNERABILITY_NODE_LIMIT = 50_000;
+
+/** Wave 9: structural vulnerability of the visible slice — articulation points
+ * (removing them splits the network), bridges (edges whose loss disconnects it)
+ * and the k-core decomposition (the densest well-connected nucleus). Iterative
+ * Tarjan plus bucket peeling keeps 20k-node slices fast and stack-safe; parallel
+ * edges count as one relationship (simple-graph semantics) and LoD display
+ * groups are ignored. Above the node limit this returns null instead of
+ * pretending to know. */
+export function structuralVulnerability(nodes: GraphNode[], edges: GraphEdge[], limit = 12, maxNodes = VULNERABILITY_NODE_LIMIT): Vulnerability | null {
+  const singles = nodes.filter(n => !n.group).sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  const n = singles.length;
+  if (n > maxNodes) return null;
+  const index = new Map<string, number>();
+  singles.forEach((node, i) => index.set(node.id, i));
+  const adjacency: number[][] = singles.map(() => []);
+  const seen = new Set<string>();
+  for (const edge of edges) {
+    const a = index.get(edge.source), b = index.get(edge.target);
+    if (a === undefined || b === undefined || a === b) continue;
+    const key = a < b ? `${a}|${b}` : `${b}|${a}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    adjacency[a].push(b); adjacency[b].push(a);
+  }
+  for (const list of adjacency) list.sort((x, y) => x - y);
+  const discovery = new Int32Array(n).fill(-1), low = new Int32Array(n), parent = new Int32Array(n).fill(-1), cut = new Uint8Array(n);
+  let cutEdges = 0, time = 0;
+  for (let root = 0; root < n; root++) {
+    if (discovery[root] !== -1) continue;
+    discovery[root] = low[root] = time++;
+    let rootChildren = 0;
+    const stack: { v: number; next: number }[] = [{ v: root, next: 0 }];
+    while (stack.length) {
+      const frame = stack[stack.length - 1], v = frame.v;
+      if (frame.next < adjacency[v].length) {
+        const w = adjacency[v][frame.next++];
+        if (w === parent[v]) continue;
+        if (discovery[w] === -1) {
+          parent[w] = v; discovery[w] = low[w] = time++;
+          if (v === root) rootChildren++;
+          stack.push({ v: w, next: 0 });
+        } else if (discovery[w] < low[v]) low[v] = discovery[w];
+      } else {
+        stack.pop();
+        const p = parent[v];
+        if (p === -1) continue;
+        if (low[v] < low[p]) low[p] = low[v];
+        if (parent[p] !== -1 && low[v] >= discovery[p]) cut[p] = 1;
+        if (low[v] > discovery[p]) cutEdges++;
+      }
+    }
+    if (rootChildren > 1) cut[root] = 1;
+  }
+  // k-core by binary search over k (monotone: a non-empty k-core implies a
+  // non-empty (k-1)-core) — O((n+m) log n), far easier to trust than an
+  // incremental peeling index, and the slice sizes here are bounded.
+  const strength = adjacency.map(list => list.length);
+  const maxDegree = strength.reduce((max, d) => Math.max(max, d), 0);
+  const survivors = (k: number) => {
+    const degree = strength.slice(), removed = new Uint8Array(n), queue: number[] = [];
+    for (let v = 0; v < n; v++) if (degree[v] < k) { removed[v] = 1; queue.push(v); }
+    let remaining = n;
+    for (let qi = 0; qi < queue.length; qi++) {
+      const v = queue[qi];
+      remaining--;
+      for (const u of adjacency[v]) if (!removed[u] && --degree[u] < k) { removed[u] = 1; queue.push(u); }
+    }
+    return remaining;
+  };
+  let maxCore = 0, coreLow = 1, coreHigh = maxDegree;
+  while (coreLow <= coreHigh) {
+    const mid = (coreLow + coreHigh) >> 1;
+    if (survivors(mid) > 0) { maxCore = mid; coreLow = mid + 1; } else coreHigh = mid - 1;
+  }
+  const maxCoreSize = n === 0 ? 0 : survivors(maxCore);
+  const cutVertices: { id: string; label: string; degree: number }[] = [];
+  for (let v = 0; v < n; v++) if (cut[v]) cutVertices.push({ id: singles[v].id, label: singles[v].label, degree: strength[v] });
+  cutVertices.sort((a, b) => b.degree - a.degree || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  // Wave 10: failure simulation — how many parts does the slice fall into when
+  // this articulation point disappears, and how big is the largest survivor?
+  const componentsWithout = (skip: number) => {
+    const reached = new Uint8Array(n);
+    reached[skip] = 1;
+    let components = 0, largest = 0;
+    for (let start = 0; start < n; start++) {
+      if (reached[start]) continue;
+      components++;
+      let size = 0;
+      const stack = [start];
+      reached[start] = 1;
+      while (stack.length) {
+        const v = stack.pop()!;
+        size++;
+        for (const u of adjacency[v]) if (u !== skip && !reached[u]) { reached[u] = 1; stack.push(u); }
+      }
+      if (size > largest) largest = size;
+    }
+    return { components, largest };
+  };
+  return {
+    cutVertices: cutVertices.slice(0, Math.max(1, limit)).map(entry => ({ ...entry, impact: componentsWithout(index.get(entry.id)!) })),
+    cutEdges, maxCore, maxCoreSize,
+  };
+}
+
+/**
+ * Wave 10: temporal plausibility of a link chain. Each hop carries the
+ * documented window of the relationship(s) connecting its two nodes (earliest
+ * to latest evidence date, normalized to YYYY-MM-DD). A hop whose latest
+ * documentation predates the previous hop's earliest one is an anachronism —
+ * the chain cannot have happened in that order without an explanation.
+ * Undated hops stay honestly empty and never turn into a verdict; a hop without
+ * any connecting edge returns null instead of inventing a relation.
+ */
+export function pathTimeline(data: Dataset, ids: string[]): PathTimeline | null {
+  if (ids.length < 2) return null;
+  const dateOf = new Map(data.evidence.map(e => [e.id, isoDate(e.date)]));
+  const hops: PathTimelineHop[] = [];
+  for (let i = 1; i < ids.length; i++) {
+    const from = ids[i - 1], to = ids[i];
+    const edges = data.edges.filter(e => (e.source === from && e.target === to) || (e.source === to && e.target === from));
+    if (edges.length === 0) return null;
+    const days = edges.flatMap(e => e.evidenceIds.map(id => dateOf.get(id))).filter((d): d is string => !!d).sort();
+    const first = days[0], last = days[days.length - 1];
+    const previous = hops[hops.length - 1];
+    const breaks = !!(previous?.first && last && last < previous.first);
+    hops.push({
+      from, to, type: edges.map(e => e.type).sort()[0],
+      first, last, evidence: new Set(edges.flatMap(e => e.evidenceIds)).size,
+      ordered: !breaks,
+    });
+  }
+  const starts = hops.map(h => h.first).filter((d): d is string => !!d).sort();
+  const ends = hops.map(h => h.last).filter((d): d is string => !!d).sort();
+  return { hops, first: starts[0], last: ends[ends.length - 1], anachronisms: hops.filter(h => !h.ordered).length };
+}
+
+/** Wave 12: the next month of a cumulative playback. The month list is
+ * captured when playback starts (the filtered timeline shrinks while it runs),
+ * so this helper only decides the step — out of range returns null and the
+ * caller stops instead of looping. */
+export function nextPlaybackMonth(months: string[], current: string | undefined, direction: 1 | -1): string | null {
+  if (months.length === 0) return null;
+  const index = current ? months.indexOf(current) : -1;
+  if (index < 0) return direction > 0 ? months[0] : null;
+  const next = index + direction;
+  return next >= 0 && next < months.length ? months[next] : null;
+}
+
+/** Wave 12: documented window of a single relationship — earliest to latest
+ * evidence date, normalized to the day. Undated documents are counted as
+ * absent, never guessed. */
+export function evidenceWindow(evidence: Evidence[]): { first?: string; last?: string; dated: number } {
+  const days = evidence.map(doc => isoDate(doc.date)).filter((day): day is string => !!day).sort();
+  return { first: days[0], last: days[days.length - 1], dated: days.length };
+}
+
+export function fuzzyScore(query: string, value: string): number {
+  const q = query.trim().toLowerCase(), t = value.toLowerCase();
+  if (!q || !t) return 0;
+  const at = t.indexOf(q);
+  if (at >= 0) return 2000 - Math.min(at, 999) + (at === 0 ? 500 : 0);
+  let total = 0, cursor = 0, streak = 0;
+  for (const char of q) {
+    const found = t.indexOf(char, cursor);
+    if (found < 0) return 0;
+    streak = found === cursor ? streak + 1 : 0;
+    total += 10 + streak * 5;
+    cursor = found + 1;
+  }
+  return Math.min(total, 999);
+}
+
+/** Ranked search over nodes (label and id), stable order, bounded result. */
+export function rankSearch(nodes: GraphNode[], query: string, limit = 50): GraphNode[] {
+  const q = query.trim();
+  if (!q) return nodes.slice(0, limit);
+  const scored = nodes
+    .map(n => ({ n, s: Math.max(fuzzyScore(q, n.label), fuzzyScore(q, n.id)) }))
+    .filter(entry => entry.s > 0);
+  scored.sort((a, b) => b.s - a.s || a.n.label.localeCompare(b.n.label) || (a.n.id < b.n.id ? -1 : a.n.id > b.n.id ? 1 : 0));
+  return scored.slice(0, limit).map(entry => entry.n);
+}
+
+/** Resolves a pathfinder input (exact id/label first, then best fuzzy match). */
+export function resolveNodeRef(nodes: GraphNode[], ref: string): GraphNode | null {
+  const value = ref.trim();
+  if (!value) return null;
+  return nodes.find(n => n.id === value || n.label === value) ?? rankSearch(nodes, value, 1)[0] ?? null;
+}
+
+/** Wave 14: saved views are case sessions — a name plus the encoded view
+ * state (mode, query, focus, community, time window, colour). They live in this
+ * browser only, are capped and sanitized on read, and stay ordered by name so
+ * the list never jumps around. */
+export const SAVED_VIEW_LIMIT = 50;
+export const SAVED_VIEW_STORAGE_KEY = 'puppetnet.views.v1';
+export interface SavedView { name: string; query: string; saved: string }
+export function normalizeSavedName(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  return value.replace(/[\u0000-\u001f\u007f]/g, '').replace(/\s+/g, ' ').trim().slice(0, 60);
+}
+export function readSavedViews(raw: unknown): SavedView[] {
+  let parsed: unknown = raw;
+  if (typeof raw === 'string') {
+    try { parsed = JSON.parse(raw); } catch { return []; }
+  }
+  const list = Array.isArray(parsed) ? parsed : [];
+  const out: SavedView[] = [];
+  const seen = new Set<string>();
+  for (const item of list) {
+    if (out.length >= SAVED_VIEW_LIMIT) break;
+    const entry = record(item);
+    const name = normalizeSavedName(entry.name);
+    const query = typeof entry.query === 'string' ? entry.query.slice(0, 600) : '';
+    const saved = isoDate(entry.saved);
+    if (!name || !query || !saved || seen.has(name.toLowerCase())) continue;
+    seen.add(name.toLowerCase());
+    out.push({ name, query, saved });
+  }
+  return out.sort(compareSavedViews);
+}
+const compareSavedViews = (a: SavedView, b: SavedView) =>
+  a.name.toLowerCase() < b.name.toLowerCase() ? -1 : a.name.toLowerCase() > b.name.toLowerCase() ? 1 : a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
+/** Saves (or overwrites) a view under its name; the list stays bounded and
+ * sorted, and a blank name is a no-op instead of an unnamed entry. */
+export function upsertSavedView(list: SavedView[], name: string, query: string, saved: string): SavedView[] {
+  const cleanName = normalizeSavedName(name), cleanQuery = query.slice(0, 600), day = isoDate(saved);
+  if (!cleanName || !cleanQuery || !day) return list;
+  const next = list.filter(entry => entry.name.toLowerCase() !== cleanName.toLowerCase());
+  next.push({ name: cleanName, query: cleanQuery, saved: day });
+  return next.sort(compareSavedViews).slice(0, SAVED_VIEW_LIMIT);
+}
+export function removeSavedView(list: SavedView[], name: string): SavedView[] {
+  const cleanName = normalizeSavedName(name).toLowerCase();
+  return list.filter(entry => entry.name.toLowerCase() !== cleanName);
+}
+/** Wave 14: provenance export — every document that supports the visible
+ * nodes or edges, with the entities it backs. Deterministic, bounded, and
+ * honest about documents that no longer resolve (they keep their raw id). */
+export function evidenceToCSV(data: Dataset, nodes: GraphNode[], edges: GraphEdge[], limit = 5_000): string {
+  const documents = new Map(data.evidence.map(doc => [doc.id, doc]));
+  const uses = new Map<string, Set<string>>();
+  const labels = new Map(data.nodes.map(node => [node.id, node.label]));
+  const add = (docId: string, use: string) => {
+    const set = uses.get(docId) ?? new Set<string>();
+    set.add(use);
+    uses.set(docId, set);
+  };
+  for (const node of nodes) node.evidenceIds.forEach(docId => add(docId, labels.get(node.id) ?? node.id));
+  for (const edge of edges) {
+    const from = labels.get(edge.source) ?? edge.source, to = labels.get(edge.target) ?? edge.target;
+    edge.evidenceIds.forEach(docId => add(docId, `${from} → ${to}`));
+  }
+  const header = 'id,title,source,date,url,used_by';
+  const rows = [...uses.entries()]
+    .map(([docId, usedBy]) => ({ docId, usedBy }))
+    .sort((a, b) => (a.docId < b.docId ? -1 : a.docId > b.docId ? 1 : 0))
+    .slice(0, Math.max(1, limit))
+    .map(({ docId, usedBy }) => {
+      const doc = documents.get(docId);
+      return [docId, doc?.title, doc?.source, doc?.date, doc?.url, [...usedBy].sort().join(' | ')].map(csvCell).join(',');
+    });
+  return [header, ...rows].join('\n') + '\n';
+}
+
+const csvCell = (value: string | number | undefined): string => {
+  const s = value === undefined || value === null ? '' : String(value);
+  return /[",\n\r]/.test(s) ? `"${s.replaceAll('"', '""')}"` : s;
+};
+
+/** RFC-4180 CSV of the visible view — client-side reporting without a server. */
+/** Wave 11 research notes are case work, not data: they live only in this
+ * browser (localStorage), are capped per note and never leave the device unless
+ * the investigator exports them on purpose. */
+export const NOTE_LIMIT = 2_000;
+export const NOTE_STORAGE_KEY = 'puppetnet.notes.v1';
+export function normalizeNote(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  return value.replace(/\r\n?/g, '\n').trim().slice(0, NOTE_LIMIT);
+}
+/** Sanitizes whatever localStorage handed back: junk, empty values and
+ * non-string notes are dropped instead of trusted; the store stays bounded. */
+export function readNotes(raw: unknown): Record<string, string> {
+  let parsed: unknown = raw;
+  if (typeof raw === 'string') {
+    try { parsed = JSON.parse(raw); } catch { return {}; }
+  }
+  const out: Record<string, string> = {};
+  let count = 0;
+  for (const [key, value] of Object.entries(record(parsed))) {
+    if (count >= 500) break;
+    const id = text(key, 200), note = normalizeNote(value);
+    if (!id || !note) continue;
+    out[id] = note; count++;
+  }
+  return out;
+}
+/**
+ * Wave 15: reads the research notes back out of an exported case report (DE or
+ * EN, Wave-11 format). The report is the user's own exchange medium — nothing
+ * is uploaded, the file stays on the device. Parsing is deliberately strict:
+ * only the notes section counts, entries need the `- **Label** (`id`)` line,
+ * the note is the following indented block, and everything is sanitized with
+ * the same rules as live notes. A foreign or truncated file yields what it
+ * honestly contains instead of throwing.
+ */
+export function parseCaseNotes(markdown: string): Record<string, string> {
+  if (typeof markdown !== 'string' || !markdown) return {};
+  const lines = markdown.replace(/\r\n?/g, '\n').split('\n');
+  const start = lines.findIndex(line => /^##\s+(Ermittlungsnotizen|Research notes)\s*(?:\(\d+\))?\s*$/.test(line));
+  if (start < 0) return {};
+  const notes: Record<string, string> = {};
+  let count = 0;
+  for (let i = start + 1; i < lines.length && count < 500; i++) {
+    const line = lines[i];
+    if (/^##\s/.test(line)) break;
+    const entry = /^-\s+\*\*(.+?)\*\*\s+\(`([^`]+)`\)\s*$/.exec(line);
+    if (!entry) continue;
+    const id = text(entry[2], 200);
+    if (!id) continue;
+    const body: string[] = [];
+    for (let j = i + 1; j < lines.length; j++) {
+      if (/^\s{2,}\S/.test(lines[j])) { body.push(lines[j].replace(/^\s+/, '')); continue; }
+      if (lines[j].trim() === '') { if (body.length) body.push(''); continue; }
+      break;
+    }
+    while (body.length && body[body.length - 1] === '') body.pop();
+    const note = normalizeNote(body.join('\n'));
+    if (!note) continue;
+    notes[id] = note;
+    count++;
+  }
+  return notes;
+}
+
+/** Wave 15: merges imported notes into the local store without silently
+ * overwriting the investigator's own work. Imported notes fill empty slots and
+ * are reported as "added"; a differing existing note is kept and reported as
+ * "skipped"; identical text counts as "unchanged". Deterministic and pure. */
+export function mergeNotes(current: Record<string, string>, imported: Record<string, string>): { notes: Record<string, string>; added: number; unchanged: number; skipped: number } {
+  const notes = { ...current };
+  let added = 0, unchanged = 0, skipped = 0;
+  for (const [rawId, rawNote] of Object.entries(imported)) {
+    const id = text(rawId, 200), note = normalizeNote(rawNote);
+    if (!id || !note) continue;
+    const existing = normalizeNote(notes[id]);
+    if (!existing) { notes[id] = note; added++; continue; }
+    if (existing === note) { unchanged++; continue; }
+    skipped++;
+  }
+  return { notes, added, unchanged, skipped };
+}
+
+/** Wave 16: one note hit in the case-wide note index. */
+export interface NoteHit { id: string; label: string; snippet: string; where: 'label' | 'note' | 'both' }
+
+/**
+ * Wave 16: searches the research notes, not just the graph. An investigator who
+ * recorded twenty observations needs to find "where did I write about X" without
+ * clicking every entity: label matches, note-text matches and the lines around
+ * them. Empty query lists every annotated entity (sorted by label) so the index
+ * doubles as a case overview. Deterministic ranking, bounded output, and notes
+ * whose entity vanished keep their raw id instead of disappearing.
+ */
+export function searchNoteIndex(nodes: GraphNode[], notes: Record<string, string>, query: string, limit = 20): NoteHit[] {
+  const labels = new Map(nodes.map(node => [node.id, node.label]));
+  const q = query.trim().toLowerCase().slice(0, 120);
+  const hits: { hit: NoteHit; rank: number }[] = [];
+  for (const [rawId, rawNote] of Object.entries(notes)) {
+    const id = text(rawId, 200), note = normalizeNote(rawNote);
+    if (!id || !note) continue;
+    const label = labels.get(id) ?? id;
+    const inLabel = !!q && label.toLowerCase().includes(q);
+    const inNote = !!q && note.toLowerCase().includes(q);
+    if (q && !inLabel && !inNote) continue;
+    const lines = note.split('\n').map(line => line.trim()).filter(Boolean);
+    const matchLine = inNote ? lines.find(line => line.toLowerCase().includes(q)) ?? lines[0] : lines[0];
+    const snippet = (matchLine ?? '').length > 140 ? `${(matchLine ?? '').slice(0, 139).trimEnd()}…` : matchLine ?? '';
+    hits.push({
+      hit: { id, label, snippet, where: inLabel && inNote ? 'both' : inLabel ? 'label' : 'note' },
+      rank: inLabel && inNote ? 3 : inLabel ? 2 : 1,
+    });
+  }
+  hits.sort((a, b) => b.rank - a.rank
+    || (a.hit.label.toLowerCase() < b.hit.label.toLowerCase() ? -1 : a.hit.label.toLowerCase() > b.hit.label.toLowerCase() ? 1
+      : a.hit.id < b.hit.id ? -1 : a.hit.id > b.hit.id ? 1 : 0));
+  return hits.slice(0, Math.max(1, limit)).map(entry => entry.hit);
+}
+
+export interface CaseBundleInput {
+  notes: Record<string, string>;
+  views: { name: string; query: string; saved: string }[];
+  report: string;
+  generated: string;
+}
+/**
+ * Wave 16: the whole case in one portable file — notes, saved sessions and the
+ * Markdown report, wrapped in a versioned envelope. Deterministic (the caller
+ * passes the timestamp, notes are sorted), so the same case produces the same
+ * bytes. The bundle is plain JSON: readable in any editor, no server involved.
+ */
+export function caseBundle(input: CaseBundleInput): string {
+  const notes = Object.keys(input.notes).sort().reduce<Record<string, string>>((out, id) => {
+    const note = normalizeNote(input.notes[id]);
+    if (note) out[id] = note;
+    return out;
+  }, {});
+  const views = [...input.views]
+    .map(view => ({ name: normalizeSavedName(view.name), query: view.query.slice(0, 600), saved: isoDate(view.saved) ?? '' }))
+    .filter(view => view.name && view.query && view.saved)
+    .sort((a, b) => (a.name.toLowerCase() < b.name.toLowerCase() ? -1 : a.name.toLowerCase() > b.name.toLowerCase() ? 1 : 0));
+  return JSON.stringify({
+    format: 'puppetnet-case',
+    version: 1,
+    generated: input.generated,
+    notes,
+    views,
+    report: input.report,
+  }, null, 2) + '\n';
+}
+
+/** Wave 18: how well a relationship is sourced. Two documents from the same
+ * outlet are not two independent sources — the methodological difference that a
+ * plain document count hides. */
+export type SourceIndependence = 'none' | 'single' | 'shared' | 'unknown' | 'independent';
+export interface EdgeSources { documents: number; sources: number; independence: SourceIndependence }
+
+/**
+ * Wave 18: source verdict for one relationship. Documents are the distinct
+ * evidence ids; `sources` counts distinct non-empty source names (case-folded).
+ * A document without a source name can never prove independence, so two such
+ * documents are 'unknown' instead of 'independent', and a named-but-identical
+ * origin is reported as 'shared' instead of pretending to be corroborated.
+ */
+export function edgeSources(evidence: Evidence[]): EdgeSources {
+  const documents = new Set(evidence.map(doc => doc.id).filter(Boolean)).size;
+  const sources = new Set(evidence.map(doc => (doc.source ?? '').trim().toLowerCase()).filter(Boolean)).size;
+  const independence: SourceIndependence =
+    documents === 0 ? 'none'
+      : documents === 1 ? 'single'
+        : sources >= 2 ? 'independent'
+          : sources === 1 ? 'shared' : 'unknown';
+  return { documents, sources, independence };
+}
+
+export interface SharedSourceGroup {
+  document: string;
+  title?: string;
+  source?: string;
+  entities: { id: string; label: string }[];
+}
+
+/**
+ * Wave 18: documents that back more than one visible entity. A single register
+ * entry naming three companies, or one article naming two people, is evidence
+ * *about all of them* — a link-analysis signal that edge-based views cannot
+ * show. Entity-level only (node evidence), LoD display groups excluded, sorted
+ * by group size and then document id, bounded. It is a hint about shared
+ * provenance, never a claim of identity.
+ */
+export function sharedSourceGroups(nodes: GraphNode[], evidence: Evidence[], limit = 8): SharedSourceGroup[] {
+  const documents = new Map(evidence.map(doc => [doc.id, doc]));
+  const groups = new Map<string, { id: string; label: string }[]>();
+  for (const node of nodes) {
+    if (node.group) continue;
+    for (const document of new Set(node.evidenceIds)) {
+      if (!document) continue;
+      const list = groups.get(document);
+      const entry = { id: node.id, label: node.label };
+      if (list) list.push(entry); else groups.set(document, [entry]);
+    }
+  }
+  const out: SharedSourceGroup[] = [];
+  for (const [document, entities] of groups) {
+    if (entities.length < 2) continue;
+    const doc = documents.get(document);
+    out.push({
+      document,
+      ...(doc?.title ? { title: doc.title } : {}),
+      ...(doc?.source ? { source: doc.source } : {}),
+      entities: entities.sort((a, b) => (a.label.toLowerCase() < b.label.toLowerCase() ? -1 : a.label.toLowerCase() > b.label.toLowerCase() ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0)),
+    });
+  }
+  out.sort((a, b) => b.entities.length - a.entities.length || (a.document < b.document ? -1 : a.document > b.document ? 1 : 0));
+  return out.slice(0, Math.max(1, limit));
+}
+
+/** Wave 21: one pair of entities claimed in different ways. `sequence` means the
+ * documented windows do not overlap — most likely a change over time, not a
+ * contradiction. `conflict` means both claims are documented inside the same
+ * period, which needs a decision instead of a guess. `undated` means at least
+ * one side has no dates, so nothing can be concluded. */
+export type ConflictKind = 'conflict' | 'sequence' | 'undated';
+export interface PairConflict {
+  pair: [string, string];
+  labels: [string, string];
+  kind: ConflictKind;
+  claims: { type: string; documents: number; sources: number; first?: string; last?: string }[];
+}
+
+/**
+ * Wave 21: conflicting claims on the same pair. A pair carrying two different
+ * relationship types is not automatically a contradiction — an ownership that
+ * ended before a new one began is a history, not a dispute. So every type group
+ * gets its documented window, and only overlapping windows count as a conflict;
+ * undated groups stay 'undated' instead of being guessed either way. Deterministic
+ * (conflicts first, then pair key), bounded, and direction-agnostic.
+ */
+export function pairConflicts(nodes: GraphNode[], edges: GraphEdge[], evidence: Evidence[], limit = 8): PairConflict[] {
+  const labels = new Map(nodes.map(node => [node.id, node.label]));
+  const dates = new Map(evidence.map(doc => [doc.id, isoDate(doc.date)]));
+  const sources = new Map(evidence.map(doc => [doc.id, (doc.source ?? '').trim().toLowerCase()]));
+  const groups = new Map<string, Map<string, { documents: Set<string>; sources: Set<string>; first?: string; last?: string }>>();
+  for (const edge of edges) {
+    if (edge.source === edge.target || edge.type === 'AGGREGATED') continue;
+    const [a, b] = edge.source <= edge.target ? [edge.source, edge.target] : [edge.target, edge.source];
+    const key = `${a}|${b}`;
+    const byType = groups.get(key) ?? new Map();
+    groups.set(key, byType);
+    const claim = byType.get(edge.type) ?? { documents: new Set<string>(), sources: new Set<string>() };
+    byType.set(edge.type, claim);
+    for (const docId of edge.evidenceIds) {
+      claim.documents.add(docId);
+      const source = sources.get(docId);
+      if (source) claim.sources.add(source);
+      const day = dates.get(docId);
+      if (day) {
+        if (!claim.first || day < claim.first) claim.first = day;
+        if (!claim.last || day > claim.last) claim.last = day;
+      }
+    }
+  }
+  const out: PairConflict[] = [];
+  for (const [key, byType] of groups) {
+    if (byType.size < 2) continue;
+    const claims = [...byType.entries()]
+      .map(([type, claim]) => ({
+        type,
+        documents: claim.documents.size,
+        sources: claim.sources.size,
+        ...(claim.first ? { first: claim.first } : {}),
+        ...(claim.last ? { last: claim.last } : {}),
+      }))
+      .sort((a, b) => (a.type < b.type ? -1 : a.type > b.type ? 1 : 0));
+    let kind: ConflictKind = 'undated';
+    if (claims.every(claim => claim.first && claim.last)) {
+      const overlapping = claims.some((left, i) => claims.slice(i + 1).some(right => left.first! <= right.last! && right.first! <= left.last!));
+      kind = overlapping ? 'conflict' : 'sequence';
+    }
+    const [a, b] = key.split('|');
+    out.push({ pair: [a, b], labels: [labels.get(a) ?? a, labels.get(b) ?? b], kind, claims });
+  }
+  const rank: Record<ConflictKind, number> = { conflict: 0, sequence: 1, undated: 2 };
+  out.sort((x, y) => rank[x.kind] - rank[y.kind] || (x.pair[0] < y.pair[0] ? -1 : x.pair[0] > y.pair[0] ? 1 : x.pair[1] < y.pair[1] ? -1 : x.pair[1] > y.pair[1] ? 1 : 0));
+  return out.slice(0, Math.max(1, limit));
+}
+
+export interface Freshness {
+  reference: string;
+  months: number;
+  /** Entities whose newest document is older than the window. */
+  stale: { id: string; label: string; last?: string }[];
+  staleCount: number;
+  /** Entities with documents that carry no usable date at all. */
+  undatedCount: number;
+  entities: number;
+}
+
+/** Wave 21: subtracts whole months from an ISO day, clamping the day of month
+ * (31 Jan minus one month stays valid instead of rolling into March). */
+export function monthsBefore(reference: string, months: number): string | null {
+  const day = isoDate(reference);
+  if (!day) return null;
+  const year = Number(day.slice(0, 4)), month = Number(day.slice(5, 7)) - 1, date = Number(day.slice(8, 10));
+  const target = new Date(Date.UTC(year, month - Math.max(0, Math.trunc(months)), 1));
+  const lastDay = new Date(Date.UTC(target.getUTCFullYear(), target.getUTCMonth() + 1, 0)).getUTCDate();
+  const safeDay = Math.min(date, lastDay);
+  return `${target.getUTCFullYear()}-${String(target.getUTCMonth() + 1).padStart(2, '0')}-${String(safeDay).padStart(2, '0')}`;
+}
+
+/**
+ * Wave 21: is the case still current? Counts, per visible entity, the newest
+ * document date and compares it with a window counted back from `reference`.
+ * Entities without any documented date are reported separately — "unknown" is
+ * not "old". The reference date is passed in, so the result is reproducible.
+ */
+export function evidenceFreshness(nodes: GraphNode[], evidence: Evidence[], reference: string, months = 12, limit = 8): Freshness | null {
+  const cutoff = monthsBefore(reference, months), day = isoDate(reference);
+  if (!cutoff || !day) return null;
+  const dates = new Map(evidence.map(doc => [doc.id, isoDate(doc.date)]));
+  const stale: { id: string; label: string; last?: string }[] = [];
+  let undatedCount = 0, entities = 0;
+  for (const node of nodes) {
+    if (node.group) continue;
+    entities++;
+    let newest: string | undefined;
+    for (const docId of node.evidenceIds) {
+      const documentDay = dates.get(docId);
+      if (documentDay && (!newest || documentDay > newest)) newest = documentDay;
+    }
+    if (!newest) { undatedCount++; continue; }
+    if (newest < cutoff) stale.push({ id: node.id, label: node.label, last: newest });
+  }
+  stale.sort((a, b) => (a.last! < b.last! ? -1 : a.last! > b.last! ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  return { reference: day, months: Math.max(1, Math.trunc(months)), stale: stale.slice(0, Math.max(1, limit)), staleCount: stale.length, undatedCount, entities };
+}
+
+/** Wave 22: the only windows the currency check may use. A closed vocabulary
+ * keeps permalinks comparable and makes "stale" mean one defined thing. */
+export const FRESH_WINDOWS = [6, 12, 24, 60] as const;
+export type FreshWindow = (typeof FRESH_WINDOWS)[number];
+export const DEFAULT_FRESH_MONTHS: FreshWindow = 12;
+export function isFreshWindow(value: unknown): value is FreshWindow {
+  return FRESH_WINDOWS.includes(value as FreshWindow);
+}
+
+/** Wave 23: how far a claim can be trusted — two honest dimensions, no invented
+ * score. `sources` counts *independent* sources: unnamed documents can back a
+ * claim but can never corroborate it (Wave 18's rule), so two unnamed documents
+ * still leave an entity on a single source. */
+export type RiskState = 'unbacked' | 'weak' | 'thin' | 'stale' | 'undated' | 'solid';
+export interface RiskEntry {
+  id: string; label: string; type: EntityType;
+  documents: number; sources: number; relations: number; last?: string;
+  state: RiskState;
+}
+export interface RiskReport {
+  reference: string; months: number; entities: number;
+  states: Record<RiskState, number>;
+  /** Every entity that is not solid, worst first. */
+  entries: RiskEntry[];
+  weakCount: number;
+}
+
+/** Wave 23: per entity, the documents that mention it — attached directly or via
+ * a visible relationship — the distinct *independent* source names behind them
+ * (unnamed documents can back a claim but never corroborate it, Wave 18's rule)
+ * and the newest usable date. Shared by the panel and the thin-file filter so
+ * both always mean the same thing. */
+export function nodeBacking(nodes: GraphNode[], edges: GraphEdge[], evidence: Evidence[]): Map<string, { documents: number; sources: number; newest?: string }> {
+  const dates = new Map(evidence.map(doc => [doc.id, isoDate(doc.date)]));
+  const names = new Map(evidence.map(doc => [doc.id, (doc.source ?? '').trim().toLowerCase()]));
+  const documents = new Map<string, Set<string>>();
+  const addDoc = (id: string, docId: string) => {
+    const set = documents.get(id) ?? new Set<string>();
+    set.add(docId);
+    documents.set(id, set);
+  };
+  for (const node of nodes) for (const docId of node.evidenceIds) addDoc(node.id, docId);
+  for (const edge of edges) for (const docId of edge.evidenceIds) { addDoc(edge.source, docId); addDoc(edge.target, docId); }
+  const backing = new Map<string, { documents: number; sources: number; newest?: string }>();
+  for (const node of nodes) {
+    const sources = new Set<string>();
+    let count = 0, newest: string | undefined;
+    for (const docId of documents.get(node.id) ?? []) {
+      if (!dates.has(docId) && !names.has(docId)) continue;
+      count++;
+      const name = names.get(docId);
+      if (name) sources.add(name);
+      const day = dates.get(docId);
+      if (day && (!newest || day > newest)) newest = day;
+    }
+    backing.set(node.id, { documents: count, sources: sources.size, ...(newest ? { newest } : {}) });
+  }
+  return backing;
+}
+
+/**
+ * Wave 23: ranks the file by what it can actually carry. Each visible entity
+ * gets its document count, its *independent* source count and its newest date;
+ * the combination decides the state — `weak` is thin *and* old (the claim needs
+ * a second source and a fresher one), `thin` is thin but current, `stale` is
+ * corroborated but old, `undated` is corroborated but undateable, `unbacked` has
+ * no document at all. Deterministic, bounded, groups excluded.
+ */
+export function evidenceRisk(nodes: GraphNode[], edges: GraphEdge[], evidence: Evidence[], reference: string, months = 12, limit = 8): RiskReport | null {
+  const cutoff = monthsBefore(reference, months), day = isoDate(reference);
+  if (!cutoff || !day) return null;
+  const relations = new Map<string, number>();
+  for (const edge of edges) {
+    if (edge.source === edge.target) continue;
+    relations.set(edge.source, (relations.get(edge.source) ?? 0) + 1);
+    relations.set(edge.target, (relations.get(edge.target) ?? 0) + 1);
+  }
+  const backing = nodeBacking(nodes, edges, evidence);
+  const states: Record<RiskState, number> = { unbacked: 0, weak: 0, thin: 0, stale: 0, undated: 0, solid: 0 };
+  const entries: RiskEntry[] = [];
+  let entities = 0;
+  for (const node of nodes) {
+    if (node.group) continue;
+    entities++;
+    const own = backing.get(node.id) ?? { documents: 0, sources: 0 };
+    const newest = own.newest;
+    let state: RiskState;
+    if (own.documents === 0) state = 'unbacked';
+    else if (own.sources <= 1) state = !newest || newest < cutoff ? 'weak' : 'thin';
+    else state = !newest ? 'undated' : newest < cutoff ? 'stale' : 'solid';
+    states[state]++;
+    entries.push({ id: node.id, label: node.label, type: node.type, documents: own.documents, sources: own.sources, relations: relations.get(node.id) ?? 0, ...(newest ? { last: newest } : {}), state });
+  }
+  const rank: Record<RiskState, number> = { weak: 0, stale: 1, thin: 2, undated: 3, unbacked: 4, solid: 5 };
+  entries.sort((a, b) => rank[a.state] - rank[b.state]
+    || a.sources - b.sources
+    || (a.last ?? '') .localeCompare(b.last ?? '')
+    || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  const ranked = entries.filter(entry => entry.state !== 'solid');
+  return { reference: day, months: Math.max(1, Math.trunc(months)), entities, states, entries: ranked.slice(0, Math.max(1, limit)), weakCount: ranked.length };
+}
+
+/** Wave 23: the weak-file list as RFC-4180 CSV — the part of a case file that
+ * needs a follow-up call, ready to hand over. */
+export function riskToCSV(report: RiskReport): string {
+  const header = ['id', 'label', 'type', 'state', 'documents', 'sources', 'relations', 'last'].map(csvCell).join(',');
+  const rows = report.entries.map(entry => [entry.id, entry.label, entry.type, entry.state, entry.documents, entry.sources, entry.relations, entry.last].map(csvCell).join(','));
+  return [header, ...rows].join('\n') + '\n';
+}
+
+/** Wave 24: what changed between an earlier export and the one on screen.
+ * Identity is deliberately conservative: entities by id, relationships by the
+ * directed triple `source|type|target`, documents by id — a renamed label or a
+ * new telling of the same story is *not* a new relationship. */
+export interface DatasetDiff {
+  entities: { added: number; removed: number; unchanged: number };
+  relations: { added: number; removed: number; unchanged: number };
+  documents: { added: number; removed: number; unchanged: number };
+  newEntities: { id: string; label: string; type: EntityType }[];
+  goneEntities: { id: string; label: string; type: EntityType }[];
+  newRelations: { key: string; source: string; target: string; type: string }[];
+  goneRelations: { key: string; source: string; target: string; type: string }[];
+  newDocuments: { id: string; title?: string; source?: string; date?: string }[];
+  /** Pairs that clash now but did not clash in the comparison state. */
+  newConflicts: PairConflict[];
+  /** Pairs that clashed before and no longer do — possibly resolved, possibly lost. */
+  resolvedConflicts: number;
+  /** Entities that gained their second independent source since the comparison. */
+  corroborated: { id: string; label: string; sources: number }[];
+  /** Wave 28: id sets so a watchlist can be judged without keeping the baseline
+   * around. The display lists above stay short; these stay complete up to
+   * `cap`, and `capped` says honestly when they are not. */
+  watch: {
+    added: string[]; gone: string[]; corroborated: string[]; conflicted: string[];
+    relations: string[]; documented: string[]; cap: number; capped: boolean;
+  };
+}
+
+const relationKey = (edge: GraphEdge) => `${edge.source}|${edge.type}|${edge.target}`;
+
+/**
+ * Wave 24: the diff between a comparison state and the current dataset. Both
+ * sides are judged with the same rules the panels use (conflicts, independent
+ * sources), so "new contradiction" and "now corroborated" mean exactly what they
+ * mean elsewhere. Every list is bounded; the counts are complete.
+ */
+export function diffDatasets(previous: Dataset, current: Dataset, limit = 6): DatasetDiff {
+  const beforeNodes = new Map(previous.nodes.map(node => [node.id, node]));
+  const afterNodes = new Map(current.nodes.map(node => [node.id, node]));
+  const beforeEdges = new Map(previous.edges.map(edge => [relationKey(edge), edge]));
+  const afterEdges = new Map(current.edges.map(edge => [relationKey(edge), edge]));
+  const beforeDocs = new Map(previous.evidence.map(doc => [doc.id, doc]));
+  const afterDocs = new Map(current.evidence.map(doc => [doc.id, doc]));
+  const byId = (a: { id: string }, b: { id: string }) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  const byKey = (a: { key: string }, b: { key: string }) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
+
+  const newEntities = [...afterNodes.values()].filter(node => !beforeNodes.has(node.id))
+    .map(node => ({ id: node.id, label: node.label, type: node.type })).sort(byId);
+  const goneEntities = [...beforeNodes.values()].filter(node => !afterNodes.has(node.id))
+    .map(node => ({ id: node.id, label: node.label, type: node.type })).sort(byId);
+  const newRelations = [...afterEdges.entries()].filter(([key]) => !beforeEdges.has(key))
+    .map(([key, edge]) => ({ key, source: edge.source, target: edge.target, type: edge.type })).sort(byKey);
+  const goneRelations = [...beforeEdges.entries()].filter(([key]) => !afterEdges.has(key))
+    .map(([key, edge]) => ({ key, source: edge.source, target: edge.target, type: edge.type })).sort(byKey);
+  const newDocuments = [...afterDocs.values()].filter(doc => !beforeDocs.has(doc.id))
+    .map(doc => ({ id: doc.id, ...(doc.title ? { title: doc.title } : {}), ...(doc.source ? { source: doc.source } : {}), ...(doc.date ? { date: doc.date } : {}) })).sort(byId);
+
+  const clash = (data: Dataset) => new Map(pairConflicts(data.nodes, data.edges, data.evidence, Number.POSITIVE_INFINITY)
+    .filter(entry => entry.kind === 'conflict')
+    .map(entry => [entry.pair.join('|'), entry]));
+  const beforeClashes = clash(previous), afterClashes = clash(current);
+  const newConflicts = [...afterClashes.entries()].filter(([key]) => !beforeClashes.has(key)).sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)).map(([, entry]) => entry);
+  const resolvedConflicts = [...beforeClashes.keys()].filter(key => !afterClashes.has(key)).length;
+
+  const beforeSources = nodeBacking(previous.nodes, previous.edges, previous.evidence);
+  const afterSources = nodeBacking(current.nodes, current.edges, current.evidence);
+  const corroborated = current.nodes.filter(node => !node.group
+    && (beforeSources.get(node.id)?.sources ?? 0) <= 1
+    && (afterSources.get(node.id)?.sources ?? 0) >= 2)
+    .map(node => ({ id: node.id, label: node.label, sources: afterSources.get(node.id)!.sources })).sort(byId);
+
+  // Wave 28: one compact index of *which entities* each change touches. Built
+  // here, where both sides are already in memory, so the watchlist digest never
+  // needs the baseline file again.
+  const cap = 2000;
+  const newDocumentIds = new Set(newDocuments.map(doc => doc.id));
+  // A document attached to a relationship documents both of its ends (the rule
+  // nodeBacking uses since wave 23), so "newly documented" must look there too.
+  const tenants = new Map<string, Set<string>>();
+  const seenBy = (docId: string, nodeIds: string[]) => {
+    if (!newDocumentIds.has(docId)) return;
+    for (const id of nodeIds) {
+      const set = tenants.get(id) ?? new Set<string>();
+      set.add(docId);
+      tenants.set(id, set);
+    }
+  };
+  for (const node of current.nodes) for (const docId of node.evidenceIds) seenBy(docId, [node.id]);
+  for (const edge of current.edges) for (const docId of edge.evidenceIds) seenBy(docId, [edge.source, edge.target]);
+  const rawWatch = {
+    added: newEntities.map(entry => entry.id),
+    gone: goneEntities.map(entry => entry.id),
+    corroborated: corroborated.map(entry => entry.id),
+    conflicted: [...new Set(newConflicts.flatMap(entry => entry.pair))],
+    relations: [...new Set([...newRelations, ...goneRelations].flatMap(entry => [entry.source, entry.target]))],
+    documented: current.nodes.filter(node => !node.group && tenants.has(node.id)).map(node => node.id),
+  };
+  const capIds = (ids: string[]) => [...new Set(ids)].sort().slice(0, cap);
+  const watch = {
+    added: capIds(rawWatch.added), gone: capIds(rawWatch.gone), corroborated: capIds(rawWatch.corroborated),
+    conflicted: capIds(rawWatch.conflicted), relations: capIds(rawWatch.relations), documented: capIds(rawWatch.documented),
+    cap, capped: Object.values(rawWatch).some(ids => new Set(ids).size > cap),
+  };
+
+  return {
+    entities: { added: newEntities.length, removed: goneEntities.length, unchanged: [...afterNodes.keys()].filter(id => beforeNodes.has(id)).length },
+    relations: { added: newRelations.length, removed: goneRelations.length, unchanged: [...afterEdges.keys()].filter(key => beforeEdges.has(key)).length },
+    documents: { added: newDocuments.length, removed: [...beforeDocs.keys()].filter(id => !afterDocs.has(id)).length, unchanged: [...afterDocs.keys()].filter(id => beforeDocs.has(id)).length },
+    newEntities: newEntities.slice(0, limit), goneEntities: goneEntities.slice(0, limit),
+    newRelations: newRelations.slice(0, limit), goneRelations: goneRelations.slice(0, limit),
+    newDocuments: newDocuments.slice(0, limit),
+    newConflicts: newConflicts.slice(0, limit), resolvedConflicts, corroborated: corroborated.slice(0, limit),
+    watch,
+  };
+}
+
+/** Wave 24: the change list as RFC-4180 CSV — one row per change, ready to mail. */
+export function diffToCSV(diff: DatasetDiff): string {
+  const rows: (string | number | undefined)[][] = [];
+  for (const entry of diff.newEntities) rows.push(['entity', 'added', entry.id, entry.label, entry.type]);
+  for (const entry of diff.goneEntities) rows.push(['entity', 'removed', entry.id, entry.label, entry.type]);
+  for (const entry of diff.newRelations) rows.push(['relation', 'added', entry.key, '', entry.type]);
+  for (const entry of diff.goneRelations) rows.push(['relation', 'removed', entry.key, '', entry.type]);
+  for (const entry of diff.newDocuments) rows.push(['document', 'added', entry.id, entry.title ?? '', entry.source ?? '']);
+  for (const entry of diff.corroborated) rows.push(['corroboration', 'added', entry.id, entry.label, `${entry.sources} sources`]);
+  for (const entry of diff.newConflicts) rows.push(['conflict', 'added', entry.pair.join('|'), entry.labels.join(' ↔ '), entry.kind]);
+  return [['kind', 'change', 'ref', 'label', 'detail'].map(csvCell).join(','), ...rows.map(row => row.map(csvCell).join(','))].join('\n') + '\n';
+}
+
+/** Wave 28: what changed *for the entities you watch* — the monitoring question
+ * the diff alone cannot answer, because most of a diff is usually noise. */
+export type WatchChangeKind = 'conflict' | 'gone' | 'added' | 'corroborated' | 'relation' | 'document';
+export interface WatchChange {
+  id: string;
+  label: string;
+  kinds: WatchChangeKind[];
+}
+
+const WATCH_CHANGE_RANK: Record<WatchChangeKind, number> = {
+  conflict: 0, gone: 1, added: 2, corroborated: 3, relation: 4, document: 5,
+};
+
+/**
+ * Wave 28: intersects the watchlist with the change index and reports each
+ * watched entity once, with every kind of change it saw. Ordered by what needs
+ * attention (a new contradiction before a new document), deterministic, bounded,
+ * and only entities that actually changed appear — a digest that lists unchanged
+ * watches is not a digest.
+ */
+export function watchChanges(watch: string[], diff: DatasetDiff, nodes: GraphNode[], limit = 12): WatchChange[] {
+  const index = diff.watch;
+  if (!index) return [];
+  const kinds = new Map<string, Set<WatchChangeKind>>();
+  const add = (ids: string[], kind: WatchChangeKind) => {
+    for (const id of ids) {
+      const set = kinds.get(id) ?? new Set<WatchChangeKind>();
+      set.add(kind);
+      kinds.set(id, set);
+    }
+  };
+  add(index.conflicted, 'conflict');
+  add(index.gone, 'gone');
+  add(index.added, 'added');
+  add(index.corroborated, 'corroborated');
+  add(index.relations, 'relation');
+  add(index.documented, 'document');
+  const labels = new Map(nodes.map(node => [node.id, node.label]));
+  const entries: WatchChange[] = [];
+  for (const id of watch) {
+    const found = kinds.get(id);
+    if (!found) continue;
+    entries.push({
+      id,
+      label: labels.get(id) ?? id,
+      kinds: [...found].sort((a, b) => WATCH_CHANGE_RANK[a] - WATCH_CHANGE_RANK[b]),
+    });
+  }
+  entries.sort((a, b) => WATCH_CHANGE_RANK[a.kinds[0]] - WATCH_CHANGE_RANK[b.kinds[0]]
+    || (a.label < b.label ? -1 : a.label > b.label ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  return entries.slice(0, Math.max(1, limit));
+}
+
+/** Wave 28: the digest as RFC-4180 CSV — "what moved among what I watch". */
+export function watchChangesToCSV(changes: WatchChange[]): string {
+  const header = ['id', 'label', 'changes'].map(csvCell).join(',');
+  const rows = changes.map(entry => [entry.id, entry.label, entry.kinds.join(' | ')].map(csvCell).join(','));
+  return [header, ...rows].join('\n') + '\n';
+}
+
+/** Wave 32: who reported a relationship first, and how far behind the rest came.
+ * Primacy is a source-reliability signal: an outlet that is consistently first is
+ * worth following, one that only ever follows is worth checking against it. */
+export interface PrimacyClaim {
+  /** Relationship key `source|type|target`. */
+  key: string;
+  label: string;
+  first: { outlet: string; date: string };
+  /** Outlets that documented the same relationship later, with their lag in days. */
+  followers: { outlet: string; date: string; lag: number }[];
+}
+
+export interface OutletPrimacy {
+  outlet: string;
+  /** Relationships where this outlet published the earliest document. */
+  firsts: number;
+  /** Relationships this outlet only reported after someone else. */
+  followups: number;
+  /** Mean lag in days over its follow-ups; undefined when it never followed. */
+  meanLag?: number;
+  /** Its own dated documents that carry a source name. */
+  documents: number;
+}
+
+export interface PrimacyReport {
+  relationships: PrimacyClaim[];
+  outlets: OutletPrimacy[];
+  /** Relationships with documents but no usable date — nothing can be said. */
+  undated: number;
+  /** Relationships documented by a single outlet: no race to report. */
+  solo: number;
+}
+
+const dayDiff = (from: string, to: string): number =>
+  Math.max(0, Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000));
+
+/**
+ * Wave 32: first-report attribution over the visible slice. Only documents that
+ * carry **both** a date and a source name take part — an unnamed document proves a
+ * claim but cannot be credited to anyone, and an undated one cannot be ordered.
+ * Ties on the same day count as shared primacy for every outlet on that day (no
+ * invented order), and a relationship with a single outlet is reported as `solo`
+ * rather than as a "first". Deterministic, bounded, no clock.
+ */
+export function sourcePrimacy(nodes: GraphNode[], edges: GraphEdge[], evidence: Evidence[], limitRelations = 8, limitOutlets = 10): PrimacyReport {
+  const documents = new Map(evidence.map(doc => [doc.id, doc]));
+  const labels = new Map(nodes.map(node => [node.id, node.label]));
+  const relations: { key: string; edge: GraphEdge }[] = [];
+  for (const edge of edges) {
+    if (edge.source === edge.target || edge.type === 'AGGREGATED') continue;
+    const key = `${edge.source}|${edge.type}|${edge.target}`;
+    relations.push({ key, edge });
+  }
+  const outletDocs = new Map<string, number>();
+  for (const doc of evidence) {
+    const outlet = (doc.source ?? '').trim().toLowerCase();
+    if (outlet && isoDate(doc.date)) outletDocs.set(outlet, (outletDocs.get(outlet) ?? 0) + 1);
+  }
+  const firsts = new Map<string, number>(), followups = new Map<string, number>(), lags = new Map<string, number[]>();
+  const claims: PrimacyClaim[] = [];
+  let undated = 0, solo = 0;
+  for (const { key, edge } of relations) {
+    // Earliest document per outlet: one outlet cannot corroborate itself.
+    const oldest = new Map<string, string>();
+    for (const docId of edge.evidenceIds) {
+      const doc = documents.get(docId);
+      const outlet = (doc?.source ?? '').trim().toLowerCase();
+      const day = isoDate(doc?.date);
+      if (!outlet || !day) continue;
+      const current = oldest.get(outlet);
+      if (!current || day < current) oldest.set(outlet, day);
+    }
+    const ordered = [...oldest.entries()].sort((a, b) => (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+    if (!ordered.length) { undated++; continue; }
+    if (ordered.length === 1) { solo++; firsts.set(ordered[0][0], (firsts.get(ordered[0][0]) ?? 0) + 1); continue; }
+    const earliest = ordered[0][1];
+    const leaders = ordered.filter(([, day]) => day === earliest).map(([outlet]) => outlet);
+    const followers = ordered.filter(([, day]) => day > earliest);
+    for (const outlet of leaders) firsts.set(outlet, (firsts.get(outlet) ?? 0) + 1);
+    for (const [outlet, day] of followers) {
+      followups.set(outlet, (followups.get(outlet) ?? 0) + 1);
+      const list = lags.get(outlet) ?? [];
+      list.push(dayDiff(earliest, day));
+      lags.set(outlet, list);
+    }
+    claims.push({
+      key,
+      label: `${labels.get(edge.source) ?? edge.source} → ${labels.get(edge.target) ?? edge.target} · ${edge.type}`,
+      first: { outlet: leaders[0], date: earliest },
+      followers: followers.map(([outlet, day]) => ({ outlet, date: day, lag: dayDiff(earliest, day) })),
+    });
+  }
+  claims.sort((a, b) => b.followers.length - a.followers.length
+    || (a.first.date < b.first.date ? -1 : a.first.date > b.first.date ? 1 : a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+  const names = new Set<string>([...firsts.keys(), ...followups.keys(), ...outletDocs.keys()]);
+  const outlets: OutletPrimacy[] = [...names].map(outlet => {
+    const own = lags.get(outlet) ?? [];
+    return {
+      outlet,
+      firsts: firsts.get(outlet) ?? 0,
+      followups: followups.get(outlet) ?? 0,
+      ...(own.length ? { meanLag: Math.round(own.reduce((sum, lag) => sum + lag, 0) / own.length) } : {}),
+      documents: outletDocs.get(outlet) ?? 0,
+    };
+  });
+  outlets.sort((a, b) => b.firsts - a.firsts || b.documents - a.documents || (a.outlet < b.outlet ? -1 : a.outlet > b.outlet ? 1 : 0));
+  return { relationships: claims.slice(0, Math.max(1, limitRelations)), outlets: outlets.slice(0, Math.max(1, limitOutlets)), undated, solo };
+}
+
+/** Wave 32: the primacy table as RFC-4180 CSV. */
+export function primacyToCSV(report: PrimacyReport): string {
+  const header = ['outlet', 'firsts', 'followups', 'mean_lag_days', 'documents'].map(csvCell).join(',');
+  const rows = report.outlets.map(entry => [entry.outlet, entry.firsts, entry.followups, entry.meanLag, entry.documents].map(csvCell).join(','));
+  return [header, ...rows].join('\n') + '\n';
+}
+
+/** Wave 33: a source's standing in context. Deliberately not a score: a named
+ * state with the counts behind it, because "first but often wrong" and "slow but
+ * never wrong" must not collapse into one number. */
+export type SourceStanding = 'contradictory' | 'leader' | 'follower' | 'thin';
+
+export interface SourceProfile {
+  outlet: string;
+  standing: SourceStanding;
+  /** Relationships where its document was the earliest — includes solo ones. */
+  firsts: number;
+  /** Relationships it only reported after another outlet. */
+  followups: number;
+  /** Mean lag in days over its follow-ups; undefined when it never followed. */
+  meanLag?: number;
+  /** Relationships where it was the only dated source: a first without a race. */
+  soloClaims: number;
+  /** Conflicting pairs it reported a side of — a fact, not yet a verdict: a
+   *  disagreement between outlets is not a defect of either, because the file
+   *  cannot say who is right. Only contradicting *itself* is held against it. */
+  conflicts: number;
+  /** Conflicting pairs where it is the only named outlet — it contradicts itself. */
+  selfConflicts: number;
+  /** Its dated documents that carry a source name (same counting as wave 32). */
+  documents: number;
+  /** Its named but undated documents on relationships — usable evidence, unusable timing. */
+  undatedDocuments: number;
+  first?: string;
+  last?: string;
+}
+
+export interface SourceScorecardReport {
+  profiles: SourceProfile[];
+  /** Named outlets with at least one document on a relationship. */
+  sources: number;
+  contradictory: number;
+  leaders: number;
+  followers: number;
+  /** Sources that reported a side of at least one dispute. */
+  contested: number;
+  /** Conflicting pairs with no named source at all — nobody can be judged. */
+  unattributed: number;
+}
+
+/**
+ * Wave 33: what is this source worth *in context*? Wave 32 asked who was first;
+ * this asks whether that first report holds up. Two different things are kept
+ * apart on purpose: contradicting *itself* is a defect it caused, while a
+ * disagreement *between* outlets is a fact the file cannot adjudicate — so the
+ * latter is counted beside the verdict, never turned into a demotion. The verdict
+ * is therefore contradictory → leader → follower → thin, and a lone claim never
+ * counts as a win: `soloClaims` sits next to the firsts it inflates. Conflicts
+ * come from `pairConflicts` (only `conflict` pairs — a documented sequence is a
+ * history, not a dispute). Deterministic, bounded, no clock.
+ */
+export function sourceScorecard(edges: GraphEdge[], evidence: Evidence[], conflicts: PairConflict[] = [], limit = 8): SourceScorecardReport {
+  const documents = new Map(evidence.map(doc => [doc.id, doc]));
+  interface Tally { firsts: number; followups: number; lags: number[]; solo: number; undated: number }
+  const tallies = new Map<string, Tally>();
+  const tally = (outlet: string): Tally => {
+    const existing = tallies.get(outlet);
+    if (existing) return existing;
+    const fresh: Tally = { firsts: 0, followups: 0, lags: [], solo: 0, undated: 0 };
+    tallies.set(outlet, fresh);
+    return fresh;
+  };
+  const pairOutlets = new Map<string, Set<string>>();
+  for (const edge of edges) {
+    if (edge.source === edge.target || edge.type === 'AGGREGATED') continue;
+    const pairKey = edge.source <= edge.target ? `${edge.source}|${edge.target}` : `${edge.target}|${edge.source}`;
+    const oldest = new Map<string, string>();
+    for (const docId of edge.evidenceIds) {
+      const doc = documents.get(docId);
+      const outlet = (doc?.source ?? '').trim().toLowerCase();
+      if (!outlet) continue;
+      const own = tally(outlet);
+      const sides = pairOutlets.get(pairKey) ?? new Set<string>();
+      pairOutlets.set(pairKey, sides);
+      sides.add(outlet);
+      const day = isoDate(doc?.date);
+      if (!day) { own.undated++; continue; }
+      const current = oldest.get(outlet);
+      if (!current || day < current) oldest.set(outlet, day);
+    }
+    const ordered = [...oldest.entries()].sort((a, b) => (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+    if (!ordered.length) continue;
+    if (ordered.length === 1) {
+      const own = tally(ordered[0][0]);
+      own.firsts++;
+      own.solo++;
+      continue;
+    }
+    const earliest = ordered[0][1];
+    for (const [outlet, day] of ordered) {
+      const own = tally(outlet);
+      if (day === earliest) { own.firsts++; continue; }
+      own.followups++;
+      own.lags.push(dayDiff(earliest, day));
+    }
+  }
+  // Named + dated documents and their span, counted exactly like wave 32.
+  const docCount = new Map<string, number>(), spans = new Map<string, { first?: string; last?: string }>();
+  for (const doc of evidence) {
+    const outlet = (doc.source ?? '').trim().toLowerCase();
+    const day = isoDate(doc.date);
+    if (!outlet || !day) continue;
+    docCount.set(outlet, (docCount.get(outlet) ?? 0) + 1);
+    const span = spans.get(outlet) ?? {};
+    if (!span.first || day < span.first) span.first = day;
+    if (!span.last || day > span.last) span.last = day;
+    spans.set(outlet, span);
+  }
+  // Contradictions only count where they are attributed: unnamed documents cannot be judged.
+  let unattributed = 0;
+  const disputed = new Map<string, number>(), selfDisputed = new Map<string, number>();
+  for (const conflict of conflicts) {
+    if (conflict.kind !== 'conflict') continue;
+    const outlets = pairOutlets.get(`${conflict.pair[0]}|${conflict.pair[1]}`) ?? new Set<string>();
+    if (!outlets.size) { unattributed++; continue; }
+    if (outlets.size === 1) {
+      const only = [...outlets][0];
+      selfDisputed.set(only, (selfDisputed.get(only) ?? 0) + 1);
+      continue;
+    }
+    for (const outlet of outlets) disputed.set(outlet, (disputed.get(outlet) ?? 0) + 1);
+  }
+  const rank: Record<SourceStanding, number> = { contradictory: 0, leader: 1, follower: 2, thin: 3 };
+  const profiles: SourceProfile[] = [...tallies.entries()].map(([outlet, own]) => {
+    const selfConflicts = selfDisputed.get(outlet) ?? 0;
+    const conflicts = disputed.get(outlet) ?? 0;
+    // A first without a race is not a win, so a source that only ever stood alone stays thin.
+    const standing: SourceStanding = selfConflicts ? 'contradictory'
+      : own.firsts > own.solo ? 'leader' : own.followups ? 'follower' : 'thin';
+    const span = spans.get(outlet) ?? {};
+    return {
+      outlet, standing,
+      firsts: own.firsts, followups: own.followups,
+      ...(own.lags.length ? { meanLag: Math.round(own.lags.reduce((sum, lag) => sum + lag, 0) / own.lags.length) } : {}),
+      soloClaims: own.solo, conflicts, selfConflicts,
+      documents: docCount.get(outlet) ?? 0, undatedDocuments: own.undated,
+      ...(span.first ? { first: span.first } : {}),
+      ...(span.last ? { last: span.last } : {}),
+    };
+  });
+  profiles.sort((a, b) => rank[a.standing] - rank[b.standing] || b.firsts - a.firsts || b.documents - a.documents
+    || (a.outlet < b.outlet ? -1 : a.outlet > b.outlet ? 1 : 0));
+  return {
+    profiles: profiles.slice(0, Math.max(1, limit)),
+    sources: profiles.length,
+    contradictory: profiles.filter(entry => entry.standing === 'contradictory').length,
+    leaders: profiles.filter(entry => entry.standing === 'leader').length,
+    followers: profiles.filter(entry => entry.standing === 'follower').length,
+    contested: profiles.filter(entry => entry.conflicts > 0 || entry.selfConflicts > 0).length,
+    unattributed,
+  };
+}
+
+/** Wave 33: the source verdict as RFC-4180 CSV. */
+export function sourceScorecardCSV(report: SourceScorecardReport): string {
+  const header = ['outlet', 'standing', 'firsts', 'followups', 'mean_lag_days', 'solo_claims', 'conflicts', 'self_conflicts', 'documents', 'undated_documents', 'first', 'last'].map(csvCell).join(',');
+  const rows = report.profiles.map(entry => [entry.outlet, entry.standing, entry.firsts, entry.followups, entry.meanLag,
+    entry.soloClaims, entry.conflicts, entry.selfConflicts, entry.documents, entry.undatedDocuments, entry.first, entry.last].map(csvCell).join(','));
+  return [header, ...rows].join('\n') + '\n';
+}
+
+/** Wave 34: the case at a glance. Every other panel answers one question; this
+ * one answers "what is this file, and what should I look at first?" — in a few
+ * sentences and at most three findings that lead straight to the filter which
+ * shows them. It adds no new judgement: it only orders what the reports already
+ * say, so a reader who trusts the panels can trust the summary. */
+export type CaseFlagKind = 'dispute' | 'selfContradiction' | 'singleSource' | 'stale';
+
+/** The filter a finding jumps to — the UI must not invent its own. */
+export type CaseAction =
+  | { kind: 'dispute' }
+  | { kind: 'outlet'; outlet: string }
+  | { kind: 'singleSource' }
+  | { kind: 'fresh'; months: FreshWindow };
+
+export interface CaseFlag {
+  kind: CaseFlagKind;
+  count: number;
+  /** The name the finding is about, when it is about one thing (an outlet). */
+  subject?: string;
+  action: CaseAction;
+}
+
+export interface CaseSummary {
+  /** One sentence: how big is this file and how well is it backed. */
+  headline: string;
+  /** Decision-relevant facts, in the order the report lists them. */
+  lines: string[];
+  /** At most three findings worth checking first. */
+  flags: CaseFlag[];
+  /** True when the slice shows no relationship at all — nothing to summarise. */
+  empty: boolean;
+}
+
+export interface CaseSummaryInput {
+  stats?: { filteredNodes: number; filteredEdges: number; totalNodes?: number; totalEdges?: number };
+  conflicts?: PairConflict[];
+  gaps?: ProvenanceGaps;
+  freshness?: Freshness;
+  risk?: RiskReport;
+  scorecard?: SourceScorecardReport;
+  primacy?: PrimacyReport;
+}
+
+/**
+ * Wave 34: one paragraph per dimension, no new claims. Flags are ordered by how
+ * much they cost the reader if ignored — a dispute undermines a conclusion, a
+ * source contradicting itself undermines the source, a single-source link is a
+ * gap to close, stale material is a gap to refresh — and capped at three so the
+ * summary stays a glance and not a second report. Pure, deterministic, clock-free.
+ */
+export function caseSummary(input: CaseSummaryInput, lang: 'de' | 'en' = 'de'): CaseSummary {
+  const en = lang === 'en';
+  const locale = en ? 'en-GB' : 'de-DE';
+  const nodes = Math.max(0, Math.trunc(input.stats?.filteredNodes ?? 0));
+  const edges = Math.max(0, Math.trunc(input.stats?.filteredEdges ?? 0));
+  if (!nodes || !edges) {
+    return {
+      headline: en ? 'No relationship is visible in this slice.' : 'In diesem Ausschnitt ist keine Beziehung sichtbar.',
+      lines: [], flags: [], empty: true,
+    };
+  }
+  const conflicts = (input.conflicts ?? []).filter(entry => entry.kind === 'conflict');
+  const undatedConflicts = (input.conflicts ?? []).filter(entry => entry.kind === 'undated').length;
+  const card = input.scorecard;
+  const sources = card?.sources ?? 0;
+  const outletWord = sources === 1 ? (en ? '1 source' : '1 Quelle') : `${sources.toLocaleString(locale)} ${en ? 'sources' : 'Quellen'}`;
+  const headline = en
+    ? `${nodes.toLocaleString(locale)} entities · ${edges.toLocaleString(locale)} relationships${sources ? ` · ${outletWord}` : ' · no named source'}`
+    : `${nodes.toLocaleString(locale)} Entitäten · ${edges.toLocaleString(locale)} Beziehungen${sources ? ` · ${outletWord}` : ' · keine benannte Quelle'}`;
+  const lines: string[] = [];
+  const gaps = input.gaps;
+  if (gaps) lines.push(en
+    ? `Documents: ${gaps.edgesBacked}/${gaps.edges} relationships · ${gaps.singleSourceCount} from a single outlet`
+    : `Belege: ${gaps.edgesBacked}/${gaps.edges} Beziehungen · ${gaps.singleSourceCount} aus einer einzigen Quelle`);
+  const risk = input.risk;
+  if (risk) lines.push(en
+    ? `Follow-up: ${risk.weakCount}/${risk.entities} entities (${risk.months} months)`
+    : `Nachrecherche: ${risk.weakCount}/${risk.entities} Entitäten (${risk.months} Monate)`);
+  const fresh = input.freshness;
+  if (fresh) lines.push(en
+    ? `Currency: ${fresh.staleCount}/${fresh.entities} entities older than ${fresh.months} months${fresh.undatedCount ? ` · ${fresh.undatedCount} without a date` : ''}`
+    : `Aktualität: ${fresh.staleCount}/${fresh.entities} Entitäten älter als ${fresh.months} Monate${fresh.undatedCount ? ` · ${fresh.undatedCount} ohne Datum` : ''}`);
+  if (card) lines.push(en
+    ? `Sources (${card.sources}): first ${card.leaders} · follow only ${card.followers} · self-contradicting ${card.contradictory}${card.contested ? ` · in a dispute ${card.contested}` : ''}`
+    : `Quellen (${card.sources}): zuerst ${card.leaders} · folgen nur ${card.followers} · selbst widersprüchlich ${card.contradictory}${card.contested ? ` · im Streit ${card.contested}` : ''}`);
+  if (conflicts.length || undatedConflicts) lines.push(en
+    ? `Disputes: ${conflicts.length}${undatedConflicts ? ` · ${undatedConflicts} without a usable date` : ''}`
+    : `Streitfälle: ${conflicts.length}${undatedConflicts ? ` · ${undatedConflicts} ohne verwertbares Datum` : ''}`);
+  const flags: CaseFlag[] = [];
+  if (conflicts.length) flags.push({ kind: 'dispute', count: conflicts.length, action: { kind: 'dispute' } });
+  const selfContradicting = (card?.profiles ?? []).filter(entry => entry.selfConflicts > 0);
+  if (selfContradicting.length) {
+    const first = selfContradicting[0];
+    flags.push({ kind: 'selfContradiction', count: selfContradicting.length, subject: first.outlet, action: { kind: 'outlet', outlet: first.outlet } });
+  }
+  if (gaps?.singleSourceCount) flags.push({ kind: 'singleSource', count: gaps.singleSourceCount, action: { kind: 'singleSource' } });
+  if (fresh?.staleCount) {
+    // The filter only offers fixed windows, so a report built with another window
+    // jumps to the default instead of faking a window that is not on offer.
+    const months = (FRESH_WINDOWS as readonly number[]).includes(fresh.months) ? fresh.months as FreshWindow : DEFAULT_FRESH_MONTHS;
+    flags.push({ kind: 'stale', count: fresh.staleCount, action: { kind: 'fresh', months } });
+  }
+  return { headline, lines, flags: flags.slice(0, 3), empty: false };
+}
+
+/** Wave 35: everything the file says about *one* outlet, with names instead of
+ * counts. Wave 33 could only announce "1 dispute"; this lists which pair, who
+ * else was involved and whether the outlet was arguing with itself. */
+export interface DossierClaim {
+  /** Relationship key `source|type|target`. */
+  key: string;
+  label: string;
+  date: string;
+}
+
+export interface DossierDispute {
+  pair: [string, string];
+  labels: [string, string];
+  /** The outlet is the only named source on both sides — it contradicts itself. */
+  self: boolean;
+  /** Other outlets that reported a side of the same dispute. */
+  shared: string[];
+}
+
+export interface SourceDossier {
+  outlet: string;
+  /** Its dated documents that carry its name (same counting as waves 32–33). */
+  documents: number;
+  /** Its named documents on relationships that carry no usable date. */
+  undatedDocuments: number;
+  firsts: DossierClaim[];
+  followups: (DossierClaim & { lag: number })[];
+  /** Relationships only it documents — no race, so no win. */
+  solo: DossierClaim[];
+  disputes: DossierDispute[];
+  first?: string;
+  last?: string;
+}
+
+/**
+ * Wave 35: the drill-down behind a source verdict. It answers the question a
+ * count cannot: *which* relationships did this outlet publish first, where did it
+ * only follow, where is it alone — and what exactly is it disputing? Names are
+ * matched case-insensitively and trimmed, exactly like the registry and the
+ * scorecard, so all three always talk about the same outlet. Deterministic,
+ * bounded, clock-free; an unknown outlet yields an empty dossier (never a guess).
+ */
+export function sourceDossier(outlet: string, nodes: GraphNode[], edges: GraphEdge[], evidence: Evidence[], conflicts: PairConflict[] = [], limit = 12): SourceDossier {
+  const name = (outlet ?? '').trim().toLowerCase().slice(0, 80);
+  const empty: SourceDossier = { outlet: name, documents: 0, undatedDocuments: 0, firsts: [], followups: [], solo: [], disputes: [] };
+  if (!name) return empty;
+  const documents = new Map(evidence.map(doc => [doc.id, doc]));
+  const labels = new Map(nodes.map(node => [node.id, node.label]));
+  let dated = 0, first: string | undefined, last: string | undefined;
+  for (const doc of evidence) {
+    if ((doc.source ?? '').trim().toLowerCase() !== name) continue;
+    const day = isoDate(doc.date);
+    if (!day) continue;
+    dated++;
+    if (!first || day < first) first = day;
+    if (!last || day > last) last = day;
+  }
+  const firsts: DossierClaim[] = [], followups: (DossierClaim & { lag: number })[] = [], solo: DossierClaim[] = [];
+  const undatedIds = new Set<string>();
+  const pairOutlets = new Map<string, Set<string>>();
+  for (const edge of edges) {
+    if (edge.source === edge.target || edge.type === 'AGGREGATED') continue;
+    const pairKey = edge.source <= edge.target ? `${edge.source}|${edge.target}` : `${edge.target}|${edge.source}`;
+    const sides = pairOutlets.get(pairKey) ?? new Set<string>();
+    pairOutlets.set(pairKey, sides);
+    const oldest = new Map<string, string>();
+    for (const docId of edge.evidenceIds) {
+      const doc = documents.get(docId);
+      const source = (doc?.source ?? '').trim().toLowerCase();
+      if (!source) continue;
+      sides.add(source);
+      const day = isoDate(doc?.date);
+      if (!day) { if (source === name) undatedIds.add(docId); continue; }
+      if (source !== name) { if (!oldest.has(source)) oldest.set(source, day); continue; }
+      const current = oldest.get(name);
+      if (!current || day < current) oldest.set(name, day);
+    }
+    const own = oldest.get(name);
+    if (!own) continue;
+    const claim: DossierClaim = { key: `${edge.source}|${edge.type}|${edge.target}`, label: `${labels.get(edge.source) ?? edge.source} → ${labels.get(edge.target) ?? edge.target} · ${edge.type}`, date: own };
+    const fastest = [...oldest.values()].reduce((best, day) => (day < best ? day : best), own);
+    if (oldest.size === 1) solo.push(claim);
+    else if (own === fastest) firsts.push(claim);
+    else followups.push({ ...claim, lag: dayDiff(fastest, own) });
+  }
+  const order = (a: DossierClaim, b: DossierClaim) => (a.date < b.date ? -1 : a.date > b.date ? 1 : a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
+  firsts.sort(order); followups.sort(order); solo.sort(order);
+  const disputes: DossierDispute[] = [];
+  for (const conflict of conflicts) {
+    if (conflict.kind !== 'conflict') continue;
+    const sides = pairOutlets.get(`${conflict.pair[0]}|${conflict.pair[1]}`);
+    if (!sides?.has(name)) continue;
+    disputes.push({
+      pair: [conflict.pair[0], conflict.pair[1]],
+      labels: [conflict.labels[0], conflict.labels[1]],
+      self: sides.size === 1,
+      shared: [...sides].filter(entry => entry !== name).sort(),
+    });
+  }
+  return {
+    outlet: name, documents: dated, undatedDocuments: undatedIds.size,
+    firsts: firsts.slice(0, Math.max(1, limit)),
+    followups: followups.slice(0, Math.max(1, limit)),
+    solo: solo.slice(0, Math.max(1, limit)),
+    disputes: disputes.slice(0, Math.max(1, limit)),
+    ...(first ? { first } : {}),
+    ...(last ? { last } : {}),
+  };
+}
+
+/** Wave 31: one dated step in an entity's history. `document` is a source that
+ * mentions it, `relation` the first document of a relationship, `conflict` a
+ * clash found on that day. Undated material is reported separately instead of
+ * being given an invented date. */
+export type TimelineKind = 'document' | 'relation' | 'conflict';
+export interface EntityEvent {
+  date: string;
+  kind: TimelineKind;
+  label: string;
+  /** How many documents support this step (relationships bundle their evidence). */
+  documents: number;
+}
+export interface EntityTimeline {
+  events: EntityEvent[];
+  undated: { kind: TimelineKind; label: string }[];
+  first?: string;
+  last?: string;
+  /** Days between the first and the last dated step (0 for a single day). */
+  span: number;
+}
+
+/**
+ * Wave 31: when did what happen around this entity? Documents give the dates, a
+ * relationship appears on the day its *earliest* document was published (later
+ * documents are corroboration, not a new event), and a contradiction is dated by
+ * the day both claims are documented. Everything is sorted, de-duplicated and
+ * bounded; undated material is listed apart, never slotted in.
+ */
+export function entityTimeline(id: string, nodes: GraphNode[], edges: GraphEdge[], evidence: Evidence[], conflicts: PairConflict[] = [], limit = 40): EntityTimeline {
+  const dates = new Map(evidence.map(doc => [doc.id, isoDate(doc.date)]));
+  const labels = new Map(nodes.map(node => [node.id, node.label]));
+  const node = nodes.find(entry => entry.id === id);
+  const events: EntityEvent[] = [];
+  const undated: { kind: TimelineKind; label: string }[] = [];
+  const seen = new Set<string>();
+  const push = (event: EntityEvent) => {
+    const key = `${event.date}|${event.kind}|${event.label}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    events.push(event);
+  };
+
+  for (const docId of node?.evidenceIds ?? []) {
+    const date = dates.get(docId);
+    if (!date) { const label = docId; if (!undated.some(entry => entry.kind === 'document' && entry.label === label)) undated.push({ kind: 'document', label }); continue; }
+    push({ date, kind: 'document', label: docId, documents: 1 });
+  }
+  for (const edge of edges) {
+    if (edge.source !== id && edge.target !== id) continue;
+    const other = edge.source === id ? edge.target : edge.source;
+    const arrow = edge.source === id ? '→' : '←';
+    const label = `${arrow} ${labels.get(other) ?? other} · ${edge.type}`;
+    const days = edge.evidenceIds.map(docId => dates.get(docId)).filter((day): day is string => Boolean(day)).sort();
+    if (!days.length) { undated.push({ kind: 'relation', label }); continue; }
+    push({ date: days[0], kind: 'relation', label, documents: edge.evidenceIds.length });
+  }
+  for (const conflict of conflicts) {
+    if (!conflict.pair.includes(id)) continue;
+    const other = conflict.pair[0] === id ? conflict.labels[1] : conflict.labels[0];
+    // A contradiction starts on the day its *second* claim becomes documented.
+    const days = conflict.claims.map(claim => claim.first).filter((day): day is string => Boolean(day)).sort();
+    if (days.length < 2) { undated.push({ kind: 'conflict', label: `${other} · ${conflict.kind}` }); continue; }
+    push({ date: days[days.length - 1], kind: 'conflict', label: `${other} · ${conflict.kind}`, documents: conflict.claims.reduce((sum, claim) => sum + claim.documents, 0) });
+  }
+
+  const order: Record<TimelineKind, number> = { relation: 0, conflict: 1, document: 2 };
+  events.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0)
+    || order[a.kind] - order[b.kind]
+    || (a.label < b.label ? -1 : a.label > b.label ? 1 : 0));
+  const bounded = events.slice(0, Math.max(1, limit));
+  const first = events[0]?.date, last = events[events.length - 1]?.date;
+  const span = first && last ? Math.round((Date.parse(`${last}T00:00:00Z`) - Date.parse(`${first}T00:00:00Z`)) / 86_400_000) : 0;
+  return { events: bounded, undated, ...(first ? { first } : {}), ...(last ? { last } : {}), span };
+}
+
+/** Wave 30: a real ZIP (STORE, no compression) built in the browser — no
+ * dependency, no server, and byte-for-byte reproducible for the same input.
+ * Stored entries are deliberate: the payload is mostly small text, and an
+ * uncompressed archive can be inspected with any tool without a decoder. */
+export interface ArchiveFile { name: string; text: string }
+
+/** CRC-32 (IEEE 802.3), the checksum the ZIP format requires. */
+const CRC_TABLE = (() => {
+  const table = new Uint32Array(256);
+  for (let index = 0; index < 256; index++) {
+    let value = index;
+    for (let bit = 0; bit < 8; bit++) value = value & 1 ? 0xEDB88320 ^ (value >>> 1) : value >>> 1;
+    table[index] = value >>> 0;
+  }
+  return table;
+})();
+export function crc32(bytes: Uint8Array): number {
+  let crc = 0xFFFFFFFF;
+  for (const byte of bytes) crc = CRC_TABLE[(crc ^ byte) & 0xFF] ^ (crc >>> 8);
+  return (crc ^ 0xFFFFFFFF) >>> 0;
+}
+
+const DOS_DATE = 0x0021; // 1980-01-01, the ZIP epoch: fixed so archives are reproducible
+const DOS_TIME = 0x0000;
+
+/**
+ * Wave 30: STORE-only ZIP writer. Every field is written explicitly, names are
+ * UTF-8 flagged, paths are flattened (no directory traversal can be created by a
+ * supplied name) and duplicate names are rejected — an archive that silently
+ * contains the same document twice is a trap for the reader.
+ */
+export function zipStore(files: ArchiveFile[]): Uint8Array {
+  const encoder = new TextEncoder();
+  const seen = new Set<string>();
+  const entries = files.map(file => {
+    const name = file.name.replace(/[\\/]/g, '_').replace(/\.\./g, '_').slice(0, 120) || 'datei.txt';
+    if (seen.has(name)) throw new Error(`Doppelter Dateiname im Archiv: ${name}`);
+    seen.add(name);
+    const data = encoder.encode(file.text);
+    return { name: encoder.encode(name), data, crc: crc32(data) };
+  });
+  const locals: Uint8Array[] = [], centrals: Uint8Array[] = [];
+  let offset = 0;
+  for (const entry of entries) {
+    const local = new Uint8Array(30 + entry.name.length);
+    const view = new DataView(local.buffer);
+    view.setUint32(0, 0x04034b50, true);      // local file header
+    view.setUint16(4, 20, true);              // version needed
+    view.setUint16(6, 0x0800, true);          // UTF-8 names
+    view.setUint16(8, 0, true);               // method: store
+    view.setUint16(10, DOS_TIME, true);
+    view.setUint16(12, DOS_DATE, true);
+    view.setUint32(14, entry.crc, true);
+    view.setUint32(18, entry.data.length, true);
+    view.setUint32(22, entry.data.length, true);
+    view.setUint16(26, entry.name.length, true);
+    view.setUint16(28, 0, true);              // no extra field
+    local.set(entry.name, 30);
+    locals.push(local, entry.data);
+    const central = new Uint8Array(46 + entry.name.length);
+    const cview = new DataView(central.buffer);
+    cview.setUint32(0, 0x02014b50, true);     // central directory header
+    cview.setUint16(4, 20, true);             // version made by
+    cview.setUint16(6, 20, true);             // version needed
+    cview.setUint16(8, 0x0800, true);
+    cview.setUint16(10, 0, true);
+    cview.setUint16(12, DOS_TIME, true);
+    cview.setUint16(14, DOS_DATE, true);
+    cview.setUint32(16, entry.crc, true);
+    cview.setUint32(20, entry.data.length, true);
+    cview.setUint32(24, entry.data.length, true);
+    cview.setUint16(28, entry.name.length, true);
+    cview.setUint16(30, 0, true);             // extra
+    cview.setUint16(32, 0, true);             // comment
+    cview.setUint16(34, 0, true);             // disk
+    cview.setUint16(36, 0, true);             // internal attrs
+    cview.setUint32(38, 0, true);             // external attrs
+    cview.setUint32(42, offset, true);        // offset of local header
+    central.set(entry.name, 46);
+    centrals.push(central);
+    offset += local.length + entry.data.length;
+  }
+  const centralSize = centrals.reduce((sum, part) => sum + part.length, 0);
+  const end = new Uint8Array(22);
+  const eview = new DataView(end.buffer);
+  eview.setUint32(0, 0x06054b50, true);       // end of central directory
+  eview.setUint16(8, entries.length, true);
+  eview.setUint16(10, entries.length, true);
+  eview.setUint32(12, centralSize, true);
+  eview.setUint32(16, offset, true);
+  const parts = [...locals, ...centrals, end];
+  const total = parts.reduce((sum, part) => sum + part.length, 0);
+  const out = new Uint8Array(total);
+  let cursor = 0;
+  for (const part of parts) { out.set(part, cursor); cursor += part.length; }
+  return out;
+}
+
+/** Wave 30: one case archive — report, briefs, tables and change lists in a
+ * single file a third party can open. Every document is produced by the same
+ * function the individual buttons use, so the archive can never disagree with
+ * them. */
+export interface CaseArchiveInput {
+  report: string;
+  watchBrief?: string;
+  nodesCsv: string;
+  edgesCsv: string;
+  evidenceCsv?: string;
+  watchCsv?: string;
+  changesCsv?: string;
+  readme?: string;
+  generated: string;
+}
+export function caseArchive(input: CaseArchiveInput): ArchiveFile[] {
+  const files: ArchiveFile[] = [{ name: 'fallbericht.md', text: input.report }];
+  if (input.watchBrief) files.push({ name: 'beobachtungen.md', text: input.watchBrief });
+  files.push({ name: 'knoten.csv', text: input.nodesCsv }, { name: 'kanten.csv', text: input.edgesCsv });
+  if (input.evidenceCsv) files.push({ name: 'belege.csv', text: input.evidenceCsv });
+  if (input.watchCsv) files.push({ name: 'beobachtung.csv', text: input.watchCsv });
+  if (input.changesCsv) files.push({ name: 'aenderungen.csv', text: input.changesCsv });
+  files.push({ name: 'liesmich.txt', text: input.readme ?? `PuppetNET Fallakte · erzeugt ${input.generated}\nAlle Dateien wurden in diesem Browser erzeugt; es wurde nichts hochgeladen.\nHinweise, keine Beweise: Quellen prüfen; personenbezogene Daten nur mit Rechtsgrundlage verarbeiten.\n` });
+  return files;
+}
+
+/** Wave 29: a hand-over brief for one entity — everything the case knows about it
+ * in one document, with the honest gaps named instead of rounded up. */
+export interface BriefInput {
+  id: string;
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  evidence: Evidence[];
+  risk?: RiskReport;
+  conflicts?: PairConflict[];
+  notes?: Record<string, string>;
+  watched?: boolean;
+  /** Wave 28 digest entries for this entity, if a comparison is loaded. */
+  changes?: WatchChange[];
+  /** Wave 31: the entity's own chronology. */
+  timeline?: EntityTimeline;
+}
+
+const BRIEF_TEXT = {
+  de: {
+    title: '# PuppetNET — Kurzbericht', generated: 'Erzeugt', type: 'Typ', confidence: 'Konfidenz',
+    watched: 'Beobachtet', watchYes: 'ja (in dieser Browser-Sitzung)', notFound: 'Diese Entität ist im aktuellen Ausschnitt nicht sichtbar.',
+    backing: 'Belege', documents: 'Dokumente', sources: 'unabhängige Quellen', newest: 'jüngster Beleg',
+    state: 'Belastbarkeit', noFinding: 'kein Befund in der Auffälligkeitsliste (das ist nicht dasselbe wie „solide")',
+    none: 'keine', relations: 'Beziehungen', noRelations: 'keine sichtbaren Beziehungen',
+    window: 'Belegzeitraum', undated: 'ohne Datum', singleSource: 'nur eine Quelle',
+    conflicts: 'Widersprüchliche Aussagen', noConflicts: 'keine — es gibt keinen belegten Widerspruch zu dieser Entität',
+    notes: 'Ermittlungsnotizen', noNotes: '_Keine Notiz erfasst._',
+    changes: 'Änderungen gegenüber dem Vergleichsstand', noChanges: 'keine Änderung bei dieser Entität',
+    timeline: 'Chronologie', noTimeline: 'keine datierten Ereignisse', undatedItems: 'ohne Datum', span: 'Zeitraum', days: 'Tage',
+    kindDocument: 'Beleg', kindRelation: 'Beziehung', kindConflict: 'Widerspruch',
+    kinds: { conflict: 'neuer Widerspruch', gone: 'nicht mehr im Export', added: 'neu', corroborated: 'zweite unabhängige Quelle', relation: 'Beziehung geändert', document: 'neues Dokument' },
+    footer: 'Hinweise, keine Beweise: Quellen prüfen; personenbezogene Daten nur mit Rechtsgrundlage verarbeiten.',
+  },
+  en: {
+    title: '# PuppetNET — entity brief', generated: 'Generated', type: 'Type', confidence: 'Confidence',
+    watched: 'Watched', watchYes: 'yes (in this browser session)', notFound: 'This entity is not visible in the current slice.',
+    backing: 'Evidence', documents: 'documents', sources: 'independent sources', newest: 'newest document',
+    state: 'Sturdiness', noFinding: 'no finding in the follow-up list (which is not the same as "solid")',
+    none: 'none', relations: 'Relationships', noRelations: 'no visible relationships',
+    window: 'Documented window', undated: 'undated', singleSource: 'single source',
+    conflicts: 'Contradicting claims', noConflicts: 'none — there is no documented contradiction for this entity',
+    notes: 'Research notes', noNotes: '_No note recorded._',
+    changes: 'Changes against the comparison state', noChanges: 'no change for this entity',
+    timeline: 'Timeline', noTimeline: 'no dated events', undatedItems: 'undated', span: 'Span', days: 'days',
+    kindDocument: 'document', kindRelation: 'relationship', kindConflict: 'contradiction',
+    kinds: { conflict: 'new contradiction', gone: 'no longer in the export', added: 'new', corroborated: 'second independent source', relation: 'relationship changed', document: 'new document' },
+    footer: 'Hints, not proof: verify sources; process personal data only on a legal basis.',
+  },
+} as const;
+
+/**
+ * Wave 29: one entity as a document. Every number comes from the same functions the
+ * panels use (`nodeBacking`, `evidenceRisk`, `pairConflicts`, `edgeSourceStatus`), so a
+ * brief can never disagree with what the investigator saw on screen. Missing findings
+ * are named as missing, and a stale or single-source backing is spelled out rather
+ * than left for the reader to infer.
+ */
+export function entityBrief(input: BriefInput, generated: string, lang: 'de' | 'en' = 'de'): string {
+  const text = BRIEF_TEXT[lang] ?? BRIEF_TEXT.de;
+  const clean = (value: string) => value.replace(/\s+/g, ' ').trim();
+  const node = input.nodes.find(entry => entry.id === input.id);
+  const lines: string[] = [text.title, ''];
+  lines.push(`- ${text.generated}: ${clean(generated)}`);
+  if (!node) { lines.push(`- ${text.notFound}`); lines.push('', '---', text.footer); return lines.join('\n') + '\n'; }
+  lines.push(`- ${clean(node.label)} — \`${node.id}\``);
+  lines.push(`- ${text.type}: ${node.type} · ${text.confidence}: ${(node.confidence * 100).toFixed(1)} %`);
+  if (input.watched !== undefined) lines.push(`- ${text.watched}: ${input.watched ? text.watchYes : text.none}`);
+
+  const backing = nodeBacking([node], input.edges, input.evidence).get(node.id) ?? { documents: 0, sources: 0 };
+  const finding = (input.risk?.entries ?? []).find(entry => entry.id === node.id);
+  lines.push('', `## ${text.backing}`, '');
+  lines.push(`- ${text.documents}: ${backing.documents} · ${text.sources}: ${backing.sources}${backing.newest ? ` · ${text.newest}: ${backing.newest}` : ` · ${text.newest}: ${text.undated}`}`);
+  lines.push(`- ${text.state}: ${finding ? finding.state : text.noFinding}`);
+
+  const incident = input.edges.filter(edge => edge.source === node.id || edge.target === node.id);
+  lines.push('', `## ${text.relations}`, '');
+  if (!incident.length) lines.push(`- ${text.noRelations}`);
+  for (const edge of incident) {
+    const other = edge.source === node.id ? edge.target : edge.source;
+    const otherLabel = input.nodes.find(entry => entry.id === other)?.label ?? other;
+    const arrow = edge.source === node.id ? '→' : '←';
+    const status = edgeSourceStatus(edge, input.evidence);
+    const dates = edge.evidenceIds.map(docId => isoDate(input.evidence.find(doc => doc.id === docId)?.date)).filter((day): day is string => Boolean(day)).sort();
+    const window = dates.length ? `${dates[0]}${dates[dates.length - 1] !== dates[0] ? ` → ${dates[dates.length - 1]}` : ''}` : text.undated;
+    lines.push(`- ${arrow} ${clean(otherLabel)} · ${clean(edge.type)} · ${(edge.confidence * 100).toFixed(1)} % · ${text.window}: ${window}${status === 'independent' ? '' : ` · ${text.singleSource}`}`);
+  }
+
+  const mine = (input.conflicts ?? []).filter(conflict => conflict.pair.includes(node.id));
+  lines.push('', `## ${text.conflicts}`, '');
+  if (!mine.length) lines.push(`- ${text.noConflicts}`);
+  for (const conflict of mine) {
+    const other = conflict.pair[0] === node.id ? conflict.labels[1] : conflict.labels[0];
+    lines.push(`- ${clean(other)} — ${conflict.kind}`);
+    for (const claim of conflict.claims) lines.push(`  - ${clean(claim.type)}: ${claim.documents} ${lang === 'en' ? 'doc(s)' : 'Beleg(e)'}${claim.first ? ` · ${claim.first}${claim.last && claim.last !== claim.first ? ` → ${claim.last}` : ''}` : ''}`);
+  }
+
+  if (input.timeline) {
+    const t = input.timeline;
+    lines.push('', `## ${text.timeline}`, '');
+    if (!t.events.length) lines.push(`- ${text.noTimeline}`);
+    if (t.first) lines.push(`- ${text.span}: ${t.first}${t.last && t.last !== t.first ? ` → ${t.last}` : ''} · ${t.span} ${text.days}`);
+    const kindName: Record<TimelineKind, string> = { document: text.kindDocument, relation: text.kindRelation, conflict: text.kindConflict };
+    for (const event of t.events) lines.push(`- ${event.date} · ${kindName[event.kind]} · ${clean(event.label)}${event.documents > 1 ? ` (${event.documents} ${lang === 'en' ? 'docs' : 'Belege'})` : ''}`);
+    if (t.undated.length) lines.push(`- ${text.undatedItems}: ${t.undated.map(entry => `${kindName[entry.kind]} ${clean(entry.label)}`).join(', ')}`);
+  }
+
+  const note = input.notes?.[node.id];
+  lines.push('', `## ${text.notes}`, '');
+  if (note) note.split('\n').forEach(line => lines.push(`  ${line}`));
+  else lines.push(text.noNotes);
+
+  if (input.changes) {
+    lines.push('', `## ${text.changes}`, '');
+    lines.push(input.changes.length ? `- ${[...new Set(input.changes.flatMap(change => change.kinds))].map(kind => text.kinds[kind]).join(', ')}` : `- ${text.noChanges}`);
+  }
+  lines.push('', '---', text.footer);
+  return lines.join('\n') + '\n';
+}
+
+/** Wave 29: briefs for a whole watchlist in one document — the hand-over that
+ * matches the list the investigator actually keeps. Bounded, and it names the
+ * entries that are no longer in the export instead of skipping them. */
+export function watchBrief(list: string[], context: Omit<BriefInput, 'id'>, generated: string, lang: 'de' | 'en' = 'de', limit = 50): string {
+  const text = BRIEF_TEXT[lang] ?? BRIEF_TEXT.de;
+  const ids = list.slice(0, Math.max(1, limit));
+  const labelOf = (id: string) => context.nodes.find(node => node.id === id)?.label ?? id;
+  // Each entry becomes a section: its own title and the (identical) generation line
+  // are dropped, the rest of the brief stays untouched.
+  const bodies = ids.map(id => {
+    const body = entityBrief({ ...context, id, watched: true }, generated, lang).split('\n');
+    const rest = body.slice(1)
+      .filter(line => !line.startsWith(`- ${text.generated}:`))
+      .map(line => (line.startsWith('## ') ? `### ${line.slice(3)}` : line));
+    while (rest.length && !rest[0].trim()) rest.shift();
+    return [`## ${labelOf(id)}`, '', ...rest].join('\n');
+  });
+  const header = [`${text.title} — ${text.watched} (${ids.length})`, '', `- ${text.generated}: ${generated}`, '', ''];
+  if (list.length > ids.length) header.push(`- ${lang === 'en' ? `${list.length - ids.length} more watched entit(ies) are not in this document (limit ${limit}).` : `${list.length - ids.length} weitere beobachtete Entität(en) fehlen in diesem Dokument (Grenze ${limit}).`}`, '');
+  return header.join('\n') + bodies.join('\n---\n\n');
+}
+
+/** Wave 25: one search over the whole case file. Every hit keeps the kind that
+ * produced it, so the UI can say *why* something matched — an entity, a
+ * contradiction, a sturdiness finding, a source, or a research note. */
+export type CaseKind = 'entity' | 'conflict' | 'risk' | 'outlet' | 'note';
+export interface CaseHit {
+  kind: CaseKind;
+  id: string;
+  label: string;
+  detail?: string;
+  score: number;
+}
+
+/** Kind weighting: a named entity outranks a note at equal text score, because
+ * the case is built on entities. Ties then fall back to the label and the id. */
+const CASE_WEIGHT: Record<CaseKind, number> = { entity: 50, conflict: 40, risk: 30, outlet: 20, note: 10 };
+
+/**
+ * Wave 25: ranked search across everything the case knows — the visible
+ * entities, the contradictions, the sturdiness findings, the sources and the
+ * research notes. An entity that is also a sturdiness finding is reported once,
+ * as an entity (with the finding as its detail), because two rows for the same
+ * thing is noise. Empty query returns nothing instead of a random dump; the
+ * result is bounded and deterministic.
+ */
+export function searchCase(query: string, input: {
+  nodes: GraphNode[];
+  conflicts?: PairConflict[];
+  risk?: RiskReport;
+  sourceRegistry?: SourceRegistryEntry[];
+  notes?: Record<string, string>;
+}, limit = 12): CaseHit[] {
+  const q = query.trim();
+  if (!q) return [];
+  const scored: CaseHit[] = [];
+  const severity = new Map<string, string>();
+  for (const entry of input.risk?.entries ?? []) severity.set(entry.id, entry.state);
+  for (const node of input.nodes) {
+    if (node.group) continue;
+    const best = Math.max(fuzzyScore(q, node.label), fuzzyScore(q, node.id));
+    if (!best) continue;
+    const state = severity.get(node.id);
+    scored.push({ kind: 'entity', id: node.id, label: node.label, ...(state ? { detail: state } : {}), score: best + CASE_WEIGHT.entity });
+  }
+  for (const conflict of input.conflicts ?? []) {
+    const best = Math.max(fuzzyScore(q, `${conflict.labels[0]} ${conflict.labels[1]}`), fuzzyScore(q, conflict.pair.join(' ')), fuzzyScore(q, conflict.kind));
+    if (!best) continue;
+    scored.push({ kind: 'conflict', id: conflict.pair.join('|'), label: `${conflict.labels[0]} ↔ ${conflict.labels[1]}`, detail: conflict.kind, score: best + CASE_WEIGHT.conflict });
+  }
+  for (const entry of input.risk?.entries ?? []) {
+    const best = Math.max(fuzzyScore(q, entry.label), fuzzyScore(q, entry.type), fuzzyScore(q, entry.state));
+    if (!best) continue;
+    scored.push({ kind: 'risk', id: entry.id, label: entry.label, detail: entry.state, score: best + CASE_WEIGHT.risk });
+  }
+  for (const source of input.sourceRegistry ?? []) {
+    const best = fuzzyScore(q, source.name);
+    if (!best) continue;
+    scored.push({ kind: 'outlet', id: source.name, label: source.name || '—', detail: `${source.documents}`, score: best + CASE_WEIGHT.outlet });
+  }
+  for (const [id, text] of Object.entries(input.notes ?? {})) {
+    const best = fuzzyScore(q, text) || fuzzyScore(q, input.nodes.find(node => node.id === id)?.label ?? '');
+    if (!best) continue;
+    scored.push({ kind: 'note', id, label: input.nodes.find(node => node.id === id)?.label ?? id, detail: noteSnippet(text, q), score: best + CASE_WEIGHT.note });
+  }
+  // One row per thing: the strongest kind wins, so an entity that also carries a
+  // sturdiness finding is not listed twice.
+  const byKey = new Map<string, CaseHit>();
+  for (const hit of scored.sort((a, b) => b.score - a.score || (a.label < b.label ? -1 : a.label > b.label ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0))) {
+    const key = `${hit.kind === 'risk' ? 'entity' : hit.kind}:${hit.id}`;
+    const seen = byKey.get(key);
+    if (!seen) byKey.set(key, hit);
+    else if (!seen.detail && hit.detail) byKey.set(key, { ...seen, detail: hit.detail });
+  }
+  const order: CaseKind[] = ['entity', 'conflict', 'risk', 'outlet', 'note'];
+  return [...byKey.values()]
+    .sort((a, b) => b.score - a.score || order.indexOf(a.kind) - order.indexOf(b.kind) || (a.label < b.label ? -1 : a.label > b.label ? 1 : 0))
+    .slice(0, Math.max(1, limit));
+}
+
+/** Wave 25: a short, honest excerpt around the match (never a silent truncation
+ * of the beginning when the hit sits at the end). */
+export function noteSnippet(text: string, query: string, size = 90): string {
+  const clean = text.replace(/\s+/g, ' ').trim();
+  if (clean.length <= size) return clean;
+  const q = query.trim().toLowerCase();
+  const at = q ? clean.toLowerCase().indexOf(q) : -1;
+  if (at < 0) return `${clean.slice(0, size - 1)}…`;
+  // Centre the match in the excerpt and guarantee the whole query is visible
+  // (unless it is longer than the excerpt itself) — an excerpt that cuts the very
+  // word you searched for is worse than no excerpt.
+  const start = Math.max(0, Math.min(at - Math.floor((size - q.length) / 2), clean.length - size), at);
+  const slice = clean.slice(start, start + size).trim();
+  return `${start > 0 ? '…' : ''}${slice}${start + size < clean.length ? '…' : ''}`;
+}
+
+/** Wave 27: a watchlist is case work, not data — it lives in this browser only,
+ * is capped, sanitized on read, and never leaves the device. */
+export const WATCH_LIMIT = 200;
+export const WATCH_STORAGE_KEY = 'puppetnet.watch.v1';
+export function readWatchlist(raw: unknown): string[] {
+  const parsed = typeof raw === 'string' ? (() => { try { return JSON.parse(raw); } catch { return []; } })() : raw;
+  if (!Array.isArray(parsed)) return [];
+  const out: string[] = [];
+  for (const value of parsed) {
+    // Ids are strings; a number or object in the store is junk, not an id.
+    if (typeof value !== 'string') continue;
+    const id = text(value, 200);
+    if (id && !out.includes(id) && out.length < WATCH_LIMIT) out.push(id);
+  }
+  return out;
+}
+/** Adds or removes one entity. The list keeps insertion order (oldest watch
+ * first) and is bounded, so the UI never needs to re-sort a session. */
+export function toggleWatch(list: string[], id: string): string[] {
+  const key = text(id, 200);
+  if (!key) return list;
+  if (list.includes(key)) return list.filter(entry => entry !== key);
+  return [...list, key].slice(-WATCH_LIMIT);
+}
+
+export interface WatchEntry {
+  id: string; label: string; type: EntityType;
+  /** Present in the visible slice? A watch outlives filters, so this can be false. */
+  visible: boolean;
+  state?: RiskState;
+  sources?: number;
+  documents?: number;
+  last?: string;
+  /** Relationship types this entity is involved in that are currently disputed. */
+  conflicts: string[];
+}
+
+export interface WatchReport {
+  watched: number;
+  visible: number;
+  /** Watched entities that are no longer in the export at all. */
+  gone: string[];
+  /** Nothing flagged: no sturdiness finding and no dispute. (The risk report only
+   * lists findings, so "no finding" is the honest reading — not "solid".) */
+  settled: number;
+  entries: WatchEntry[];
+}
+
+/**
+ * Wave 27: the watchlist, judged with the same rules as the panels. The list is
+ * the investigator's own selection, so it is reported in full — but the order
+ * follows urgency (dispute, then thin/old, then everything else), because a
+ * watchlist that hides its problems is a bookmark list. Entities that dropped
+ * out of the current slice are marked, never silently dropped.
+ */
+export function watchReport(list: string[], nodes: GraphNode[], edges: GraphEdge[], evidence: Evidence[], options: { risk?: RiskReport; conflicts?: PairConflict[] } = {}, limit = 50): WatchReport {
+  const visible = new Map(nodes.map(node => [node.id, node]));
+  const risk = new Map((options.risk?.entries ?? []).map(entry => [entry.id, entry]));
+  const disputed = new Map<string, string[]>();
+  for (const conflict of options.conflicts ?? []) {
+    if (conflict.kind !== 'conflict') continue;
+    for (const id of conflict.pair) {
+      const types = disputed.get(id) ?? [];
+      for (const claim of conflict.claims) if (!types.includes(claim.type)) types.push(claim.type);
+      disputed.set(id, types);
+    }
+  }
+  const backing = nodeBacking(nodes, edges, evidence);
+  const entries: WatchEntry[] = list.map(id => {
+    const node = visible.get(id);
+    const own = backing.get(id);
+    const finding = risk.get(id);
+    return {
+      id,
+      label: node?.label ?? id,
+      type: node?.type ?? 'Other',
+      visible: Boolean(node),
+      ...(finding?.state ? { state: finding.state } : {}),
+      ...(own ? { sources: own.sources, documents: own.documents } : {}),
+      ...(finding?.last ?? own?.newest ? { last: finding?.last ?? own?.newest } : {}),
+      conflicts: disputed.get(id) ?? [],
+    };
+  });
+  const rank = (entry: WatchEntry) => (entry.conflicts.length ? 0 : entry.state === 'weak' || !entry.visible ? 1 : entry.state === 'stale' || entry.state === 'thin' || entry.state === 'unbacked' ? 2 : entry.state === 'undated' ? 3 : 4);
+  const ordered = entries.slice().sort((a, b) => rank(a) - rank(b) || (a.label < b.label ? -1 : a.label > b.label ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  return {
+    watched: list.length,
+    visible: entries.filter(entry => entry.visible).length,
+    gone: entries.filter(entry => !entry.visible).map(entry => entry.id),
+    settled: entries.filter(entry => entry.visible && !entry.conflicts.length && !entry.state).length,
+    entries: ordered.slice(0, Math.max(1, limit)),
+  };
+}
+
+/** Wave 27: the watchlist as RFC-4180 CSV — the short list you take to a call. */
+export function watchToCSV(report: WatchReport): string {
+  const header = ['id', 'label', 'type', 'state', 'sources', 'documents', 'last', 'conflicts', 'visible'].map(csvCell).join(',');
+  const rows = report.entries.map(entry => [entry.id, entry.label, entry.type, entry.state ?? '', entry.sources, entry.documents, entry.last, entry.conflicts.join(' | '), entry.visible ? 'yes' : 'no'].map(csvCell).join(','));
+  return [header, ...rows].join('\n') + '\n';
+}
+
+export const CONFIDENCE_THRESHOLD = 0.5;
+
+/**
+ * Wave 17: where the evidence is thin. Counts the documents behind every visible
+ * entity and relationship, lists high-confidence relationships carried by a
+ * single source (the methodology rule asks for two independent ones) and the
+ * entities without any backing document. LoD display groups are not claims and
+ * stay out; the lists are bounded and deterministic, and a slice without gaps
+ * still returns honest zero counts instead of null — "nothing missing" is a
+ * result, not an absent answer.
+ */
+export function provenanceGaps(nodes: GraphNode[], edges: GraphEdge[], limit = 8): ProvenanceGaps {
+  const singles = nodes.filter(node => !node.group);
+  const ids = new Set(singles.map(node => node.id));
+  const nodesBacked = singles.filter(node => node.evidenceIds.length > 0).length;
+  const visibleEdges = edges.filter(edge => ids.has(edge.source) && ids.has(edge.target) && edge.type !== 'AGGREGATED');
+  const edgesBacked = visibleEdges.filter(edge => edge.evidenceIds.length > 0).length;
+  const singleSource = visibleEdges
+    .filter(edge => edge.evidenceIds.length === 1 && edge.confidence >= CONFIDENCE_THRESHOLD)
+    .map(edge => ({ id: edge.id, source: edge.source, target: edge.target, type: edge.type, confidence: edge.confidence, evidence: edge.evidenceIds.length }))
+    .sort((a, b) => b.confidence - a.confidence || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  const unbacked = singles
+    .filter(node => node.evidenceIds.length === 0)
+    .map(node => ({ id: node.id, label: node.label, type: node.type }))
+    .sort((a, b) => (a.label.toLowerCase() < b.label.toLowerCase() ? -1 : a.label.toLowerCase() > b.label.toLowerCase() ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  return {
+    nodes: singles.length, nodesBacked,
+    edges: visibleEdges.length, edgesBacked,
+    singleSource: singleSource.slice(0, Math.max(1, limit)),
+    unbacked: unbacked.slice(0, Math.max(1, limit)),
+    singleSourceCount: singleSource.length,
+    unbackedNodeCount: unbacked.length,
+  };
+}
+
+/** Wave 17: reads a case bundle back in (Wave-16 format). Unknown formats,
+ * wrong versions and junk are rejected with null instead of partially applying
+ * half a case; notes and sessions go through the same sanitizers as the live
+ * store. The report is returned as text only — it is never executed. */
+export function readCaseBundle(raw: unknown): { notes: Record<string, string>; views: SavedView[]; report: string } | null {
+  let parsed: unknown = raw;
+  if (typeof raw === 'string') {
+    try { parsed = JSON.parse(raw); } catch { return null; }
+  }
+  const bundle = record(parsed);
+  if (bundle.format !== 'puppetnet-case' || Number(bundle.version) !== 1) return null;
+  const report = typeof bundle.report === 'string' ? bundle.report.slice(0, 2_000_000) : '';
+  return { notes: readNotes(bundle.notes), views: readSavedViews(bundle.views), report };
+}
+
+export interface CaseReportInput {
+  stats: View['stats'];
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  analytics?: GraphAnalytics;
+  insights?: GraphInsight[];
+  timeline?: { month: string; count: number }[];
+  duplicates?: { label: string; ids: string[]; sameType: boolean }[];
+  vulnerability?: Vulnerability;
+  gaps?: ProvenanceGaps;
+  sharedSources?: { document: string; entities: { id: string; label: string }[] }[];
+  conflicts?: PairConflict[];
+  freshness?: Freshness;
+  risk?: RiskReport;
+  primacy?: PrimacyReport;
+  scorecard?: SourceScorecardReport;
+  /** Wave 34: the glance, rendered first so the reader sees the state immediately. */
+  summary?: CaseSummary;
+  notes?: Record<string, string>;
+}
+/** Wave 11 case report: a deterministic Markdown file for the case folder —
+ * scope, research notes, analytics, rule hits, structural findings, duplicates
+ * and the temporal envelope, in the UI language. `generated` is passed in so the
+ * report stays reproducible in tests; the closing line keeps hints and proof
+ * apart. */
+const CASE_REPORT_TEXT = {
+  de: {
+    title: '# PuppetNET — Fallbericht', generated: 'Erzeugt', scope: 'Ausschnitt', of: 'von',
+    level: 'Ansichtsebene', focus: 'Fokus', lod: 'LoD-Gruppen', yes: 'ja', no: 'nein',
+    notes: 'Ermittlungsnotizen', noNotes: '_Keine Notizen erfasst._', analytics: 'Analytik',
+    communities: 'Communities', density: 'Dichte', range: 'Zeitraum', hubs: 'Hubs',
+    structure: 'Struktur', cutEdges: 'Schnittkanten', edges: 'Kanten', kcore: 'max. k-Kern', nodes: 'Knoten',
+    provenance: 'Provenienz', backed: 'belegt', unbackedNodes: 'Entitäten ohne Beleg', singleSource: 'Hochsichere Beziehungen mit nur einer Quelle', none: 'keine', sharedDocs: 'Belege, die mehrere Entitäten stützen',
+    articulation: 'Artikulationspunkt', degree: 'Grad', splits: 'zerfällt in {parts} Teile, größter {largest}',
+    rules: 'Regelhinweise', duplicates: 'Mögliche Dubletten', mixed: 'gemischte Typen',
+    timeline: 'Erwähnungen pro Monat',
+    conflicts: 'Widersprüchliche Aussagen', conflictsNone: 'keine abweichenden Aussagen', currency: 'Aktualität der Belege',
+    risk: 'Belastbarkeit der Akte', riskNone: 'alle Entitäten sind gedeckt',
+    primacy: 'Erstmeldungen je Quelle', primacyNone: 'keine Beziehung mit mehreren datierten Quellen',
+    scorecard: 'Quellen im Urteil', scorecardNone: 'keine Quelle zurechenbar',
+    summary: 'Aktenlage', summaryEmpty: 'Kein Ausschnitt, über den sich etwas sagen lässt.',
+    standingContradictory: 'widerspricht sich selbst', standingLeader: 'meldet zuerst', standingFollower: 'folgt nur', standingThin: 'nur Einzelbelege', riskStates: 'ohne Beleg / dünn und alt / nur eine Quelle / veraltet / ohne Datum / solide',
+    footer: 'Hinweise, keine Beweise: Quellen prüfen; personenbezogene Daten nur mit Rechtsgrundlage verarbeiten.',
+  },
+  en: {
+    title: '# PuppetNET — case report', generated: 'Generated', scope: 'Slice', of: 'of',
+    level: 'View level', focus: 'Focus', lod: 'LoD groups', yes: 'yes', no: 'no',
+    notes: 'Research notes', noNotes: '_No notes recorded._', analytics: 'Analytics',
+    communities: 'Communities', density: 'Density', range: 'Time range', hubs: 'Hubs',
+    structure: 'Structure', cutEdges: 'Cut edges', edges: 'edges', kcore: 'max. k-core', nodes: 'nodes',
+    provenance: 'Provenance', backed: 'backed', unbackedNodes: 'entities without evidence', singleSource: 'High-confidence relationships with a single source', none: 'none', sharedDocs: 'Documents backing several entities',
+    articulation: 'Articulation point', degree: 'degree', splits: 'splits into {parts} parts, largest {largest}',
+    rules: 'Rule hits', duplicates: 'Possible duplicates', mixed: 'mixed types',
+    timeline: 'Mentions per month',
+    conflicts: 'Conflicting claims', conflictsNone: 'no differing claims', currency: 'Currency of the evidence',
+    risk: 'How much the file can carry', riskNone: 'every entity is covered',
+    primacy: 'First reports per source', primacyNone: 'no relationship with several dated sources',
+    scorecard: 'Sources judged', scorecardNone: 'no attributable source',
+    summary: 'Case at a glance', summaryEmpty: 'No slice worth summarising.',
+    standingContradictory: 'contradicts itself', standingLeader: 'reports first', standingFollower: 'only follows', standingThin: 'single claims only', riskStates: 'no document / thin and old / single source / outdated / undated / solid',
+    footer: 'Hints, not proof: verify the sources; process personal data only with a legal basis.',
+  },
+} as const;
+export function caseReport(input: CaseReportInput, generated: string, lang: 'de' | 'en' = 'de'): string {
+  const text = CASE_REPORT_TEXT[lang] ?? CASE_REPORT_TEXT.de;
+  const locale = lang === 'en' ? 'en-GB' : 'de-DE';
+  const fill = (template: string, values: Record<string, string | number>) => template.replace(/\{(\w+)\}/g, (_, key: string) => String(values[key] ?? ''));
+  const clean = (value: string) => value.replace(/\s+/g, ' ').trim();
+  const lines: string[] = [text.title, ''];
+  lines.push(`${text.generated}: ${clean(generated)}`);
+  const { stats } = input;
+  lines.push(`${text.scope}: ${stats.filteredNodes.toLocaleString(locale)} ${text.nodes} / ${stats.filteredEdges.toLocaleString(locale)} ${text.edges} ${text.of} ${stats.totalNodes.toLocaleString(locale)} / ${stats.totalEdges.toLocaleString(locale)}`);
+  const levelText = lang === 'en' ? ({ Einzelknoten: 'single nodes', Gruppen: 'groups', Feingruppen: 'fine groups', Übersicht: 'overview' } as Record<string, string>)[clean(stats.level)] ?? clean(stats.level) : clean(stats.level);
+  lines.push(`${text.level}: ${levelText} · ${text.focus}: ${stats.focused ? text.yes : text.no} · ${text.lod}: ${stats.grouped ? text.yes : text.no}`);
+  if (input.summary) {
+    const summary = input.summary;
+    lines.push('', `## ${text.summary}`, '');
+    lines.push(`- ${summary.headline}`);
+    if (summary.empty) lines.push(`- ${text.summaryEmpty}`);
+    for (const line of summary.lines) lines.push(`- ${line}`);
+  }
+  const labelOf = new Map(input.nodes.map(node => [node.id, node.label]));
+  const notes = Object.entries(input.notes ?? {})
+    .map(([id, note]) => ({ id, note: normalizeNote(note), label: clean(labelOf.get(id) ?? id) }))
+    .filter(entry => entry.note)
+    .sort((a, b) => (a.label.toLowerCase() < b.label.toLowerCase() ? -1 : a.label.toLowerCase() > b.label.toLowerCase() ? 1 : a.id < b.id ? -1 : 1));
+  lines.push('', `## ${text.notes} (${notes.length})`, '');
+  if (notes.length === 0) lines.push(text.noNotes);
+  for (const entry of notes) {
+    lines.push(`- **${entry.label}** (\`${entry.id}\`)`);
+    entry.note.split('\n').forEach(line => lines.push(`  ${line}`));
+  }
+  if (input.analytics) {
+    const a = input.analytics;
+    lines.push('', `## ${text.analytics}`, '');
+    lines.push(`- ${text.communities}: ${a.communities} · ${text.density}: ${(a.density * 100).toFixed(2)} %`);
+    if (a.temporalRange) lines.push(`- ${text.range}: ${a.temporalRange.first} → ${a.temporalRange.last}`);
+    if (a.hubs.length) lines.push(`- ${text.hubs}: ${a.hubs.slice(0, 5).map(hub => `${clean(hub.name)} (${(hub.rank * 100).toFixed(1)} %)`).join(', ')}`);
+  }
+  if (input.vulnerability) {
+    const v = input.vulnerability;
+    lines.push('', `## ${text.structure}`, '');
+    lines.push(`- ${text.cutEdges}: ${v.cutEdges} · ${text.kcore}: ${v.maxCore} (${v.maxCoreSize} ${text.nodes})`);
+    for (const vertex of v.cutVertices) lines.push(`- ${text.articulation} ${clean(vertex.label)} (${text.degree} ${vertex.degree}) — ${fill(text.splits, { parts: vertex.impact.components, largest: vertex.impact.largest })}`);
+  }
+  if (input.gaps) {
+    const g = input.gaps;
+    lines.push('', `## ${text.provenance}`, '');
+    lines.push(`- ${text.nodes}: ${g.nodesBacked}/${g.nodes} ${text.backed} · ${text.edges}: ${g.edgesBacked}/${g.edges} ${text.backed}`);
+    lines.push(`- ${text.singleSource}: ${g.singleSourceCount}`);
+    for (const edge of g.singleSource) lines.push(`  - \`${edge.id}\` ${clean(edge.type)} (${(edge.confidence * 100).toFixed(1)} %) — ${clean(labelOf.get(edge.source) ?? edge.source)} → ${clean(labelOf.get(edge.target) ?? edge.target)}`);
+    lines.push(`- ${text.unbackedNodes}: ${g.unbackedNodeCount}${g.unbacked.length ? ` — ${g.unbacked.map(node => clean(node.label)).join(', ')}` : ` (${text.none})`}`);
+    if (input.sharedSources?.length) lines.push(`- ${text.sharedDocs}: ${input.sharedSources.map(group => `\`${group.document}\` (${group.entities.map(entity => clean(entity.label)).join(', ')})`).join('; ')}`);
+  }
+  if (input.insights?.length) {
+    lines.push('', `## ${text.rules}`, '');
+    for (const insight of input.insights) lines.push(`- [${clean(insight.rule)}] ${clean(insight.title)}${insight.entities.length ? ` — ${insight.entities.map(entity => clean(entity.name)).join(', ')}` : ''}`);
+  }
+  if (input.duplicates?.length) {
+    lines.push('', `## ${text.duplicates}`, '');
+    for (const group of input.duplicates) lines.push(`- ${clean(group.label)} — ${group.ids.map(id => `\`${id}\``).join(', ')}${group.sameType ? '' : ` (${text.mixed})`}`);
+  }
+  if (input.freshness) {
+    const f = input.freshness;
+    lines.push('', `## ${text.currency}`, '');
+    lines.push(`- ${text.generated}: ${f.reference} · ${f.months} ${lang === 'en' ? 'months' : 'Monate'}`);
+    lines.push(`- ${f.staleCount}/${f.entities} ${lang === 'en' ? 'entities without evidence inside the window' : 'Entitäten ohne Beleg im Fenster'} · ${f.undatedCount} ${lang === 'en' ? 'undated' : 'ohne Datum'}`);
+    if (f.stale.length) lines.push(`  - ${f.stale.map(entity => `${clean(entity.label)} (${entity.last})`).join(', ')}`);
+  }
+  if (input.risk) {
+    const r = input.risk;
+    lines.push('', `## ${text.risk}`, '');
+    lines.push(`- ${r.weakCount}/${r.entities} ${lang === 'en' ? 'entities need a follow-up' : 'Entitäten brauchen eine Nachrecherche'} (${r.months} ${lang === 'en' ? 'months' : 'Monate'})`);
+    lines.push(`- ${Object.entries(r.states).map(([state, count]) => `${state}: ${count}`).join(' · ')}`);
+    if (!r.weakCount) lines.push(`- ${text.riskNone}`);
+    for (const entry of r.entries) lines.push(`  - ${clean(entry.label)} — ${entry.state} (${entry.documents} ${lang === 'en' ? 'doc(s)' : 'Beleg(e)'}, ${entry.sources} ${lang === 'en' ? 'source(s)' : 'Quelle(n)'}, ${entry.relations} ${lang === 'en' ? 'rel.' : 'Bez.'}${entry.last ? `, ${entry.last}` : ''})`);
+  }
+  if (input.primacy) {
+    const p = input.primacy;
+    lines.push('', `## ${text.primacy}`, '');
+    if (!p.outlets.length) lines.push(`- ${text.primacyNone}`);
+    for (const outlet of p.outlets) {
+      const lag = outlet.meanLag === undefined ? '' : ` · ${lang === 'en' ? 'mean lag' : 'Ø Abstand'} ${outlet.meanLag} ${lang === 'en' ? 'days' : 'Tage'}`;
+      lines.push(`- ${clean(outlet.outlet || '—')}: ${outlet.firsts} ${lang === 'en' ? 'first' : 'zuerst'} · ${outlet.followups} ${lang === 'en' ? 'follow-ups' : 'gefolgt'}${lag} · ${outlet.documents} ${lang === 'en' ? 'doc(s)' : 'Beleg(e)'}`);
+    }
+    if (p.solo) lines.push(`- ${p.solo} ${lang === 'en' ? 'relationship(s) rest on a single outlet' : 'Beziehung(en) stützen sich auf eine einzige Quelle'}${p.undated ? ` · ${p.undated} ${lang === 'en' ? 'without a usable date' : 'ohne verwertbares Datum'}` : ''}`);
+  }
+  if (input.scorecard) {
+    const card = input.scorecard;
+    const standing: Record<SourceStanding, string> = {
+      contradictory: text.standingContradictory, leader: text.standingLeader,
+      follower: text.standingFollower, thin: text.standingThin,
+    };
+    lines.push('', `## ${text.scorecard}`, '');
+    if (!card.profiles.length) lines.push(`- ${text.scorecardNone}`);
+    for (const entry of card.profiles) {
+      const lag = entry.meanLag === undefined ? '' : ` · ${lang === 'en' ? 'mean lag' : 'Ø Abstand'} ${entry.meanLag} ${lang === 'en' ? 'days' : 'Tage'}`;
+      const sole = entry.soloClaims ? ` · ${entry.soloClaims} ${lang === 'en' ? 'without a race' : 'ohne Wettbewerb'}` : '';
+      const disputes = entry.selfConflicts ? ` · ${entry.selfConflicts} ${lang === 'en' ? 'self-contradiction(s)' : 'Selbstwiderspruch/-sprüche'}`
+        : entry.conflicts ? ` · ${entry.conflicts} ${lang === 'en' ? 'dispute(s)' : 'Streitfall/-fälle'}` : '';
+      lines.push(`- ${clean(entry.outlet || '—')}: ${standing[entry.standing]} · ${entry.firsts} ${lang === 'en' ? 'first' : 'zuerst'} · ${entry.followups} ${lang === 'en' ? 'follow-ups' : 'gefolgt'}${lag} · ${entry.documents} ${lang === 'en' ? 'doc(s)' : 'Beleg(e)'}${sole}${disputes}`);
+    }
+    if (card.unattributed) lines.push(`- ${card.unattributed} ${lang === 'en' ? 'disputed pair(s) without an attributable source' : 'Streitfall/-fälle ohne zurechenbare Quelle'}`);
+  }
+  if (input.conflicts) {
+    lines.push('', `## ${text.conflicts}`, '');
+    if (!input.conflicts.length) lines.push(`- ${text.conflictsNone}`);
+    for (const conflict of input.conflicts) {
+      lines.push(`- ${clean(conflict.labels[0])} ↔ ${clean(conflict.labels[1])} — ${conflict.kind}`);
+      for (const claim of conflict.claims) lines.push(`  - ${clean(claim.type)}: ${claim.documents} ${lang === 'en' ? 'doc(s)' : 'Beleg(e)'}${claim.first ? ` · ${claim.first}${claim.last && claim.last !== claim.first ? ` → ${claim.last}` : ''}` : ''}`);
+    }
+  }
+  if (input.timeline?.length) {
+    lines.push('', `## ${text.timeline}`, '');
+    lines.push(input.timeline.map(bucket => `${bucket.month}: ${bucket.count}`).join(' · '));
+  }
+  lines.push('', '---', text.footer);
+  return lines.join('\n') + '\n';
+}
+
+export function nodesToCSV(nodes: GraphNode[]): string {
+  const header = 'id,label,type,confidence,degree,rank,community,firstSeen,lastSeen';
+  const rows = nodes.map(n => [n.id, n.label, n.type, n.confidence.toFixed(3), n.degree, n.rank,
+    n.community, n.firstSeen, n.lastSeen].map(csvCell).join(','));
+  return [header, ...rows].join('\r\n') + '\r\n';
+}
+export function edgesToCSV(edges: GraphEdge[]): string {
+  const header = 'id,source,target,type,confidence,weight';
+  const rows = edges.map(e => [e.id, e.source, e.target, e.type, e.confidence.toFixed(3), e.weight.toFixed(3)].map(csvCell).join(','));
+  return [header, ...rows].join('\r\n') + '\r\n';
+}
+export function viewToJSON(view: { nodes: GraphNode[]; edges: GraphEdge[]; analytics?: GraphAnalytics; insights?: GraphInsight[] }): string {
+  return JSON.stringify({ nodes: view.nodes, edges: view.edges, ...(view.analytics ? { analytics: view.analytics } : {}),
+    ...(view.insights?.length ? { insights: view.insights } : {}) }, null, 2) + '\n';
+}
+
+/** Shareable permalinks: bounded, validated URL state (no secrets, no free text). */
+export interface ViewUrlState { mode?: 'network' | 'map' | 'list'; q?: string; focus?: string; community?: string; from?: string; to?: string; color?: 'type' | 'community'; sources?: SourceFilter; outlet?: string; fresh?: FreshWindow; dispute?: boolean; weak?: boolean }
+export function encodeViewState(state: ViewUrlState): string {
+  const params = new URLSearchParams();
+  if (state.mode) params.set('mode', state.mode);
+  if (state.q?.trim()) params.set('q', state.q.trim().slice(0, 120));
+  if (state.focus) params.set('focus', state.focus.slice(0, 200));
+  if (state.community) params.set('community', state.community.slice(0, 24));
+  if (state.color === 'community') params.set('color', 'community');
+  if (state.from) params.set('from', state.from);
+  if (state.to) params.set('to', state.to);
+  if (state.sources && SOURCE_FILTERS.includes(state.sources)) params.set('sources', state.sources);
+  const outlet = state.outlet?.trim().slice(0, 80);
+  if (outlet) params.set('outlet', outlet);
+  if (state.dispute) params.set('dispute', '1');
+  if (state.weak) params.set('weak', '1');
+  if (state.fresh && isFreshWindow(state.fresh) && state.fresh !== DEFAULT_FRESH_MONTHS) params.set('fresh', String(state.fresh));
+  return params.toString();
+}
+export function decodeViewState(search: string): ViewUrlState {
+  const params = new URLSearchParams(search), state: ViewUrlState = {};
+  const bounded = (key: string, max: number) => { const v = params.get(key); return v && v.length <= max ? v : undefined; };
+  const mode = bounded('mode', 10);
+  if (mode === 'network' || mode === 'map' || mode === 'list') state.mode = mode;
+  const q = bounded('q', 120); if (q) state.q = q;
+  const focus = bounded('focus', 200); if (focus) state.focus = focus;
+  const community = bounded('community', 24); if (community) state.community = community;
+  if (params.get('color') === 'community') state.color = 'community';
+  const from = isoDate(params.get('from')), to = isoDate(params.get('to'));
+  if (from) state.from = from;
+  if (to) state.to = to;
+  const sources = params.get('sources') as SourceFilter | null;
+  if (sources && SOURCE_FILTERS.includes(sources)) state.sources = sources;
+  const outlet = bounded('outlet', 80);
+  if (outlet) state.outlet = outlet;
+  if (params.get('dispute') === '1') state.dispute = true;
+  if (params.get('weak') === '1') state.weak = true;
+  const fresh = Number(params.get('fresh'));
+  if (isFreshWindow(fresh)) state.fresh = fresh;
+  return state;
+}
+
+/* Wave 2b: on-demand graph algorithms in the worker (betweenness brokers,
+ * Louvain refinement). Both are bounded and deterministic; the naming and
+ * ranking helpers live here so they are unit-testable without a DOM. */
+
+/** Honest compute caps: above these the UI explains the limit instead of freezing. */
+export const ANALYSIS_LIMITS = { broker: 1200, louvain: 20_000 } as const;
+
+/** Stable names for an algorithm partition: largest community first, ties by
+ * smallest member id → "l000", "l001", … (distinct from export "c###"). */
+export function namePartition(partition: Record<string, string | number>): Map<string, string> {
+  const groups = new Map<string, string[]>();
+  for (const id of Object.keys(partition).sort()) {
+    const key = String(partition[id]);
+    const list = groups.get(key);
+    if (list) list.push(id); else groups.set(key, [id]);
+  }
+  const ranked = [...groups.values()].sort((a, b) => b.length - a.length || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+  const out = new Map<string, string>();
+  ranked.forEach((members, index) => {
+    const name = `l${String(index).padStart(3, '0')}`;
+    for (const id of members) out.set(id, name);
+  });
+  return out;
+}
+
+/** Top brokers by betweenness share (value / total), deterministic tie-break. */
+export function brokerShares(values: Record<string, number>, limit = 10): { id: string; share: number }[] {
+  const entries = Object.entries(values).filter(([, value]) => Number.isFinite(value) && value > 0);
+  const total = entries.reduce((sum, [, value]) => sum + value, 0);
+  if (!total) return [];
+  entries.sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+  return entries.slice(0, Math.max(1, limit)).map(([id, value]) => ({ id, share: value / total }));
 }

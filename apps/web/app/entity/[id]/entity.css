@@ -175,3 +175,20 @@
   .entity-card, .entity-demo { border-color: var(--color-muted-dark); background: var(--color-white); }
   .entity-actions, .entity-breadcrumb { display: none; }
 }
+
+/* Wave 3: ego-graph card + structural metrics. */
+.entity-ego-frame {
+  margin: 12px 0 4px;
+  background: var(--entity-surface);
+  border: 1px solid var(--entity-line);
+  border-radius: 12px;
+  padding: 8px;
+}
+.entity-ego-frame svg { display: block; width: 100%; height: auto; }
+.entity-ego-frame a:focus-visible { outline: 3px solid var(--entity-accent); outline-offset: 2px; border-radius: 3px; }
+.entity-related-metric {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--entity-muted);
+}

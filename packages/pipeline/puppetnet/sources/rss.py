@@ -93,6 +93,7 @@ class RssAdapter(SourceAdapter):
         if not result.ok or not (result.text or result.content):
             self.stats.bump_source(self.spec.id, "errors")
             self.stats.record_error(self.spec.id, f"feed fetch failed ({result.status or result.error}) {feed_url}")
+            self.stats.record_feed_health(feed_url, "dead")
             return
 
         raw = result.text if result.text else result.content.decode("utf-8", "replace")
@@ -101,24 +102,45 @@ class RssAdapter(SourceAdapter):
         except Exception as exc:  # noqa: BLE001 - feedparser is defensive but not immune
             self.log.warning("could not parse feed %s: %s", feed_url, exc)
             self.stats.bump_source(self.spec.id, "errors")
+            self.stats.record_feed_health(feed_url, "dead")
             return
 
         bozo = bool(getattr(parsed, "bozo", False))
         entries = list(getattr(parsed, "entries", []) or [])
         if not entries:
             self.log.warning("feed %s contained no entries (bozo=%s)", feed_url, bozo)
+            self.stats.record_feed_health(feed_url, "empty")
             return
 
         self.log.info("feed %s yielded %d entries", feed_url, len(entries))
         emitted = 0
+        skipped_known = 0
         for entry in entries:
             if emitted >= per_feed_cap or self.ctx.budget_exhausted():
                 break
+            # Wave 4: skip stories whose URL was already ingested inside the
+            # dedupe window BEFORE fetching the article — a known repost must
+            # not burn an HTTP request, time budget or a per-feed slot.
+            url = self._entry_url(entry, feed_url)
+            if url and bool(self.settings.only_new_documents) and url in self.ctx.known_urls:
+                skipped_known += 1
+                self.stats.documents_skipped_duplicate += 1
+                self.stats.bump_source(self.spec.id, "duplicates")
+                self.log.debug("skipping known story URL before fetch: %s", url)
+                continue
             document = self._entry_to_document(entry, feed_url=feed_url, fetch_full=fetch_full, content_cap=content_cap, window_days=window_days)
             if document is None:
                 continue
             emitted += 1
             yield document
+        self.stats.record_feed_health(feed_url, "ok", entries=len(entries), emitted=emitted, skipped_known=skipped_known)
+
+    @staticmethod
+    def _entry_url(entry: Any, feed_url: str) -> str:
+        """The same URL `_entry_to_document` will stamp — computed pre-fetch."""
+        link = str(entry.get("link") or "").strip()
+        guid = str(entry.get("id") or link or "").strip()
+        return link or (f"{feed_url}#{guid}" if guid else "")
 
     # ------------------------------------------------------------------ #
     def _entry_to_document(

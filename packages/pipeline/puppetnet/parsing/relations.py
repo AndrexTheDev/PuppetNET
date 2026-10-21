@@ -56,14 +56,21 @@ HEDGE_CUES: frozenset[str] = frozenset(
     (
         "alleged allegedly reported reportedly claimed purported purportedly supposedly "
         "apparently may might could would presumably rumored rumoured suspected believed "
-        "understood speculated unverified unconfirmed"
+        "understood speculated unverified unconfirmed "
+        # Wave 4: German hearsay/hedging cues — same discount semantics.
+        "angeblich vermutlich mutmaßlich vermeintlich womöglich offenbar offenbar "
+        "soll sollen sollte sollten dürfte dürften würde würden könne könnte könnten "
+        "berichtet behauptet behauptete unbestätigt spekuliert gerüchteweise möglicherweise"
     ).split()
 )
 
 NEGATION_CUES: frozenset[str] = frozenset(
     "not no never neither nor n't cannot cant dont doesnt didnt isnt arent wasnt werent "
     "denied denies deny refute refutes refuted rejected rejects dismiss dismisses "
-    "disputed disputes contradicts lacks without absent free".split()
+    "disputed disputes contradicts lacks without absent free "
+    # Wave 4: German negation cues.
+    "nicht kein keine keiner keines nie niemals weder ohne mangels "
+    "dementiert dementierte dementieren bestreitet bestritten streitet".split()
 )
 
 #: Verb lemma → relation rules, ordered by specificity.
@@ -153,6 +160,34 @@ VERB_RULES: tuple[RelationRule, ...] = (
     # -- generic ------------------------------------------------------------
     RelationRule(RelationType.AFFILIATED_WITH, verbs=frozenset({"affiliate", "affiliated", "ally", "allied", "partner", "partners", "partnered", "cooperate", "cooperates", "cooperated", "collaborate", "collaborates", "collaborated", "support", "supports", "supported", "back", "backs", "backed", "endorse", "endorses", "endorsed"}), evidence=0.85, priority=4),
     RelationRule(RelationType.ASSOCIATED_WITH, verbs=frozenset({"involve", "involves", "involved", "include", "includes", "included", "mention", "mentions", "mentioned", "name", "names", "named", "appear", "appears", "appeared", "list", "lists", "listed"}), evidence=0.7, priority=1),
+
+    # -- Wave 4: German lemmas (de_core_news_sm dictionary forms) -------------
+    # The daily bounded run parses German feeds; before this block every German
+    # verb fell through to the weak type default. Type constraints mirror the
+    # English rules so a German hit scores exactly like its English twin.
+    RelationRule(RelationType.OWNS, verbs=frozenset({"besitzen", "innehaben"}), subject_types=frozenset({_P, _O}), object_types=frozenset({_O, _C, _L}), evidence=0.98, priority=6),
+    RelationRule(RelationType.SHAREHOLDER_OF, verbs=frozenset({"halten"}), subject_types=frozenset({_P, _O}), object_types=frozenset({_O}), evidence=0.85, priority=5, note="Anteile halten"),
+    RelationRule(RelationType.OWNED_BY, verbs=frozenset({"gehören"}), object_types=frozenset({_P, _O}), evidence=0.9, priority=6),
+    RelationRule(RelationType.ACQUIRED, verbs=frozenset({"erwerben", "kaufen", "übernehmen", "aufkaufen"}), subject_types=frozenset({_P, _O}), object_types=frozenset({_O, _C}), evidence=0.95, priority=7),
+    RelationRule(RelationType.FOUNDED, verbs=frozenset({"gründen", "errichten"}), subject_types=frozenset({_P, _O}), object_types=frozenset({_O}), evidence=0.95, priority=7),
+    RelationRule(RelationType.CONTROLS, verbs=frozenset({"leiten", "führen", "kontrollieren", "steuern", "lenken", "verwalten", "beaufsichtigen"}), subject_types=frozenset({_P, _O}), object_types=frozenset({_O, _C}), evidence=0.88, priority=7),
+    RelationRule(RelationType.FUNDED, verbs=frozenset({"finanzieren", "fördern", "subventionieren", "kreditieren"}), subject_types=frozenset({_P, _O}), object_types=frozenset({_P, _O}), evidence=0.92, priority=6),
+    RelationRule(RelationType.DONATED_TO, verbs=frozenset({"spenden", "stiften"}), subject_types=frozenset({_P, _O}), object_types=frozenset({_P, _O}), evidence=0.85, priority=5),
+    RelationRule(RelationType.PAID_TO, verbs=frozenset({"zahlen", "bezahlen", "entrichten"}), evidence=0.85, priority=5),
+    RelationRule(RelationType.TRANSFERRED_TO, verbs=frozenset({"überweisen", "verkaufen", "veräußern", "übertragen", "abtreten", "liefern"}), evidence=0.8, priority=4),
+    RelationRule(RelationType.INVESTED_IN, verbs=frozenset({"investieren", "beteiligen"}), subject_types=frozenset({_P, _O}), object_types=frozenset({_O}), evidence=0.85, priority=5),
+    RelationRule(RelationType.EMPLOYS, verbs=frozenset({"beschäftigen", "anstellen", "einstellen"}), subject_types=frozenset({_O}), object_types=frozenset({_P}), evidence=0.9, priority=6),
+    RelationRule(RelationType.CONTRACTED_WITH, verbs=frozenset({"beauftragen", "engagieren"}), evidence=0.85, priority=5),
+    RelationRule(RelationType.MEMBER_OF, verbs=frozenset({"angehören", "beitreten"}), subject_types=frozenset({_P, _O}), object_types=frozenset({_O}), evidence=0.85, priority=5),
+    RelationRule(RelationType.MET_WITH, verbs=frozenset({"treffen", "begegnen"}), subject_types=frozenset({_P, _O}), object_types=frozenset({_P, _O}), evidence=0.9, priority=7),
+    RelationRule(RelationType.FAMILY_OF, verbs=frozenset({"heiraten", "ehelichen"}), subject_types=frozenset({_P}), object_types=frozenset({_P}), evidence=0.85, priority=6),
+    RelationRule(RelationType.OPERATES, verbs=frozenset({"betreiben", "chartern", "bereedern"}), object_types=frozenset({_C}), evidence=0.9, priority=8),
+    RelationRule(RelationType.LOCATED_IN, verbs=frozenset({"sitzen", "liegen", "wohnen", "leben", "residieren", "befinden"}), object_types=frozenset({_L}), evidence=0.85, priority=5),
+    RelationRule(RelationType.TRAVELED_TO, verbs=frozenset({"reisen", "fliegen", "segeln", "landen", "ankommen", "fahren"}), object_types=frozenset({_L}), evidence=0.85, priority=6),
+    RelationRule(RelationType.ARRIVED_FROM, verbs=frozenset({"abfliegen", "abfahren", "abreisen", "starten"}), object_types=frozenset({_L}), evidence=0.8, priority=5),
+    RelationRule(RelationType.SANCTIONED_BY, verbs=frozenset({"sanktionieren"}), object_types=frozenset({_P, _O, _C}), reverse=True, evidence=0.95, priority=8),
+    RelationRule(RelationType.ACCUSED_OF, verbs=frozenset({"beschuldigen", "anklagen", "verklagen", "verurteilen", "verdächtigen"}), object_types=frozenset({_P, _O}), reverse=True, evidence=0.85, priority=6),
+    RelationRule(RelationType.APPOINTED_BY, verbs=frozenset({"ernennen", "berufen", "nominieren", "wählen", "bestellen"}), object_types=frozenset({_P}), reverse=True, evidence=0.9, priority=6),
 )
 
 #: Nominal heads → relation (apposition / copula / "X, owner of Y" patterns).
@@ -179,6 +214,28 @@ NOUN_RULES: tuple[RelationRule, ...] = (
     RelationRule(RelationType.SANCTIONED_BY, nouns=frozenset({"sanction", "sanctions", "blacklist", "denial list", "specially designated national", "sdn", "consolidated list"}), evidence=0.9, priority=7),
     RelationRule(RelationType.ASSOCIATED_WITH, nouns=frozenset({"associate", "associates", "ally", "allies", "colleague", "confidant", "friend", "aide", "aides", "associate of", "partner", "business partner"}), subject_types=frozenset({_P}), object_types=frozenset({_P}), evidence=0.75, priority=4),
     RelationRule(RelationType.ASSOCIATED_WITH, nouns=frozenset({"associate", "associates", "ally", "allies", "colleague", "confidant", "friend", "aide", "aides", "associate of"}), evidence=0.75, priority=3),
+
+    # -- Wave 4: German role nouns & register vocabulary ----------------------
+    RelationRule(RelationType.DIRECTOR_OF, nouns=frozenset({"vorstand", "vorstandsmitglied", "vorstandsvorsitzender", "vorstandsvorsitzende", "aufsichtsrat", "aufsichtsratsmitglied", "aufsichtsratsvorsitzender", "aufsichtsratsvorsitzende", "verwaltungsrat", "verwaltungsratsmitglied"}), subject_types=frozenset({_P, _O}), object_types=frozenset({_O}), evidence=0.9, priority=8),
+    RelationRule(RelationType.OFFICER_OF, nouns=frozenset({"geschäftsführer", "geschäftsführerin", "direktor", "direktorin", "präsident", "präsidentin", "ceo", "cfo", "coo", "manager", "managerin", "prokurist", "prokuristin"}), evidence=0.88, priority=7),
+    RelationRule(RelationType.OWNS, nouns=frozenset({"eigentümer", "eigentümerin", "inhaber", "inhaberin", "besitzer", "besitzerin", "eigner"}), evidence=0.92, priority=8),
+    RelationRule(RelationType.SHAREHOLDER_OF, nouns=frozenset({"aktionär", "aktionärin", "hauptaktionär", "großaktionär", "anteilseigner", "gesellschafter", "gesellschafterin", "beteiligung"}), evidence=0.85, priority=6),
+    RelationRule(RelationType.FOUNDED, nouns=frozenset({"gründer", "gründerin", "mitgründer", "mitgründerin", "stifter", "stifterin"}), evidence=0.92, priority=8),
+    # "Tochter"/"Mutter" are type-gated: the corporate reading only fires for
+    # organisation pairs, the kinship reading (below) only for person pairs.
+    RelationRule(RelationType.SUBSIDIARY_OF, nouns=frozenset({"tochtergesellschaft", "tochter", "niederlassung", "zweigniederlassung"}), subject_types=frozenset({_O}), object_types=frozenset({_O}), evidence=0.9, priority=7),
+    RelationRule(RelationType.PARENT_OF, nouns=frozenset({"muttergesellschaft", "mutter", "holding", "dachgesellschaft"}), subject_types=frozenset({_O}), object_types=frozenset({_O}), reverse=True, evidence=0.88, priority=7),
+    RelationRule(RelationType.FAMILY_OF, nouns=frozenset({"ehefrau", "ehemann", "gattin", "gatte", "witwe", "witwer", "mutter", "vater", "sohn", "tochter", "bruder", "schwester", "onkel", "tante", "neffe", "nichte", "cousin", "cousine", "enkel", "enkelin"}), subject_types=frozenset({_P}), object_types=frozenset({_P}), evidence=0.9, priority=8),
+    RelationRule(RelationType.EMPLOYED_BY, nouns=frozenset({"mitarbeiter", "mitarbeiterin", "angestellter", "angestellte", "beschäftigter", "beschäftigte", "berater", "beraterin", "anwalt", "anwältin", "lobbyist", "lobbyistin", "sprecher", "sprecherin"}), evidence=0.8, priority=5),
+    RelationRule(RelationType.MEMBER_OF, nouns=frozenset({"mitglied", "mitglieder", "parteimitglied", "abgeordneter", "abgeordnete"}), evidence=0.82, priority=5),
+    RelationRule(RelationType.NOMINEE_OF, nouns=frozenset({"strohmann", "strohfrau"}), evidence=0.88, priority=7),
+    RelationRule(RelationType.TRUSTEE_OF, nouns=frozenset({"treuhänder", "treuhänderin", "sachwalter"}), evidence=0.88, priority=7),
+    RelationRule(RelationType.INTERMEDIARY_FOR, nouns=frozenset({"mittelsmann", "vermittler"}), evidence=0.88, priority=7),
+    RelationRule(RelationType.LOCATED_IN, nouns=frozenset({"hauptsitz", "sitz", "standort", "domizil", "geschäftsanschrift", "firmensitz"}), evidence=0.85, priority=6),
+    # Handelsregister vocabulary: the registry itself is the object here.
+    RelationRule(RelationType.REGISTERED_IN, nouns=frozenset({"handelsregister", "registergericht", "amtsgericht", "firmenregister", "vereinsregister", "handelsregistereintrag"}), object_types=frozenset({_O, _L}), evidence=0.85, priority=6),
+    RelationRule(RelationType.NATIONAL_OF, nouns=frozenset({"staatsangehöriger", "staatsangehörige", "bürger", "bürgerin", "resident"}), subject_types=frozenset({_P}), object_types=frozenset({_L}), evidence=0.85, priority=6),
+    RelationRule(RelationType.SANCTIONED_BY, nouns=frozenset({"sanktion", "sanktionen", "sanktionsliste"}), evidence=0.9, priority=7),
 )
 
 #: Preposition → relation for ``subject —prep→ object`` (no usable verb).
@@ -205,7 +262,12 @@ DIRECTIONAL_TRANSFER_VERBS: frozenset[str] = frozenset(
 )
 
 _HEDGE_RE = re.compile(rf"\b({'|'.join(sorted(HEDGE_CUES))})\b", re.IGNORECASE)
-_NEGATION_RE = re.compile(r"\b(not|never|no|neither|nor|n't|denied|denies|deny|refuted?|reject(?:s|ed)?|without|absent|dispute[ds]?)\b", re.IGNORECASE)
+_NEGATION_RE = re.compile(
+    r"\b(not|never|no|neither|nor|n't|denied|denies|deny|refuted?|reject(?:s|ed)?|without|absent|dispute[ds]?"
+    # Wave 4: German negation ("nicht Eigentümer", "kein Vertrag", "dementiert").
+    r"|nicht|kein\w*|nie|niemals|weder|ohne|mangels|dementier\w*|bestreit\w*|bestritten)\b",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)

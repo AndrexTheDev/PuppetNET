@@ -7,9 +7,11 @@
  *
  * The dataset is deliberately a *publication* format, not a graph dump:
  * `entity` fields are reduced to facts the pipeline can evidence, `Document`
- * nodes stay out unless an operator marks them public, and analytical values
- * (risk score, puppet-master rank) are never published — a computed suspicion
- * is not a statement about a real person.
+ * nodes stay out unless an operator marks them public, and accusation-style
+ * analytical values (risk score, puppet-master rank) are never published.
+ * The deterministic *structural* metrics from Wave 1 (degree, PageRank,
+ * community label, mention dates) are published as position hints — the same
+ * values the dashboard shows, framed as structure, not as verdicts.
  */
 
 import type { Metadata } from 'next';
@@ -56,6 +58,22 @@ export interface RelatedEntity {
   type: EntityKind;
   predicate: string;
   direction: 'in' | 'out';
+  /** Wave 3: structural metrics of the neighbour, when the revision has them. */
+  degree?: number;
+  rank?: number;
+  community?: string;
+}
+
+/** Deterministic structural metrics from the export analytics (Wave 1):
+ *  degree, PageRank, community label and first/last mention dates. They are
+ *  position hints for link analysis — never verdicts — and are only present
+ *  when the publication carried valid values. */
+export interface EntityAnalytics {
+  degree: number;
+  rank: number;
+  community?: string;
+  firstSeen?: string;
+  lastSeen?: string;
 }
 
 export interface PublicEntity {
@@ -72,6 +90,7 @@ export interface PublicEntity {
   updatedAt: string;
   evidence: EntityEvidence[];
   related: RelatedEntity[];
+  analytics?: EntityAnalytics;
   sameAs: string[];
   /** False only when the source explicitly opts the page out of indexing. */
   public: boolean;
@@ -284,6 +303,31 @@ function normalizeDate(value: unknown, fallback: string): string {
   return Number.isFinite(parsed) ? new Date(parsed).toISOString().slice(0, 10) : fallback;
 }
 
+const isoDay = (value: unknown): string | undefined => {
+  const candidate = text(value, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(candidate) ? candidate : undefined;
+};
+
+/** Wave 3: accept only export analytics that are already valid — bounded
+ *  integer degree, rank in [0,1], machine community labels, ISO days.
+ *  Anything else is dropped entirely; invalid metrics are never clamped
+ *  into looking real. */
+function entityAnalytics(raw: Record<string, unknown>): EntityAnalytics | undefined {
+  if (typeof raw.degree === 'boolean' || typeof raw.rank === 'boolean') return undefined;
+  const degree = Number(raw.degree);
+  const rank = Number(raw.rank);
+  if (!Number.isInteger(degree) || degree < 0 || degree > 1_000_000) return undefined;
+  if (!Number.isFinite(rank) || rank < 0 || rank > 1) return undefined;
+  const analytics: EntityAnalytics = { degree, rank: Math.round(rank * 1e6) / 1e6 };
+  const community = text(raw.community, 24);
+  if (/^[a-z]\d{3,8}$/.test(community)) analytics.community = community;
+  const firstSeen = isoDay(raw.firstSeen);
+  const lastSeen = isoDay(raw.lastSeen);
+  if (firstSeen) analytics.firstSeen = firstSeen;
+  if (lastSeen) analytics.lastSeen = lastSeen;
+  return analytics;
+}
+
 function defaultDescription(
   entity: Pick<PublicEntity, 'name' | 'type' | 'jurisdiction' | 'confidence' | 'evidence'>,
 ): string {
@@ -364,6 +408,7 @@ export function normalizeEntityDataset(
     const jurisdiction = text(merged.jurisdiction ?? merged.country ?? merged.address_country, 120);
     const address = text(merged.address ?? merged.street_address, 240);
     const aliases = normalizeAliases(merged);
+    const analytics = entityAnalytics(merged);
     const sameAs = [...new Set(list(merged.sameAs ?? merged.same_as, 10).map(safeHttpUrl).filter((url): url is string => Boolean(url)))];
     const entity: PublicEntity = {
       id,
@@ -379,6 +424,7 @@ export function normalizeEntityDataset(
       updatedAt: normalizeDate(merged.updated_at ?? merged.updatedAt ?? merged.last_seen ?? merged.first_seen, generatedAt),
       evidence: evidence.slice(0, MAX_EVIDENCE_REFERENCES),
       related: [],
+      ...(analytics ? { analytics } : {}),
       sameAs,
       public: true,
     };
@@ -418,6 +464,10 @@ export function normalizeEntityDataset(
         type: other.type,
         predicate: edge.predicate,
         direction,
+        ...(other.analytics
+          ? { degree: other.analytics.degree, rank: other.analytics.rank,
+              ...(other.analytics.community ? { community: other.analytics.community } : {}) }
+          : {}),
       });
       related.set(entity.id, bucket);
     }
@@ -497,6 +547,32 @@ export function buildEntityJsonLd(entity: PublicEntity, origin: string): Record<
         ...(entity.jurisdiction ? { addressCountry: entity.jurisdiction } : {}),
       }
     : undefined;
+  // Wave 3: structural metrics as PropertyValue pairs, sources as subjectOf
+  // CreativeWorks, person-to-person neighbours as `knows` references. All stay
+  // inside the subject node — the @graph keeps its pinned website+subject+
+  // breadcrumb shape.
+  const metrics = entity.analytics
+    ? [
+        { '@type': 'PropertyValue', name: 'degree', value: entity.analytics.degree },
+        { '@type': 'PropertyValue', name: 'PageRank', value: entity.analytics.rank },
+        ...(entity.analytics.community ? [{ '@type': 'PropertyValue', name: 'community', value: entity.analytics.community }] : []),
+        ...(entity.analytics.firstSeen ? [{ '@type': 'PropertyValue', name: 'firstMention', value: entity.analytics.firstSeen }] : []),
+        ...(entity.analytics.lastSeen ? [{ '@type': 'PropertyValue', name: 'lastMention', value: entity.analytics.lastSeen }] : []),
+      ]
+    : [];
+  const knownPersons = entity.type === 'Person'
+    ? [...new Map(
+        entity.related
+          .filter((item) => item.type === 'Person')
+          .map((item) => [item.id, { '@type': 'Person' as const, '@id': `${base}${entityPath(item.slug)}#entity` }]),
+      ).values()]
+    : [];
+  const subjectOf = entity.evidence.slice(0, 10).map((item) => ({
+    '@type': 'CreativeWork',
+    name: item.title,
+    ...(item.url ? { url: item.url } : {}),
+    ...(item.date && /^\d{4}-\d{2}-\d{2}/.test(item.date) ? { datePublished: item.date.slice(0, 10) } : {}),
+  }));
   const subject: Record<string, unknown> = {
     '@type': schemaTypeFor(entity.type),
     '@id': `${url}#entity`,
@@ -511,6 +587,9 @@ export function buildEntityJsonLd(entity: PublicEntity, origin: string): Record<
     ...(identifier.length ? { identifier } : {}),
     ...(address ? { address } : {}),
     ...(entity.sameAs.length ? { sameAs: entity.sameAs } : {}),
+    ...(metrics.length ? { additionalProperty: metrics } : {}),
+    ...(subjectOf.length ? { subjectOf } : {}),
+    ...(knownPersons.length ? { knows: knownPersons } : {}),
   };
   const breadcrumb = {
     '@type': 'BreadcrumbList',

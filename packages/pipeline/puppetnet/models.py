@@ -902,6 +902,9 @@ class IngestStats:
     seconds_throttled: float = 0.0
     per_source: dict[str, dict[str, int]] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
+    #: Wave 4: one bounded record per harvested feed so the run summary shows
+    #: source quality at a glance — which feeds are dead, which are stale.
+    feed_health: list[dict[str, Any]] = field(default_factory=list)
 
     def bump_source(self, source_id: str, key: str, amount: int = 1) -> None:
         bucket = self.per_source.setdefault(source_id, {})
@@ -911,6 +914,18 @@ class IngestStats:
         entry = f"[{source_id}] {message}"
         if len(self.errors) < 200:
             self.errors.append(entry[:500])
+
+    def record_feed_health(self, feed: str, status: str, *, entries: int = 0, emitted: int = 0, skipped_known: int = 0) -> None:
+        """Bounded feed-health ledger: at most 100 feeds, no unbounded growth."""
+        if len(self.feed_health) >= 100:
+            return
+        self.feed_health.append({
+            "feed": str(feed)[:300],
+            "status": status if status in {"ok", "empty", "dead"} else "dead",
+            "entries": max(0, int(entries)),
+            "emitted": max(0, int(emitted)),
+            "skipped_known": max(0, int(skipped_known)),
+        })
 
     @property
     def duration_seconds(self) -> float:
@@ -955,6 +970,20 @@ class IngestStats:
                     f"| `{source_id}` | {counters.get('documents', 0)} | {counters.get('entities', 0)} | "
                     f"{counters.get('relations', 0)} | {counters.get('errors', 0)} |"
                 )
+        if self.feed_health:
+            dead = [item for item in self.feed_health if item.get("status") == "dead"]
+            empty = [item for item in self.feed_health if item.get("status") == "empty"]
+            lines += ["", f"**Feed health**: {len(self.feed_health)} feeds checked — "
+                          f"{len(dead)} dead, {len(empty)} empty, "
+                          f"{len(self.feed_health) - len(dead) - len(empty)} ok."]
+            lines += ["", "<details><summary>Feed details</summary>", "",
+                      "| Feed | Status | Entries | New | Known |", "| --- | --- | --- | --- | --- |"]
+            for item in self.feed_health:
+                lines.append(
+                    f"| `{item.get('feed', '')}` | {item.get('status', '')} | {item.get('entries', 0)} | "
+                    f"{item.get('emitted', 0)} | {item.get('skipped_known', 0)} |"
+                )
+            lines += ["", "</details>"]
         if self.errors:
             lines += ["", "<details><summary>Errors (first 20)</summary>", ""]
             lines += [f"- `{err}`" for err in self.errors[:20]]

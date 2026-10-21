@@ -1076,3 +1076,62 @@ def test_naming_a_source_outside_the_tier_does_not_widen_the_run(env, use_regist
 
     manual = make_pipeline(env, PipelineOptions(sources=["icij"]))
     assert [spec.id for spec in manual._resolve_specs()] == ["icij"], "--tier all reaches it"
+
+
+# --------------------------------------------------------------------------- #
+# Wave 4 — URL-level dedupe (edited reposts of known stories)
+# --------------------------------------------------------------------------- #
+
+
+def test_local_state_records_urls_next_to_hashes(env):
+    pipeline = make_pipeline(env)
+    pipeline._flush_local_state([Document(doc_id="d1", source_id="s", url="https://example.test/a", content_hash="h1")])
+    payload = json.loads((env.state_path / "content_hashes.json").read_text(encoding="utf-8"))
+    assert payload["format"] == 2 and payload["count"] == 1
+    assert payload["url_count"] == 1 and set(payload["urls"]) == {"https://example.test/a"}
+    assert pipeline._read_local_urls() == {"https://example.test/a"}
+    assert pipeline._load_dedupe_index() == {"h1"}
+
+
+def test_local_url_state_honours_the_dedupe_window(env):
+    """A narrower tier must not skip URLs a wider tier is supposed to re-check."""
+    from datetime import timedelta
+
+    from puppetnet.models import iso, utcnow
+    state = env.state_path / "content_hashes.json"
+    state.parent.mkdir(parents=True, exist_ok=True)
+    now = utcnow()
+    state.write_text(json.dumps({"format": 2, "count": 0, "hashes": {}, "url_count": 2, "urls": {
+        "https://recent.test": iso(now - timedelta(days=2)),
+        "https://old.test": iso(now - timedelta(days=40)),
+    }}), encoding="utf-8")
+    daily = make_pipeline(dataclasses.replace(env, dedupe_window_days=30))
+    assert daily._read_local_urls() == {"https://recent.test"}
+    weekly = make_pipeline(dataclasses.replace(env, dedupe_window_days=90))
+    assert weekly._read_local_urls() == {"https://recent.test", "https://old.test"}
+
+
+def test_legacy_state_files_simply_have_no_urls(env):
+    from puppetnet.models import iso, utcnow
+    state = env.state_path / "content_hashes.json"
+    state.parent.mkdir(parents=True, exist_ok=True)
+    state.write_text(json.dumps({"format": 2, "count": 1, "hashes": {"abc": iso(utcnow())}}), encoding="utf-8")
+    pipeline = make_pipeline(env)
+    assert pipeline._read_local_urls() == set()
+    assert pipeline._load_dedupe_index() == {"abc"}
+
+
+def test_edited_repost_of_a_known_url_is_skipped_end_to_end(env, use_registry):
+    """Wave 4: URL dedupe catches re-worded reposts that hash dedupe misses."""
+    use_registry(stub_spec("news_world", documents=[document("news_world", "https://example.test/a", text="Gazprom owns Rosneft.")]))
+    first = make_pipeline(env)
+    first.run()
+    assert first.stats.documents_fetched == 1
+    payload = json.loads((env.state_path / "content_hashes.json").read_text(encoding="utf-8"))
+    assert payload["url_count"] == 1 and set(payload["urls"]) == {"https://example.test/a"}
+
+    use_registry(stub_spec("news_world", documents=[document("news_world", "https://example.test/a", text="Editors rewrote the story: Rosneft belongs to Gazprom.")]))
+    second = make_pipeline(env)
+    second.run()
+    assert second.stats.documents_fetched == 0
+    assert second.stats.documents_skipped_duplicate == 1

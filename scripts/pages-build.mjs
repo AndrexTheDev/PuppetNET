@@ -1,4 +1,11 @@
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { dirname, resolve } from 'node:path';
+// Cloudflare may start this gate from the repository root or from a workspace
+// root directory (apps/web, apps/worker). Both are supported: the gate anchors
+// itself to the repository it lives in instead of trusting the caller's cwd.
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+process.chdir(repoRoot);
 // Prepare assets before tests; direct next build repeats this idempotently.
 for (const args of [
   ['scripts/generate-seo.js'],
@@ -7,6 +14,7 @@ for (const args of [
   ['--import', 'tsx', '--test', 'tests/dashboard.test.ts', 'tests/data_fetcher.test.ts'],
   ['--import', 'tsx', '--test', 'tests/seo.test.ts'],
   ['--import', 'tsx', '--test', 'tests/a11y.test.tsx'],
+  ['--import', 'tsx', '--test', 'tests/i18n.test.tsx'],
 ]) {
   const result = spawnSync(process.execPath, args, { stdio: 'inherit' });
   if (result.status !== 0) process.exit(result.status ?? 1);

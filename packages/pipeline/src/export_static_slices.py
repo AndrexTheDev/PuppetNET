@@ -37,11 +37,16 @@ def atomic_json(path: Path, data: Any) -> None:
 
 
 def reserve_run(path: Path, event: str, day: str | None = None) -> bool:
-    """Durable quota shared by scheduled/manual runs: TOTAL <=2/day, cron <=1.
+    """Durable quota shared by scheduled/manual runs: TOTAL <=3/day = cron <=2 + manual <=1.
 
-    Caller MUST serialize writers and persist this file even on ingestion failure.
-    This is not a distributed database lock. A missing file starts a new ledger;
-    a corrupt file raises and fails closed instead of silently replenishing quota.
+    Two cron slots (03:00 and 15:00 UTC) guarantee the twice-daily publication;
+    one manual slot keeps a dispatch/research run possible without eating a cron
+    slot. Caller MUST serialize writers and persist this file even on ingestion
+    failure. This is not a distributed database lock. A missing file starts a
+    new ledger; a corrupt file raises and fails closed instead of silently
+    replenishing quota. Ledgers written by the older 2-total/1-cron policy stay
+    valid within these bounds; a legacy same-day ledger with 2 manual entries
+    fails closed for the rest of that UTC day.
     """
     day = day or datetime.now(timezone.utc).date().isoformat()
     state = json.loads(path.read_text()) if path.exists() else {}
@@ -49,12 +54,13 @@ def reserve_run(path: Path, event: str, day: str | None = None) -> bool:
         state = {"day": day, "total": 0, "scheduled": 0, "manual": 0}
     if event not in {"schedule", "repository_dispatch", "workflow_dispatch"}:
         raise ValueError("Unsupported run trigger")
-    if any(type(state.get(k)) is not int or not 0 <= state[k] <= 2 for k in ("total", "scheduled", "manual")):
+    bounds = {"total": 3, "scheduled": 2, "manual": 1}
+    if any(type(state.get(k)) is not int or not 0 <= state[k] <= cap for k, cap in bounds.items()):
         raise ValueError("Invalid daily quota ledger")
-    if state["scheduled"] > 1 or state["manual"] + state["scheduled"] != state["total"]:
+    if state["manual"] + state["scheduled"] != state["total"]:
         raise ValueError("Inconsistent daily quota ledger")
     kind = "scheduled" if event == "schedule" else "manual"
-    if state["total"] >= 2 or (kind == "scheduled" and state["scheduled"] >= 1):
+    if state["total"] >= bounds["total"] or state[kind] >= bounds[kind]:
         return False
     state["total"] += 1
     state[kind] += 1
@@ -273,8 +279,260 @@ def build_public_graph(raw: dict, limit: int = MAX_NODES) -> dict:
             "evidence": sorted(evidence, key=lambda item: item["id"]), "truncated": raw.get("truncated") is True or len(by_id) > len(nodes) or len(edges) > MAX_EDGES}
 
 
+def enrich_with_analytics(graph: dict) -> None:
+    """Deterministic export-time link analysis over the published allowlist graph.
+
+    Adds per-node degree, PageRank, label-propagation community and first/last
+    mention dates, plus a bounded top-level summary — the standard OSINT analytics
+    set (centrality, communities, temporal spans) precomputed once per revision.
+    Consumers (dashboard, entity pages, third parties) get link-analysis value
+    for free: no extra CI minutes, no extra Neo4j reads, no browser crunching
+    required. Inputs are already the allowlisted public fields, so no private
+    data can leak into the analytics. Synchronous label propagation with sorted
+    iteration and smallest-label tie-breaks plus 20 damped PageRank passes keep
+    results reproducible, which the stable revision digest depends on.
+    Bounded cost: O(passes x (nodes + edges)) with passes <= 20 + 8.
+    """
+    nodes, edges = graph["nodes"], graph["edges"]
+    order = [node["id"] for node in nodes]
+    total = len(order)
+    undirected: dict[str, list[str]] = {key: [] for key in order}
+    outgoing: dict[str, list[str]] = {key: [] for key in order}
+    degree: dict[str, int] = dict.fromkeys(order, 0)
+    for edge in edges:
+        source, target = edge["source"], edge["target"]
+        degree[source] += 1
+        degree[target] += 1
+        outgoing[source].append(target)
+        undirected[source].append(target)
+        if target != source:
+            undirected[target].append(source)
+    rank: dict[str, float] = dict.fromkeys(order, 1.0 / total) if total else {}
+    for _ in range(20):
+        if not total:
+            break
+        dangling = sum(rank[key] for key in order if not outgoing[key])
+        updates = {key: (.15 + .85 * dangling) / total for key in order}
+        for key in order:
+            links = outgoing[key]
+            if not links:
+                continue
+            share = .85 * rank[key] / len(links)
+            for target in links:
+                updates[target] += share
+        rank = updates
+    labels = {key: key for key in order}
+    for _ in range(8):
+        changed = False
+        propagated: dict[str, str] = {}
+        for key in order:
+            counts: dict[str, int] = {}
+            for other in undirected[key]:
+                counts[labels[other]] = counts.get(labels[other], 0) + 1
+            best = max(sorted(counts), key=counts.get) if counts else key
+            propagated[key] = best
+            changed = changed or best != labels[key]
+        labels = propagated
+        if not changed:
+            break
+    groups: dict[str, list[str]] = {}
+    for key in order:
+        groups.setdefault(labels[key], []).append(key)
+    # Stable community names: largest first, ties by smallest member id.
+    ranked_groups = sorted(groups.values(), key=lambda members: (-len(members), members[0]))
+    community: dict[str, str] = {}
+    for index, members in enumerate(ranked_groups):
+        for key in members:
+            community[key] = f"c{index:03d}"
+    dates = {item["id"]: item["date"][:10] for item in graph["evidence"]
+             if re.match(r"\d{4}-\d{2}-\d{2}", str(item.get("date", "")))}
+    for node in nodes:
+        seen = sorted(dates[doc] for doc in node.get("evidenceIds", []) if doc in dates)
+        node["degree"] = degree[node["id"]]
+        node["rank"] = round(rank[node["id"]], 6)
+        node["community"] = community[node["id"]]
+        if seen:
+            node["firstSeen"], node["lastSeen"] = seen[0], seen[-1]
+    hubs = sorted(nodes, key=lambda node: (-node["rank"], node["id"]))[:10]
+    firsts = [node["firstSeen"] for node in nodes if "firstSeen" in node]
+    lasts = [node["lastSeen"] for node in nodes if "lastSeen" in node]
+    graph["analytics"] = {
+        "version": 1, "nodes": total, "edges": len(edges),
+        "communities": len(ranked_groups),
+        "largestCommunity": len(ranked_groups[0]) if ranked_groups else 0,
+        "density": round(len(edges) / (total * (total - 1)), 6) if total > 1 else 0.0,
+        "hubs": [{"id": node["id"], "name": node["name"], "rank": node["rank"], "degree": node["degree"]}
+                 for node in hubs],
+        **({"temporalRange": {"first": min(firsts), "last": max(lasts)}} if firsts else {}),
+    }
+
+
+INSIGHT_RULES_VERSION = 1
+MAX_INSIGHTS_PER_RULE = 8
+MAX_INSIGHTS_TOTAL = 24
+_HUB_MIN_DEGREE = 8
+_HUB_MAX_INTERCONNECTION = 0.10
+_ROLE_PHRASES = {"NOMINEE_OF": "ist Strohmann/Strohfrau für",
+                 "INTERMEDIARY_FOR": "ist Vermittler für",
+                 "TRUSTEE_OF": "ist Treuhänder für"}
+_CONTROL_PHRASES = {"OWNS": "besitzt", "CONTROLS": "kontrolliert",
+                    "SHAREHOLDER_OF": "hält Anteile an"}
+
+
+def correlation_insights(graph: dict) -> dict:
+    """Bounded deterministic correlation rules over the published graph (Wave 4).
+
+    SpiderFoot's correlation principle without an LLM and without any cost:
+    small, auditable rules as versioned code, computed once per revision inside
+    the existing export job (0 extra Actions minutes). Every rule runs only on
+    the allowlisted public fields — the same data the dashboard already shows —
+    and every insight cites the edge ids that support it, so each pattern is
+    traceable to evidence. Patterns are structural hints, never accusations;
+    the UI presents them that way.
+
+    Rules (each capped, deterministic order, total bounded):
+    * nominee-chain    A →(nominee/intermediary/trustee) B →(owns/controls/shares) C
+    * hub-spoke        degree ≥ 8 and ≤10 % of the neighbourhood interlinked
+    * community-bridge edge whose endpoints sit in different export communities
+    * shared-officer   one person directing two organisations linked to each other
+
+    Cost: O(E·k) for the chain/officer rules, O(Σ d²) bounded by the hub degree
+    threshold; far below the export budget even at MAX_NODES/MAX_EDGES.
+    """
+    nodes = {node["id"]: node for node in graph["nodes"]}
+    edges = graph["edges"]
+    outgoing: dict[str, list] = {}
+    adjacency: dict[str, set] = {key: set() for key in nodes}
+    for edge in edges:
+        outgoing.setdefault(edge["source"], []).append(edge)
+        adjacency.setdefault(edge["source"], set()).add(edge["target"])
+        adjacency.setdefault(edge["target"], set()).add(edge["source"])
+
+    def ref(key: str) -> dict:
+        return {"id": key, "name": nodes[key]["name"], "type": nodes[key]["type"]}
+
+    items: list[dict] = []
+
+    # R1 — nominee chains: an intermediary between a person/front and an asset.
+    chains = []
+    for first in edges:
+        if first["type"] not in _ROLE_PHRASES:
+            continue
+        for second in outgoing.get(first["target"], []):
+            if second["type"] in _CONTROL_PHRASES and second["target"] != first["source"]:
+                chains.append((first, second))
+    chains.sort(key=lambda pair: (pair[0]["source"], pair[0]["target"], pair[1]["target"],
+                                  pair[0]["id"], pair[1]["id"]))
+    for first, second in chains[:MAX_INSIGHTS_PER_RULE]:
+        a, b, c = first["source"], first["target"], second["target"]
+        items.append({
+            "rule": "nominee-chain", "version": INSIGHT_RULES_VERSION,
+            "title": "Mögliche Strohmann-Kette",
+            "description": (f"{nodes[a]['name']} {_ROLE_PHRASES[first['type']]} {nodes[b]['name']}; "
+                            f"{nodes[b]['name']} {_CONTROL_PHRASES[second['type']]} {nodes[c]['name']}."),
+            "support": round(min(first["confidence"], second["confidence"]), 4),
+            "entities": [ref(a), ref(b), ref(c)],
+            "evidence": [first["id"], second["id"]],
+        })
+
+    # R2 — hub & spoke: a centre whose neighbours barely know each other.
+    stars = []
+    for key in nodes:
+        neighbours = adjacency.get(key) or set()
+        if len(neighbours) < _HUB_MIN_DEGREE:
+            continue
+        ordered = sorted(neighbours)
+        pairs = linked = 0
+        for i, left in enumerate(ordered):
+            row = adjacency.get(left) or set()
+            for right in ordered[i + 1:]:
+                pairs += 1
+                linked += right in row
+        if pairs and linked / pairs <= _HUB_MAX_INTERCONNECTION:
+            stars.append((len(neighbours), linked / pairs, key))
+    stars.sort(key=lambda item: (-item[0], item[2]))
+    for degree, ratio, key in stars[:MAX_INSIGHTS_PER_RULE]:
+        spokes = sorted(adjacency[key], key=lambda n: (-nodes[n]["degree"], n))[:4]
+        items.append({
+            "rule": "hub-spoke", "version": INSIGHT_RULES_VERSION,
+            "title": "Sternstruktur (Hub-and-Spoke)",
+            "description": (f"{nodes[key]['name']} verbindet {degree} Nachbarn, von denen nur "
+                            f"{ratio:.0%} untereinander verbunden sind — zentrale Vermittlungsposition."),
+            "support": round(nodes[key]["rank"], 4),
+            "entities": [ref(key), *[ref(spoke) for spoke in spokes]],
+            "evidence": [],
+        })
+
+    # R3 — community bridges: published edges between two export communities.
+    bridges = []
+    for edge in edges:
+        left, right = nodes.get(edge["source"]), nodes.get(edge["target"])
+        if not left or not right:
+            continue
+        left_community, right_community = left.get("community"), right.get("community")
+        if not left_community or not right_community or left_community == right_community:
+            continue
+        if left["degree"] < 2 or right["degree"] < 2:
+            continue
+        bridges.append((min(left["degree"], right["degree"]), edge))
+    bridges.sort(key=lambda item: (-item[0], item[1]["id"]))
+    for _, edge in bridges[:MAX_INSIGHTS_PER_RULE]:
+        left, right = nodes[edge["source"]], nodes[edge["target"]]
+        items.append({
+            "rule": "community-bridge", "version": INSIGHT_RULES_VERSION,
+            "title": "Brücke zwischen Communities",
+            "description": (f"{left['name']} ({left.get('community')}) —[{edge['type']}]→ "
+                            f"{right['name']} ({right.get('community')}): Kante zwischen zwei "
+                            f"ansonsten getrennten Gruppen."),
+            "support": round(edge["confidence"], 4),
+            "entities": [ref(edge["source"]), ref(edge["target"])],
+            "evidence": [edge["id"]],
+        })
+
+    # R4 — shared officers: one person directing two interconnected organisations.
+    officer_edges: dict[str, dict[str, dict]] = {}
+    for edge in edges:
+        if edge["type"] in {"DIRECTOR_OF", "OFFICER_OF"} and nodes.get(edge["source"], {}).get("type") == "Person":
+            officer_edges.setdefault(edge["source"], {})[edge["target"]] = edge
+    pair_edges: dict[tuple, list] = {}
+    for edge in edges:
+        pair_edges.setdefault(tuple(sorted((edge["source"], edge["target"]))), []).append(edge["id"])
+    interlocks = []
+    for person, orgs in officer_edges.items():
+        ordered = sorted(orgs)
+        for i, first in enumerate(ordered):
+            for second in ordered[i + 1:]:
+                if second in (adjacency.get(first) or set()):
+                    interlocks.append((person, first, second))
+    interlocks.sort()
+    for person, first, second in interlocks[:MAX_INSIGHTS_PER_RULE]:
+        evidence = [officer_edges[person][first]["id"], officer_edges[person][second]["id"],
+                    *pair_edges.get(tuple(sorted((first, second))), [])[:1]]
+        items.append({
+            "rule": "shared-officer", "version": INSIGHT_RULES_VERSION,
+            "title": "Personenverflechtung",
+            "description": (f"{nodes[person]['name']} hat Leitungsrollen bei {nodes[first]['name']} "
+                            f"und {nodes[second]['name']}; beide Organisationen sind direkt verbunden."),
+            "support": round(min(officer_edges[person][first]["confidence"],
+                                 officer_edges[person][second]["confidence"]), 4),
+            "entities": [ref(person), ref(first), ref(second)],
+            "evidence": evidence,
+        })
+
+    return {"version": INSIGHT_RULES_VERSION,
+            "rules": {"nominee-chain": len(chains), "hub-spoke": len(stars),
+                      "community-bridge": len(bridges), "shared-officer": len(interlocks)},
+            "items": items[:MAX_INSIGHTS_TOTAL]}
+
+
 def export_slices(raw: dict, output: Path = DEFAULT_OUT, *, allow_empty: bool = False) -> dict:
     graph = build_public_graph(raw)
+    enrich_with_analytics(graph)
+    insights = correlation_insights(graph)
+    if insights["items"]:
+        # Optional top-level block: consumers that do not know it ignore it, and
+        # graphs without any pattern publish byte-identical to before Wave 4.
+        graph["insights"] = insights
     if not graph["nodes"] and not allow_empty:
         raise ValueError("No releasable entities: refusing to erase existing publication; use --allow-empty deliberately")
     # Stable content hash: no clock-only commits or unnecessary Pages rebuilds.

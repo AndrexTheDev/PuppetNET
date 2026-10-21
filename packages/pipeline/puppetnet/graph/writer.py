@@ -553,6 +553,24 @@ class GraphWriter:
         logger.info("dedupe index: %d known document hashes (window=%sd)", len(hashes), window)
         return hashes
 
+    def recent_document_urls(self, days: int | None = None) -> set[str]:
+        """URLs already ingested within the dedupe window (Wave 4 pre-fetch skip).
+
+        Same failure mode as :meth:`recent_content_hashes`: an unreachable graph
+        degrades to "treat everything as new" — a wasted re-fetch, never a lost
+        document.
+        """
+        window = self.settings.dedupe_window_days if days is None else days
+        since = iso(utcnow().replace(microsecond=0)) if window <= 0 else _days_ago_iso(window)
+        try:
+            rows = self.client.read(schema.RECENT_DOCUMENT_URLS, {"since": since})
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("could not read the URL dedupe index (%s) — treating everything as new", exc)
+            return set()
+        urls = {row["url"] for row in rows if row.get("url")}
+        logger.info("URL dedupe index: %d known document URLs (window=%sd)", len(urls), window)
+        return urls
+
     def top_edges(self, limit: int = 50, min_confidence: float = 0.2) -> list[dict[str, Any]]:
         try:
             return self.client.read(schema.TOP_EDGES, {"limit": limit, "min_confidence": min_confidence})

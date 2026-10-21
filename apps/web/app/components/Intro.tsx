@@ -1,10 +1,12 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
 import { usePathname } from 'next/navigation';
+import { useT } from '../dashboard/i18n';
 
 /** Nonessential homepage intro. Never blocks content when JS/video is unavailable. */
 export default function Intro() {
   const pathname = usePathname();
+  const t = useT();
   const [visible, setVisible] = useState(false);
   const [eligible, setEligible] = useState(false);
   const [fallback, setFallback] = useState(false);
@@ -32,8 +34,8 @@ export default function Intro() {
   }, [visible]);
   if (!eligible) return null;
   return <>
-    <button className="intro-replay" type="button" onClick={() => setVisible(true)}>Intro ansehen ↗</button>
-    {visible && <div className="intro-overlay" role="dialog" aria-modal="true" aria-label="PuppetNET Intro" onKeyDown={event => {
+    <button className="intro-replay" type="button" onClick={() => setVisible(true)}>{t('intro.replay')}</button>
+    {visible && <div className="intro-overlay" role="dialog" aria-modal="true" aria-label={t('intro.aria')} onKeyDown={event => {
       if (event.key === 'Escape') setVisible(false);
       if (event.key === 'Tab') { event.preventDefault(); skip.current?.focus(); }
     }}>
@@ -42,8 +44,8 @@ export default function Intro() {
         onCanPlay={() => { video.current?.play().catch(() => setVisible(false)); }}>
         <source src={fallback ? '/media/intro-fallback.mp4' : '/media/intro-alpha.webm'} type={fallback ? 'video/mp4' : 'video/webm'} />
       </video>
-      <p className="intro-caption">PUPPETNET · FOLLOW THE CONNECTION</p>
-      <button ref={skip} className="intro-skip" type="button" onClick={() => setVisible(false)}>Intro überspringen <span aria-hidden="true">↗</span></button>
+      <p className="intro-caption">{t('intro.caption')}</p>
+      <button ref={skip} className="intro-skip" type="button" onClick={() => setVisible(false)}>{t('intro.skip')} <span aria-hidden="true">↗</span></button>
     </div>}
   </>;
 }

@@ -63,6 +63,10 @@ class AdapterContext:
     spec: SourceSpec | None = None
     run_id: str = ""
     known_hashes: set[str] = field(default_factory=set)
+    #: Wave 4: URLs already ingested inside the dedupe window (graph + local
+    #: state). Adapters can check these BEFORE spending an article fetch, so a
+    #: known story no longer burns budget and a per-feed slot.
+    known_urls: set[str] = field(default_factory=set)
     nlp: Any = None                   # NLPEngine (optional; unstructured only)
     deadline: float = 0.0             # time.monotonic() when the run must stop
     seen_documents: set[str] = field(default_factory=set)
@@ -80,6 +84,10 @@ class AdapterContext:
     def remember_hash(self, digest: str) -> None:
         self.known_hashes.add(digest)
         self.seen_documents.add(digest)
+
+    def remember_url(self, url: str) -> None:
+        if url:
+            self.known_urls.add(url)
 
 
 def build_entity(
@@ -228,6 +236,13 @@ class SourceAdapter(abc.ABC):
             document.published_at = document.fetched_at
 
         if self.settings.only_new_documents:
+            if document.url and document.url in self.ctx.known_urls:
+                # Same URL, possibly re-worded content: the story was already
+                # ingested inside the window, so an edited repost stays out.
+                self.stats.documents_skipped_duplicate += 1
+                self.stats.bump_source(self.spec.id, "duplicates")
+                self.log.debug("skipping known URL %s (%s)", document.doc_id, document.url)
+                return None
             if document.content_hash in self.ctx.known_hashes:
                 self.stats.documents_skipped_duplicate += 1
                 self.stats.bump_source(self.spec.id, "duplicates")
@@ -242,6 +257,7 @@ class SourceAdapter(abc.ABC):
             return None
 
         self.ctx.remember_hash(document.content_hash)
+        self.ctx.remember_url(document.url)
         self.ctx.seen_documents.add(document.doc_id)
         document.extra.setdefault("source_kind", self.spec.kind.value)
         document.extra.setdefault("source_confidence", self.source_weight)

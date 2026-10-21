@@ -98,7 +98,7 @@ test('the table exposes caption, row and column headers', () => {
   const html = render();
   assert.match(html, /<table aria-describedby="table-description">/);
   assert.match(html, /<caption>Knoten der geladenen Ansicht\. Seite 1 von 1, Einträge 1 bis 1 von 1\.<\/caption>/);
-  assert.equal((html.match(/scope="col"/g) ?? []).length, 6);
+  assert.equal((html.match(/scope="col"/g) ?? []).length, 7);
   assert.match(html, /<th scope="row">/);
   assert.match(html, /<span class="table-entity-label">Anna Berg<\/span>/);
   assert.match(html, /<code class="table-entity-key">per:anna-berg<\/code>/);

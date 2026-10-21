@@ -1,9 +1,9 @@
 {
-  "_note": "Documented dashboard settings; NOT an auto-consumed Cloudflare config file. Paths are relative to repository root, with no leading slash. Root lockfile and test dependencies are intentionally included.",
+  "_note": "Documented dashboard settings; NOT an auto-consumed Cloudflare config file. Paths are relative to repository root, with no leading slash. Root lockfile and test dependencies are intentionally included. The build command may be entered either as the full root form or, with rootDirectory apps/web, as 'npm run ci:pages' \u2014 both workspaces delegate to the root gate and the gate anchors itself to the repository.",
   "pages": {
     "rootDirectory": "apps/web",
     "productionBranch": "main",
-    "buildCommand": "cd ../.. && npm ci --no-audit --no-fund && npm run ci:pages",
+    "buildCommand": "npm run ci:pages",
     "outputDirectory": "out",
     "deployCommand": null,
     "manualDeployCommand": "cd ../.. && npm run deploy:pages",
@@ -30,12 +30,14 @@
       "scripts/emit-og-images.mjs",
       "tests/release.test.mjs",
       "scripts/finalize-static-export.mjs"
-    ]
+    ],
+    "buildCommandFromRepoRoot": "cd apps/web && npm run ci:pages",
+    "rootDirectoryRequired": "repository root (a workspace root has no lockfile, so npm ci fails instantly)"
   },
   "worker": {
     "rootDirectory": "apps/worker",
     "productionBranch": "main",
-    "buildCommand": "cd ../.. && npm ci --no-audit --no-fund && npm run ci:worker",
+    "buildCommand": "npm run ci:worker",
     "deployCommand": "npm run deploy",
     "previewCommand": "npm exec -- wrangler versions upload",
     "environment": {

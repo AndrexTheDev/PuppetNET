@@ -18,6 +18,11 @@
       "address": "Hamburg",
       "confidence": 0.86,
       "updatedAt": "2026-10-18",
+      "degree": 3,
+      "rank": 0.148922,
+      "community": "c000",
+      "firstSeen": "2026-09-12",
+      "lastSeen": "2026-10-01",
       "evidence": [
         {
           "id": "doc:demo-register-1",
@@ -50,6 +55,11 @@
       "address": "Hamburg",
       "confidence": 0.78,
       "updatedAt": "2026-10-12",
+      "degree": 5,
+      "rank": 0.193204,
+      "community": "c000",
+      "firstSeen": "2026-10-02",
+      "lastSeen": "2026-10-02",
       "evidence": [
         {
           "id": "doc:demo-register-2",
@@ -71,6 +81,11 @@
       "jurisdiction": "Deutschland",
       "confidence": 0.81,
       "updatedAt": "2026-10-15",
+      "degree": 2,
+      "rank": 0.112318,
+      "community": "c000",
+      "firstSeen": "2026-09-20",
+      "lastSeen": "2026-10-01",
       "evidence": [
         {
           "id": "doc:demo-register-1",
@@ -97,6 +112,11 @@
       "jurisdiction": "Deutschland",
       "confidence": 0.74,
       "updatedAt": "2026-10-10",
+      "degree": 2,
+      "rank": 0.105277,
+      "community": "c000",
+      "firstSeen": "2026-09-20",
+      "lastSeen": "2026-09-20",
       "evidence": [
         {
           "id": "doc:demo-article-2",
@@ -119,6 +139,9 @@
       "jurisdiction": "Deutschland",
       "confidence": 0.95,
       "updatedAt": "2026-10-01",
+      "degree": 2,
+      "rank": 0.108853,
+      "community": "c000",
       "evidence": [],
       "slug": "hamburg-00yfzd7"
     },
@@ -131,6 +154,9 @@
       "jurisdiction": "Zypern",
       "confidence": 0.9,
       "updatedAt": "2026-10-01",
+      "degree": 2,
+      "rank": 0.085744,
+      "community": "c001",
       "evidence": [],
       "slug": "limassol-1pe5o9p"
     },
@@ -147,6 +173,11 @@
       "jurisdiction": "Deutschland",
       "confidence": 0.7,
       "updatedAt": "2026-09-30",
+      "degree": 2,
+      "rank": 0.092118,
+      "community": "c000",
+      "firstSeen": "2026-09-15",
+      "lastSeen": "2026-09-15",
       "evidence": [
         {
           "id": "doc:demo-register-3",
@@ -172,6 +203,11 @@
       "address": "Limassol",
       "confidence": 0.65,
       "updatedAt": "2026-09-28",
+      "degree": 2,
+      "rank": 0.081902,
+      "community": "c001",
+      "firstSeen": "2026-09-14",
+      "lastSeen": "2026-09-14",
       "evidence": [
         {
           "id": "doc:demo-register-4",

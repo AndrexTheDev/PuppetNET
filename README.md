@@ -1,5 +1,7 @@
 # PuppetNET 2.0 — decoupled hybrid CI/CD
 
+> 🌐 **Sprachen · Languages:** Deutsch ↓ · [English](#english)
+
 > **Aktueller Architekturstand (Zero-KV-Umstellung):** Der aktive Worker startet
 > jetzt über `apps/worker/src/index.ts`. Er verarbeitet nur authentifizierte
 > Rechercheaufträge und optionale öffentliche JSON-Weiterleitungen mit Cache API.
@@ -9,7 +11,7 @@
 > Implementierung. Migration: [Zero-KV-Runbook](docs/zero-kv-worker.md).
 
 Open-source OSINT ingestion, entity recognition and graph analysis.
-Aktuelle Entwicklung: `arena/5fb0fe0b-puppetnet`; Codefreigabe über Pull Request nach
+Aktuelle Entwicklung: jeweils auf der laufenden Session-/Feature-Branch; Codefreigabe über Pull Request nach
 `main`. Der auf `main` aktivierte tägliche Ingestion-Workflow publiziert neue
 Daten anschließend direkt auf `main` mit `GH_PAT`, ohne zusätzliche Daten-PRs.
 
@@ -28,15 +30,17 @@ Aktueller Drei-Phasen-Vertrag und Betriebsgrenzen: [Ressourcenmodus](docs/resour
   kopiert sie für Legacy nach `/styles/globals.css`. Keine externen Fonts/Ad-Skripte.
 - **Betrieb:** Pages liefert statische JSONs. Der optionale authentifizierte
   Zero-KV-Worker stößt nur Recherche an. GitHub Actions verarbeitet lokal
-  (Regex → spaCy), Cloud-Modell standardmäßig aus; höchstens zwei reservierte
-  Pipeline-Läufe pro UTC-Tag, fünf Minuten Job-Limit. Daten werden nach der automatischen
+  (Regex → spaCy), Cloud-Modell standardmäßig aus; höchstens drei reservierte
+  Pipeline-Läufe pro UTC-Tag (zwei Cron-Läufe 03:00/15:00 UTC + ein manueller
+  Slot), fünf Minuten Job-Limit. Daten werden nach der automatischen
   Freigabepolicy exportiert und durch einen Pages-Neubuild veröffentlicht.
 - **Kostenkontrolle:** Free-Tier-orientiert, keine Nullkosten-Garantie. Provider-
   Kontingente und Abrechnung beobachten; Cloud-Fallback und optionale Dienste
   nur bewusst aktivieren. Operator-Token nie als `NEXT_PUBLIC_*` veröffentlichen.
 - **Release-Checkliste:** [docs/release-checklist.md](docs/release-checklist.md).
   Architektur und Einrichtung: [Zero-KV](docs/zero-kv-worker.md),
-  [Ingestion](docs/daily-ingestion.md).
+  [Ingestion](docs/daily-ingestion.md),
+  [Verbesserungs-Roadmap](docs/improvement-roadmap.md).
 
 ### Aktuelle Secrets und harte Grenzen
 
@@ -54,9 +58,11 @@ Aktueller Drei-Phasen-Vertrag und Betriebsgrenzen: [Ressourcenmodus](docs/resour
   nutzt für neue Einstellungen ein nicht animiertes Grid statt Force-Layout.
 - **95 % lokale NER** ist kein gemessener Qualitätswert. NER läuft vollständig
   lokal; nur ausgewählte unklare Relationen dürfen optional in die Cloud.
-- **~100 Actions-Minuten/Monat** ist ein Planungsziel, kein hartes Monatsbudget.
-  31 tägliche Jobs à maximal 5 Minuten können bereits 155 Minuten benötigen;
-  manuelle Jobs und CI kommen hinzu. Es gelten maximal 2 Reservierungen/UTC-Tag.
+- **Actions-Minuten/Monat:** zwei Cron-Läufe/Tag à maximal 5 Minuten ergeben bis zu
+  310 Minuten/Monat allein für die Daily-Pipeline (62 Läufe); manuelle Läufe
+  (max. 1/UTC-Tag) und CI kommen hinzu. Das alte Planungsziel ~100 Minuten/Monat
+  gilt mit dem zweiten täglichen Lauf nicht mehr. Es gelten maximal
+  3 Reservierungen/UTC-Tag.
   Bei aktivierter neuer Pipeline werden redundante tägliche Legacy-Tests und
   Keep-alive-Jobs übersprungen. Geplante Ausführungen sind nicht minutengenau.
 - Statische Pages-Dateien bleiben ohne laufende Pipeline abrufbar, jedoch ohne
@@ -74,6 +80,96 @@ bleiben ausgeschlossen; `public_released: false` ist eine explizite Rücknahme.
 Ein hoher Extraktionsscore beweist nicht die Wahrheit einer Aussage. Wer diese
 Policy aktiviert, akzeptiert automatische öffentliche Publikation, inklusive
 möglicher Extraktionsfehler. Verifizierte Feeds nur bewusst einzeln zulassen.
+
+
+---
+
+<a id="english"></a>
+
+# PuppetNET 2.0 — decoupled hybrid CI/CD (English)
+
+*(Translation of the German sections above; the sections from the component
+table onward are written in English already.)*
+
+> **Current architecture state (Zero-KV migration):** The active worker now
+> boots via `apps/worker/src/index.ts`. It only processes authenticated research
+> orders and optional public JSON redirects with the Cache API. It has no KV
+> bindings, no Neo4j graph API, no cron heartbeats and no status snapshots.
+> Dashboard, legacy and profiles primarily use `graph_latest.json`. Older
+> graph/KV descriptions below only apply to the retained historical
+> implementation. Migration: [Zero-KV runbook](docs/zero-kv-worker.md).
+
+Open-source OSINT ingestion, entity recognition and graph analysis.
+Current development happens on the active session/feature branch; code is
+released via pull request to `main`. The daily ingestion workflow enabled on
+`main` subsequently publishes new data directly to `main` with `GH_PAT`, without
+additional data PRs.
+
+## Release & zero-budget operation
+
+Current three-phase contract and operational limits:
+[resource-saving mode](docs/resource-saving-mode.md).
+
+- **Frontend:** Cloudflare Pages Git integration, repository root as build root,
+  build `npm run ci:pages`, output directory `apps/web/out`, Node.js 22.
+- **SEO:** `SITE_ORIGIN=https://puppetnet-web.pages.dev` (or your own domain).
+  A direct `next build` also produces the sitemap, robots, OG images and
+  `data/seo-metadata.json`; entity HTML contains canonicals, OG and Schema.org.
+  Invalid origins abort the build instead of shipping wrong URLs.
+- **Design:** shared tokens in `apps/web/src/styles/globals.css`, fed from
+  `palette.json` (also for WebGL/Leaflet); the build copies them to
+  `/styles/globals.css` for legacy. No external fonts/ad scripts.
+- **Operation:** Pages serves static JSON. The optional authenticated Zero-KV
+  worker only triggers research. GitHub Actions processes locally
+  (regex → spaCy), cloud model off by default; at most three reserved pipeline
+  runs per UTC day (two cron runs 03:00/15:00 UTC + one manual slot),
+  five-minute job limit. Data is exported per the automatic release policy and
+  published by a Pages rebuild.
+- **Cost control:** free-tier oriented, no zero-cost guarantee. Monitor provider
+  quotas and billing; activate cloud fallback and optional services only
+  deliberately. Never publish operator tokens as `NEXT_PUBLIC_*`.
+- **Release checklist:** [docs/release-checklist.md](docs/release-checklist.md).
+  Architecture and setup: [Zero-KV](docs/zero-kv-worker.md),
+  [ingestion](docs/daily-ingestion.md),
+  [improvement roadmap](docs/improvement-roadmap.md).
+
+### Current secrets and hard limits
+
+- GitHub Actions: `NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD`; `GEMINI_API_KEY`
+  only with the deliberately enabled cloud fallback. No legacy secret aliases.
+- Worker: store `GH_PAT` **separately as a Worker secret** (GitHub Actions
+  secrets are not automatically transferred to Cloudflare). Plus an independent
+  `SEARCH_AUTH_TOKEN` (>=32 random characters) for authorized operators.
+  No legacy secret aliases; never use `GH_PAT` in the browser.
+- 5-minute job limit, 90 seconds ingestion internally / 105 seconds process
+  limit, 45 seconds export. A cold model download can still cause a timeout.
+- No NLP/model inference in the browser. Parsing, filters and rendering remain
+  browser work; **0 % CPU** for an interactive website is not possible. Table
+  mode and disabled physics reduce the default load. Legacy uses a
+  non-animated grid instead of force layout for new settings.
+- **95 % local NER** is not a measured quality value. NER runs fully locally;
+  only selected ambiguous relations may optionally go to the cloud.
+- **Actions minutes/month:** two cron runs/day at up to 5 minutes each mean up
+  to 310 minutes/month for the daily pipeline alone (62 runs); manual runs
+  (max 1/UTC day) and CI add to that. The old ~100 minutes/month planning target
+  no longer holds with the second daily run. At most 3 reservations/UTC day
+  apply. When the new pipeline is enabled, redundant daily legacy tests and
+  keep-alive jobs are skipped. Scheduled runs are not minute-accurate.
+- Static Pages files remain retrievable without a running pipeline, but without
+  a 24/7 SLA. Monitor billing/free-tier limits at each provider.
+
+Data commits of the production workflow go directly to `main` with the
+repository secret `GH_PAT`. Checkout and all quota/data pushes use this token.
+No force-push and no bypassing of branch protection rules. Cloudflare Pages must
+watch `main` as the production branch and include `apps/web/*` in the build watch.
+
+**Auto-approval:** confidence >=0.75 OR exact configured RSS provenance in
+`VERIFIED_RSS_FEEDS` suffices for `public_released: true` in the export.
+`private`, `noindex`, `release_blocked`, negation, hedging and calculated
+suspicion relationships remain excluded; `public_released: false` is an explicit
+withdrawal. A high extraction score does not prove the truth of a statement.
+Whoever activates this policy accepts automatic public publication, including
+possible extraction errors. Admit verified feeds deliberately, one by one.
 
 | Component | Source | Build / execution owner |
 | --- | --- | --- |

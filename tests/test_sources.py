@@ -1108,3 +1108,86 @@ def test_the_foundation_query_is_registered_and_enabled_by_default():
     assert WIKIDATA_QUERIES["foundation_trustees"].link_co_members is True
     spec = get_spec("wikidata")
     assert "foundation_trustees" in spec.options["queries"]
+
+
+# --------------------------------------------------------------------------- #
+# Wave 4 — pre-fetch URL skip and the feed-health ledger
+# --------------------------------------------------------------------------- #
+
+
+def multi_item_feed(count: int) -> str:
+    items = "".join(
+        f"<item><link>https://example.test/s{i}</link><title>Story {i}</title>"
+        f"<description>Long enough summary {i} about Gazprom and Rosneft and a seized yacht.</description></item>"
+        for i in range(count)
+    )
+    return f'<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><title>Multi</title>{items}</channel></rss>'
+
+
+def rss_ctx(env, source_spec, client, known_urls=()):
+    return AdapterContext(settings=env, client=client, stats=IngestStats(), spec=source_spec,
+                          run_id="run-test", known_urls=set(known_urls), deadline=time.monotonic() + 3600)
+
+
+def test_rss_skips_known_story_urls_before_fetching_the_article(env):
+    env = dataclasses.replace(env, only_new_documents=True)
+    feed_url = "https://example.test/feed.xml"
+    client = FakeFetchClient({
+        feed_url: ok_text(feed_url, multi_item_feed(3), "application/rss+xml"),
+        "https://example.test/s1": ok_text("https://example.test/s1", ARTICLE),
+        "https://example.test/s2": ok_text("https://example.test/s2", ARTICLE.replace("Fiji", "Fiji II")),
+    })
+    source_spec = spec(kind=SourceType.UNSTRUCTURED, adapter="rss", feeds=[feed_url])
+    ctx = rss_ctx(env, source_spec, client, known_urls={"https://example.test/s0"})
+    documents = list(RssAdapter(source_spec, ctx).run())
+    assert [doc.url for doc in documents] == ["https://example.test/s1", "https://example.test/s2"]
+    assert "https://example.test/s0" not in client.urls(), "a known story must not burn an article fetch"
+    assert ctx.stats.documents_skipped_duplicate == 1
+    assert ctx.stats.feed_health == [{"feed": feed_url, "status": "ok", "entries": 3, "emitted": 2, "skipped_known": 1}]
+
+
+def test_prepare_skips_documents_with_a_known_url(env):
+    env = dataclasses.replace(env, only_new_documents=True)
+    adapter, ctx = adapter_for(env, source_spec=spec())
+    ctx.known_urls.add("https://example.test/repost")
+    repost = Document(doc_id="d1", source_id="test_source", url="https://example.test/repost",
+                      text="Completely reworded text of an already ingested story.")
+    assert adapter._prepare(repost) is None
+    assert ctx.stats.documents_skipped_duplicate == 1
+    fresh = Document(doc_id="d2", source_id="test_source", url="https://example.test/fresh",
+                     text="A genuinely new story about Gazprom and Rosneft.")
+    assert adapter._prepare(fresh) is not None
+    assert "https://example.test/fresh" in ctx.known_urls
+    # Dedupe off: a known URL is none of the adapter's business.
+    off, off_ctx = adapter_for(dataclasses.replace(env, only_new_documents=False), source_spec=spec())
+    off_ctx.known_urls.add("https://example.test/x")
+    assert off._prepare(Document(doc_id="d3", source_id="test_source", url="https://example.test/x", text="Some text.")) is not None
+
+
+def test_rss_feed_health_marks_dead_and_empty_feeds(env):
+    feed_url = "https://example.test/feed.xml"
+    source_spec = spec(kind=SourceType.UNSTRUCTURED, adapter="rss", feeds=[feed_url])
+    dead_client = FakeFetchClient({feed_url: FetchResult(url=feed_url, status=503, ok=False, error="down")})
+    dead_ctx = rss_ctx(env, source_spec, dead_client)
+    assert list(RssAdapter(source_spec, dead_ctx).run()) == []
+    assert dead_ctx.stats.feed_health == [{"feed": feed_url, "status": "dead", "entries": 0, "emitted": 0, "skipped_known": 0}]
+    empty_feed = '<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><title>Nothing</title></channel></rss>'
+    empty_ctx = rss_ctx(env, source_spec, FakeFetchClient({feed_url: ok_text(feed_url, empty_feed, "application/rss+xml")}))
+    assert list(RssAdapter(source_spec, empty_ctx).run()) == []
+    assert empty_ctx.stats.feed_health == [{"feed": feed_url, "status": "empty", "entries": 0, "emitted": 0, "skipped_known": 0}]
+    assert empty_ctx.stats.errors == [], "an empty feed is recorded, never dressed up as a new failure"
+
+
+def test_feed_health_lands_in_the_markdown_summary_bounded():
+    stats = IngestStats()
+    stats.record_feed_health("https://a.test/feed", "ok", entries=5, emitted=2, skipped_known=3)
+    stats.record_feed_health("https://b.test/feed", "dead")
+    summary = stats.markdown_summary()
+    assert "**Feed health**: 2 feeds checked — 1 dead, 0 empty, 1 ok." in summary
+    assert "| `https://a.test/feed` | ok | 5 | 2 | 3 |" in summary
+    for index in range(150):
+        stats.record_feed_health(f"https://f{index}.test/feed", "ok")
+    assert len(stats.feed_health) == 100, "the ledger never grows without bound"
+    weird = IngestStats()
+    weird.record_feed_health("https://x.test/feed", "weird")
+    assert weird.feed_health[0]["status"] == "dead", "unknown statuses fail closed"

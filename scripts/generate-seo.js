@@ -27,7 +27,9 @@ const profiles = entityEntries(dataset.entities, dataset.generatedAt);
 // never appear in a sitemap.
 const entries = [
   { loc: '/', priority: '1.0', changefreq: 'weekly' },
+  { loc: '/en/', priority: '0.8', changefreq: 'weekly' },
   { loc: '/dashboard/', priority: '0.9', changefreq: 'monthly' },
+  { loc: '/legal/', priority: '0.3', changefreq: 'yearly' },
   ...profiles,
 ];
 const { files, urlCount } = renderSitemaps({ origin, entries, lastmod: dataset.generatedAt });

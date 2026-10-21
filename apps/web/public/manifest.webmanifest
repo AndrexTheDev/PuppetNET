@@ -1,0 +1,16 @@
+{
+  "name": "PuppetNET — OSINT-Netzwerkanalyse",
+  "short_name": "PuppetNET",
+  "description": "Verbindungen sehen. Behauptungen hinterfragen. OSINT network analysis with verifiable sources — offline-capable workspace.",
+  "lang": "de",
+  "dir": "ltr",
+  "start_url": "/dashboard/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0b100d",
+  "theme_color": "#0b100d",
+  "icons": [
+    { "src": "/media/logo-icon.webp", "sizes": "192x192", "type": "image/webp", "purpose": "any" },
+    { "src": "/media/logo.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}
