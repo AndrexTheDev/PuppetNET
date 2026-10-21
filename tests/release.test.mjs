@@ -570,3 +570,21 @@ test('wave 31: the chronology is one function for screen and document', () => {
   assert.doesNotMatch(dashboard + panel, /new Date\([^)]*\)\.toISOString\(\)\.slice\(0, 10\)[^;]*timeline/i,
     'the chronology never borrows today as an event date');
 });
+
+test('wave 32: primacy credits nobody without a date and a name', () => {
+  const data = read('apps/web/app/dashboard/graph-data.ts');
+  assert.match(data, /export function sourcePrimacy\(nodes: GraphNode\[\], edges: GraphEdge\[\], evidence: Evidence\[\], limitRelations = 8, limitOutlets = 10\): PrimacyReport/,
+    'primacy is pure and bounded');
+  assert.match(data, /if \(!outlet \|\| !day\) continue;/, 'an unnamed or undated document can never be credited to an outlet');
+  assert.match(data, /const leaders = ordered\.filter\(\(\[, day\]\) => day === earliest\)/, 'same-day ties are shared primacy');
+  assert.match(data, /if \(ordered\.length === 1\) \{ solo\+\+;/, 'a single-outlet relationship is solo, not a first report');
+  assert.match(data, /if \(edge\.source === edge\.target \|\| edge\.type === 'AGGREGATED'\) continue;/, 'aggregated bundle edges are not reports');
+  assert.match(data, /export function primacyToCSV\(report: PrimacyReport\): string/, 'the table is exportable');
+  assert.doesNotMatch(data.match(/export function sourcePrimacy[\s\S]*?\n}/)?.[0] ?? '', /new Date\(\)/, 'no clock in the attribution');
+  const worker = read('apps/web/app/dashboard/graph.worker.ts');
+  assert.match(worker, /const primacy = sourcePrimacy\(analysisSlice\.nodes, analysisSlice\.edges, dataset\.evidence\);/, 'primacy is judged before the network is narrowed');
+  const dashboard = read('apps/web/app/dashboard/Dashboard.tsx');
+  assert.ok(dashboard.includes("t('dash.primacyText')"), 'the panel explains ties and unnamed documents');
+  assert.ok(dashboard.includes("t('dash.primacyNone')"), 'a slice without multi-source claims says so');
+  assert.ok(dashboard.includes('primacyToCSV(view.primacy!)'), 'the CSV button is wired');
+});

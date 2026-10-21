@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
-import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, monthWindow, bundleEdges, structuralVulnerability, pathTimeline, normalizeNote, readNotes, caseReport, nextPlaybackMonth, evidenceWindow, compareDuplicates, multiFailureImpact, normalizeSavedName, readSavedViews, upsertSavedView, removeSavedView, evidenceToCSV, parseCaseNotes, mergeNotes, searchNoteIndex, caseBundle, readCaseBundle, provenanceGaps, edgeSources, sharedSourceGroups, normalizeEvidence, edgeSourceStatus, sourceRegistry, pairConflicts, evidenceFreshness, monthsBefore, FRESH_WINDOWS, DEFAULT_FRESH_MONTHS, isFreshWindow, filterDataset, nodeBacking, evidenceRisk, riskToCSV, diffDatasets, diffToCSV, searchCase, noteSnippet, WATCH_LIMIT, readWatchlist, toggleWatch, watchReport, watchToCSV, watchChanges, watchChangesToCSV, entityBrief, watchBrief, caseArchive, zipStore, crc32, entityTimeline, TYPES, SAVED_VIEW_LIMIT, NOTE_LIMIT, EGO_DEPTH_LIMIT, VULNERABILITY_NODE_LIMIT, normalizeInsights, ANALYSIS_LIMITS, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
+import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, monthWindow, bundleEdges, structuralVulnerability, pathTimeline, normalizeNote, readNotes, caseReport, nextPlaybackMonth, evidenceWindow, compareDuplicates, multiFailureImpact, normalizeSavedName, readSavedViews, upsertSavedView, removeSavedView, evidenceToCSV, parseCaseNotes, mergeNotes, searchNoteIndex, caseBundle, readCaseBundle, provenanceGaps, edgeSources, sharedSourceGroups, normalizeEvidence, edgeSourceStatus, sourceRegistry, pairConflicts, evidenceFreshness, monthsBefore, FRESH_WINDOWS, DEFAULT_FRESH_MONTHS, isFreshWindow, filterDataset, nodeBacking, evidenceRisk, riskToCSV, diffDatasets, diffToCSV, searchCase, noteSnippet, WATCH_LIMIT, readWatchlist, toggleWatch, watchReport, watchToCSV, watchChanges, watchChangesToCSV, entityBrief, watchBrief, caseArchive, zipStore, crc32, entityTimeline, sourcePrimacy, primacyToCSV, TYPES, SAVED_VIEW_LIMIT, NOTE_LIMIT, EGO_DEPTH_LIMIT, VULNERABILITY_NODE_LIMIT, normalizeInsights, ANALYSIS_LIMITS, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
 import { apiBase, readResponse } from '../apps/web/app/dashboard/api';
 const filters: Filters = { confidence: 0, weight: 0, types: [...TYPES], lod: true, ratio: 1 };
 test('normalizes Worker and Graphology nodes without inventing coordinates', () => {
@@ -1578,4 +1578,67 @@ test('wave 31 the brief carries the chronology in both languages', () => {
   assert.ok(!entityBrief({ ...context, id: 'a' }, '2026-10-21', 'en').includes('## Timeline') === false, 'the section exists when a timeline is supplied');
   assert.ok(!entityBrief({ nodes: data.nodes, edges: data.edges, evidence: data.evidence, id: 'a' }, '2026-10-21', 'en').includes('## Timeline'),
     'without a timeline no empty section is printed');
+});
+
+test('wave 32 primacy credits the earliest source and never invents an order', () => {
+  const data = normalizeDataset({
+    nodes: [{ key: 'a', name: 'Alpha' }, { key: 'b', name: 'Beta' }, { key: 'c', name: 'Gamma' }],
+    evidence: [
+      { id: 'h1', title: 'H', source: 'Handelsblatt', date: '2024-01-01' },
+      { id: 'p1', title: 'P', source: 'Presse', date: '2024-01-01' },
+      { id: 'p2', title: 'P2', source: 'Presse', date: '2024-01-11' },
+      { id: 'b1', title: 'B', source: 'Blog', date: '2024-02-20' },
+      { id: 'x1', title: 'X', source: 'Blog', date: '2024-03-01' },
+      { id: 'u1', title: 'U' },
+      { id: 'n1', title: 'N', date: '2024-01-01' },
+    ],
+    edges: [
+      { source: 'a', target: 'b', type: 'OWNS', evidenceIds: ['h1', 'p1', 'b1'] },
+      { source: 'b', target: 'a', type: 'SOLD', evidenceIds: ['p2', 'x1'] },
+      { source: 'c', target: 'a', type: 'MET', evidenceIds: ['u1'] },
+      { source: 'c', target: 'b', type: 'MET', evidenceIds: ['n1', 'b1'] },
+    ],
+  });
+  const report = sourcePrimacy(data.nodes, data.edges, data.evidence);
+  assert.deepEqual(report.outlets.map(outlet => [outlet.outlet, outlet.firsts, outlet.followups, outlet.meanLag ?? '-']), [
+    ['presse', 2, 0, '-'], ['blog', 1, 2, 50], ['handelsblatt', 1, 0, '-'],
+  ], 'a same-day tie is shared primacy; the follower carries its mean lag; a solo relationship still credits its only outlet');
+  assert.equal(report.outlets[0].documents, 2, 'documents are counted per outlet from the dated, named ones only');
+  assert.deepEqual(report.relationships.map(claim => [claim.key, claim.first.outlet, claim.followers.map(f => [f.outlet, f.lag])]), [
+    ['a|OWNS|b', 'handelsblatt', [['blog', 50]]],
+    ['b|SOLD|a', 'presse', [['blog', 50]]],
+  ], 'the relationship with the most followers comes first');
+  assert.equal(report.relationships[0].first.date, '2024-01-01');
+  assert.equal(report.relationships[0].label, 'Alpha → Beta · OWNS', 'claims are labelled like the rest of the app');
+  assert.equal(report.solo, 1, 'the single-outlet relationship is reported as solo, not as a first report');
+  assert.equal(report.undated, 1, 'a relationship whose only documents are undated or unnamed cannot be judged');
+  assert.equal(report.solo, 1, 'one relationship rests on a single outlet');
+  const sameDay = normalizeDataset({
+    nodes: [{ key: 'x', name: 'X' }, { key: 'y', name: 'Y' }],
+    evidence: [{ id: 's1', title: 'S1', source: 'A', date: '2025-01-01' }, { id: 's2', title: 'S2', source: 'B', date: '2025-01-01' }],
+    edges: [{ source: 'x', target: 'y', type: 'MET', evidenceIds: ['s1', 's2'] }],
+  });
+  const tie = sourcePrimacy(sameDay.nodes, sameDay.edges, sameDay.evidence);
+  assert.deepEqual(tie.relationships[0].followers, [], 'nobody followed on the same day — no fake lag of zero days');
+  assert.deepEqual(tie.outlets.map(outlet => [outlet.outlet, outlet.firsts, outlet.followups]), [['a', 1, 0], ['b', 1, 0]],
+    'both outlets share the first report and neither is credited as a follower');
+  const reversed = normalizeDataset({ ...sameDay, edges: [{ ...sameDay.edges[0], evidenceIds: ['s2', 's1'] }] } as never);
+  assert.deepEqual(sourcePrimacy(reversed.nodes, reversed.edges, reversed.evidence), tie, 'evidence order never changes the verdict');
+  const aggregate = normalizeDataset({
+    nodes: [{ key: 'x', name: 'X' }, { key: 'y', name: 'Y' }],
+    evidence: [{ id: 's1', title: 'S1', source: 'A', date: '2025-01-01' }],
+    edges: [{ source: 'x', target: 'y', type: 'AGGREGATED', evidenceIds: ['s1'] }],
+  });
+  assert.equal(sourcePrimacy(aggregate.nodes, aggregate.edges, aggregate.evidence).relationships.length, 0,
+    'aggregated bundle edges are not claims someone reported');
+  assert.deepEqual(sourcePrimacy([], [], []), { relationships: [], outlets: [], undated: 0, solo: 0 }, 'an empty slice is honestly empty');
+  assert.equal(sourcePrimacy(data.nodes, data.edges, data.evidence, 1, 1).relationships.length, 1, 'bounded');
+  assert.deepEqual(sourcePrimacy(data.nodes, data.edges, data.evidence), report, 'deterministic');
+  const csv = primacyToCSV(report);
+  assert.deepEqual(csv.trim().split('\n'), [
+    'outlet,firsts,followups,mean_lag_days,documents',
+    'presse,2,0,,2',
+    'blog,1,2,50,2',
+    'handelsblatt,1,0,,1',
+  ], 'the CSV carries the empty lag as an empty cell, not as "undefined"');
 });

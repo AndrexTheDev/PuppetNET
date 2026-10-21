@@ -784,6 +784,32 @@ Chronologie-Block im Inspektor (max. 8 Ereignisse, `<time>`-Elemente, Rest-Hinwe
 8 neue DE/EN-Schlüssel, token-only CSS, 2 neue Datenlagen-Tests (dashboard 67) +
 1 neuer Release-Pin (release 38) — `ci:pages` grün, 0 zusätzliche Actions-Minuten.
 
+### Welle 32 — Erstmeldungen je Quelle — ✅ umgesetzt (2026-10-21)
+
+- **Die Frage, die eine Quelle bewertet**: Wer meldet eine Beziehung **zuerst**, und wie
+  lange brauchen die anderen? Ein Absender, der regelmäßig zuerst berichtet, ist es wert,
+  verfolgt zu werden; einer, der nur abschreibt, ist es wert, gegen ihn zu prüfen.
+- **Nur belastbare Zurechnung**: gezählt wird ausschließlich ein Dokument mit **Datum
+  und Quellenname**. Ein unbenanntes Dokument belegt eine Aussage, ist aber niemandem
+  zuzurechnen; ein undatiertes lässt sich nicht ordnen. Beide machen die Beziehung
+  **unbewertbar** — das wird gezählt (`undated`), nicht geschätzt.
+- **Keine erfundene Reihenfolge**: Gleichstand am selben Tag gilt als **geteilte
+  Erstmeldung** für alle beteiligten Quellen, und niemand wird zum Nachzügler mit
+  „0 Tage Rückstand". Eine Beziehung aus nur einer Quelle ist **`solo`** — keine
+  Erstmeldung, denn es gab kein Rennen.
+- **Pro Quelle**: Erstmeldungen, Nachmeldungen, **durchschnittlicher Rückstand in Tagen**
+  und eigene datierte Dokumente. Pro Beziehung: die früheste Meldung und die Nachzügler
+  mit ihrem Abstand. Sortiert nach Aussagekraft, begrenzt, deterministisch, ohne Uhr.
+- **Vor der Einschränkung gerechnet** (wie Konflikte, Register, Belastbarkeit): ein Filter
+  auf das Netzwerk schreibt nicht um, wer zuerst berichtet hat. Dazu Berichtsabschnitt
+  DE/EN und CSV.
+
+**Geliefert (Welle 32)**: `sourcePrimacy()`, `primacyToCSV()`, `PrimacyReport`/
+`PrimacyClaim`/`OutletPrimacy`, `View.primacy` aus dem Worker, Panel „Wer meldet zuerst?"
+(Quellentabelle, Beziehungsliste, ehrlicher Leerzustand, CSV), Berichtsabschnitt,
+13 neue DE/EN-Schlüssel, token-only CSS, 1 neuer Datenlagen-Test (dashboard 68) +
+1 neuer Release-Pin (release 39) — `ci:pages` grün, 0 zusätzliche Actions-Minuten.
+
 ## 4. Budget-Zusammenfassung
 
 | Welle | Ort | Zusätzliche Actions-Minuten | Status |
@@ -819,6 +845,7 @@ Chronologie-Block im Inspektor (max. 8 Ereignisse, `<time>`-Elemente, Rest-Hinwe
 | 29 Fallkurzbericht | Browser | **0** | ✅ umgesetzt |
 | 30 Fallakte als ZIP | Browser | **0** | ✅ umgesetzt |
 | 31 Chronologie je Entität | Browser | **0** | ✅ umgesetzt |
+| 32 Erstmeldungen je Quelle | Browser/Worker | **0** | ✅ umgesetzt |
 
 Kein Schritt erzeugt neue Workflows, neue Cron-Jobs, längere Jobs oder bezahlte
 Dienste. Die einzigen verbrauchsrelevanten Grenzen sind die bestehenden: 3
@@ -1573,6 +1600,30 @@ the inspector (max. 8 events, `<time>` elements, rest hint), 8 new DE/EN keys, t
 CSS, 2 new data-layer tests (dashboard 67) + 1 new release pin (release 38) —
 `ci:pages` green, 0 extra Actions minutes.
 
+### Wave 32 — first reports per source — ✅ implemented (2026-10-21)
+
+- **The question that rates a source**: who reports a relationship **first**, and how long
+  do the others take? An outlet that is regularly first is worth following; one that only
+  ever copies is worth checking against.
+- **Only defensible attribution**: a document counts only if it carries **both a date and
+  a source name**. An unnamed document backs a claim but cannot be credited to anyone; an
+  undated one cannot be ordered. Either makes the relationship **unjudgeable** — that is
+  counted (`undated`), never estimated.
+- **No invented order**: a tie on the same day is **shared primacy** for every outlet
+  involved, and nobody is turned into a "0 days behind" follower. A relationship from a
+  single outlet is **`solo`** — not a first report, because there was no race.
+- **Per outlet**: first reports, follow-ups, **mean lag in days** and its own dated
+  documents. Per relationship: the earliest report and the followers with their distance.
+  Sorted by significance, bounded, deterministic, clock-free.
+- **Judged before narrowing** (like conflicts, registry and sturdiness): filtering the
+  network never rewrites who reported first. Plus a DE/EN report section and CSV.
+
+**Delivered (Wave 32)**: `sourcePrimacy()`, `primacyToCSV()`, `PrimacyReport`/
+`PrimacyClaim`/`OutletPrimacy`, `View.primacy` from the worker, "Who reported first?"
+panel (outlet table, relationship list, honest empty state, CSV), report section,
+13 new DE/EN keys, token-only CSS, 1 new data-layer test (dashboard 68) + 1 new release
+pin (release 39) — `ci:pages` green, 0 extra Actions minutes.
+
 ## 4. Budget summary
 
 | Wave | Location | Additional Actions minutes | Status |
@@ -1608,6 +1659,7 @@ CSS, 2 new data-layer tests (dashboard 67) + 1 new release pin (release 38) —
 | 29 entity brief | browser | **0** | ✅ implemented |
 | 30 case archive (ZIP) | browser | **0** | ✅ implemented |
 | 31 entity chronology | browser | **0** | ✅ implemented |
+| 32 first reports per source | browser/worker | **0** | ✅ implemented |
 
 No step creates new workflows, new cron jobs, longer jobs or paid services. The only
 consumption-relevant limits remain the existing ones: 3 reservations/UTC day, 5-minute

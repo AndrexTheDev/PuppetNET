@@ -264,3 +264,6 @@
 .entity-timeline li.timeline-conflict{border-left-color:var(--color-danger)}
 .entity-timeline li.timeline-relation{border-left-color:var(--color-gold)}
 .timeline-label{overflow-wrap:anywhere}
+.primacy-panel{margin-top:var(--space-3,1rem);border-top:1px solid var(--line);padding-top:var(--space-2,0.5rem)}
+.primacy-outlets li,.primacy-claims li{display:flex;flex-wrap:wrap;gap:var(--space-1,.25rem);align-items:baseline}
+.primacy-outlet,.primacy-relation{font-weight:600;overflow-wrap:anywhere}

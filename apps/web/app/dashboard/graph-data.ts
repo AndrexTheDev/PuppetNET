@@ -80,6 +80,8 @@ export interface View {
   freshness?: Freshness;
   /** Wave 23: which claims are thin and/or old — the follow-up list. */
   risk?: RiskReport;
+  /** Wave 32: who reported a relationship first. */
+  primacy?: PrimacyReport;
 }
 export const LIMITS = { nodes: 200_000, edges: 500_000, bytes: 64 * 1024 * 1024 };
 const record = (v: unknown): Record<string, unknown> => v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {};
@@ -1611,6 +1613,122 @@ export function watchChangesToCSV(changes: WatchChange[]): string {
   return [header, ...rows].join('\n') + '\n';
 }
 
+/** Wave 32: who reported a relationship first, and how far behind the rest came.
+ * Primacy is a source-reliability signal: an outlet that is consistently first is
+ * worth following, one that only ever follows is worth checking against it. */
+export interface PrimacyClaim {
+  /** Relationship key `source|type|target`. */
+  key: string;
+  label: string;
+  first: { outlet: string; date: string };
+  /** Outlets that documented the same relationship later, with their lag in days. */
+  followers: { outlet: string; date: string; lag: number }[];
+}
+
+export interface OutletPrimacy {
+  outlet: string;
+  /** Relationships where this outlet published the earliest document. */
+  firsts: number;
+  /** Relationships this outlet only reported after someone else. */
+  followups: number;
+  /** Mean lag in days over its follow-ups; undefined when it never followed. */
+  meanLag?: number;
+  /** Its own dated documents that carry a source name. */
+  documents: number;
+}
+
+export interface PrimacyReport {
+  relationships: PrimacyClaim[];
+  outlets: OutletPrimacy[];
+  /** Relationships with documents but no usable date — nothing can be said. */
+  undated: number;
+  /** Relationships documented by a single outlet: no race to report. */
+  solo: number;
+}
+
+const dayDiff = (from: string, to: string): number =>
+  Math.max(0, Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000));
+
+/**
+ * Wave 32: first-report attribution over the visible slice. Only documents that
+ * carry **both** a date and a source name take part — an unnamed document proves a
+ * claim but cannot be credited to anyone, and an undated one cannot be ordered.
+ * Ties on the same day count as shared primacy for every outlet on that day (no
+ * invented order), and a relationship with a single outlet is reported as `solo`
+ * rather than as a "first". Deterministic, bounded, no clock.
+ */
+export function sourcePrimacy(nodes: GraphNode[], edges: GraphEdge[], evidence: Evidence[], limitRelations = 8, limitOutlets = 10): PrimacyReport {
+  const documents = new Map(evidence.map(doc => [doc.id, doc]));
+  const labels = new Map(nodes.map(node => [node.id, node.label]));
+  const relations: { key: string; edge: GraphEdge }[] = [];
+  for (const edge of edges) {
+    if (edge.source === edge.target || edge.type === 'AGGREGATED') continue;
+    const key = `${edge.source}|${edge.type}|${edge.target}`;
+    relations.push({ key, edge });
+  }
+  const outletDocs = new Map<string, number>();
+  for (const doc of evidence) {
+    const outlet = (doc.source ?? '').trim().toLowerCase();
+    if (outlet && isoDate(doc.date)) outletDocs.set(outlet, (outletDocs.get(outlet) ?? 0) + 1);
+  }
+  const firsts = new Map<string, number>(), followups = new Map<string, number>(), lags = new Map<string, number[]>();
+  const claims: PrimacyClaim[] = [];
+  let undated = 0, solo = 0;
+  for (const { key, edge } of relations) {
+    // Earliest document per outlet: one outlet cannot corroborate itself.
+    const oldest = new Map<string, string>();
+    for (const docId of edge.evidenceIds) {
+      const doc = documents.get(docId);
+      const outlet = (doc?.source ?? '').trim().toLowerCase();
+      const day = isoDate(doc?.date);
+      if (!outlet || !day) continue;
+      const current = oldest.get(outlet);
+      if (!current || day < current) oldest.set(outlet, day);
+    }
+    const ordered = [...oldest.entries()].sort((a, b) => (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+    if (!ordered.length) { undated++; continue; }
+    if (ordered.length === 1) { solo++; firsts.set(ordered[0][0], (firsts.get(ordered[0][0]) ?? 0) + 1); continue; }
+    const earliest = ordered[0][1];
+    const leaders = ordered.filter(([, day]) => day === earliest).map(([outlet]) => outlet);
+    const followers = ordered.filter(([, day]) => day > earliest);
+    for (const outlet of leaders) firsts.set(outlet, (firsts.get(outlet) ?? 0) + 1);
+    for (const [outlet, day] of followers) {
+      followups.set(outlet, (followups.get(outlet) ?? 0) + 1);
+      const list = lags.get(outlet) ?? [];
+      list.push(dayDiff(earliest, day));
+      lags.set(outlet, list);
+    }
+    claims.push({
+      key,
+      label: `${labels.get(edge.source) ?? edge.source} → ${labels.get(edge.target) ?? edge.target} · ${edge.type}`,
+      first: { outlet: leaders[0], date: earliest },
+      followers: followers.map(([outlet, day]) => ({ outlet, date: day, lag: dayDiff(earliest, day) })),
+    });
+  }
+  claims.sort((a, b) => b.followers.length - a.followers.length
+    || (a.first.date < b.first.date ? -1 : a.first.date > b.first.date ? 1 : a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+  const names = new Set<string>([...firsts.keys(), ...followups.keys(), ...outletDocs.keys()]);
+  const outlets: OutletPrimacy[] = [...names].map(outlet => {
+    const own = lags.get(outlet) ?? [];
+    return {
+      outlet,
+      firsts: firsts.get(outlet) ?? 0,
+      followups: followups.get(outlet) ?? 0,
+      ...(own.length ? { meanLag: Math.round(own.reduce((sum, lag) => sum + lag, 0) / own.length) } : {}),
+      documents: outletDocs.get(outlet) ?? 0,
+    };
+  });
+  outlets.sort((a, b) => b.firsts - a.firsts || b.documents - a.documents || (a.outlet < b.outlet ? -1 : a.outlet > b.outlet ? 1 : 0));
+  return { relationships: claims.slice(0, Math.max(1, limitRelations)), outlets: outlets.slice(0, Math.max(1, limitOutlets)), undated, solo };
+}
+
+/** Wave 32: the primacy table as RFC-4180 CSV. */
+export function primacyToCSV(report: PrimacyReport): string {
+  const header = ['outlet', 'firsts', 'followups', 'mean_lag_days', 'documents'].map(csvCell).join(',');
+  const rows = report.outlets.map(entry => [entry.outlet, entry.firsts, entry.followups, entry.meanLag, entry.documents].map(csvCell).join(','));
+  return [header, ...rows].join('\n') + '\n';
+}
+
 /** Wave 31: one dated step in an entity's history. `document` is a source that
  * mentions it, `relation` the first document of a relationship, `conflict` a
  * clash found on that day. Undated material is reported separately instead of
@@ -2210,6 +2328,7 @@ export interface CaseReportInput {
   conflicts?: PairConflict[];
   freshness?: Freshness;
   risk?: RiskReport;
+  primacy?: PrimacyReport;
   notes?: Record<string, string>;
 }
 /** Wave 11 case report: a deterministic Markdown file for the case folder —
@@ -2229,7 +2348,8 @@ const CASE_REPORT_TEXT = {
     rules: 'Regelhinweise', duplicates: 'Mögliche Dubletten', mixed: 'gemischte Typen',
     timeline: 'Erwähnungen pro Monat',
     conflicts: 'Widersprüchliche Aussagen', conflictsNone: 'keine abweichenden Aussagen', currency: 'Aktualität der Belege',
-    risk: 'Belastbarkeit der Akte', riskNone: 'alle Entitäten sind gedeckt', riskStates: 'ohne Beleg / dünn und alt / nur eine Quelle / veraltet / ohne Datum / solide',
+    risk: 'Belastbarkeit der Akte', riskNone: 'alle Entitäten sind gedeckt',
+    primacy: 'Erstmeldungen je Quelle', primacyNone: 'keine Beziehung mit mehreren datierten Quellen', riskStates: 'ohne Beleg / dünn und alt / nur eine Quelle / veraltet / ohne Datum / solide',
     footer: 'Hinweise, keine Beweise: Quellen prüfen; personenbezogene Daten nur mit Rechtsgrundlage verarbeiten.',
   },
   en: {
@@ -2243,7 +2363,8 @@ const CASE_REPORT_TEXT = {
     rules: 'Rule hits', duplicates: 'Possible duplicates', mixed: 'mixed types',
     timeline: 'Mentions per month',
     conflicts: 'Conflicting claims', conflictsNone: 'no differing claims', currency: 'Currency of the evidence',
-    risk: 'How much the file can carry', riskNone: 'every entity is covered', riskStates: 'no document / thin and old / single source / outdated / undated / solid',
+    risk: 'How much the file can carry', riskNone: 'every entity is covered',
+    primacy: 'First reports per source', primacyNone: 'no relationship with several dated sources', riskStates: 'no document / thin and old / single source / outdated / undated / solid',
     footer: 'Hints, not proof: verify the sources; process personal data only with a legal basis.',
   },
 } as const;
@@ -2313,6 +2434,16 @@ export function caseReport(input: CaseReportInput, generated: string, lang: 'de'
     lines.push(`- ${Object.entries(r.states).map(([state, count]) => `${state}: ${count}`).join(' · ')}`);
     if (!r.weakCount) lines.push(`- ${text.riskNone}`);
     for (const entry of r.entries) lines.push(`  - ${clean(entry.label)} — ${entry.state} (${entry.documents} ${lang === 'en' ? 'doc(s)' : 'Beleg(e)'}, ${entry.sources} ${lang === 'en' ? 'source(s)' : 'Quelle(n)'}, ${entry.relations} ${lang === 'en' ? 'rel.' : 'Bez.'}${entry.last ? `, ${entry.last}` : ''})`);
+  }
+  if (input.primacy) {
+    const p = input.primacy;
+    lines.push('', `## ${text.primacy}`, '');
+    if (!p.outlets.length) lines.push(`- ${text.primacyNone}`);
+    for (const outlet of p.outlets) {
+      const lag = outlet.meanLag === undefined ? '' : ` · ${lang === 'en' ? 'mean lag' : 'Ø Abstand'} ${outlet.meanLag} ${lang === 'en' ? 'days' : 'Tage'}`;
+      lines.push(`- ${clean(outlet.outlet || '—')}: ${outlet.firsts} ${lang === 'en' ? 'first' : 'zuerst'} · ${outlet.followups} ${lang === 'en' ? 'follow-ups' : 'gefolgt'}${lag} · ${outlet.documents} ${lang === 'en' ? 'doc(s)' : 'Beleg(e)'}`);
+    }
+    if (p.solo) lines.push(`- ${p.solo} ${lang === 'en' ? 'relationship(s) rest on a single outlet' : 'Beziehung(en) stützen sich auf eine einzige Quelle'}${p.undated ? ` · ${p.undated} ${lang === 'en' ? 'without a usable date' : 'ohne verwertbares Datum'}` : ''}`);
   }
   if (input.conflicts) {
     lines.push('', `## ${text.conflicts}`, '');

@@ -2,7 +2,7 @@
 import dynamic from 'next/dynamic';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import EntityTable, { type TableRow } from './EntityTable';
-import { COLORS, TYPES, LIMITS, NOTE_STORAGE_KEY, WATCH_STORAGE_KEY, FRESH_WINDOWS, DEFAULT_FRESH_MONTHS, riskToCSV, watchToCSV, watchReport, watchChanges, watchChangesToCSV, entityBrief, watchBrief, caseArchive, zipStore, evidenceToCSV, entityTimeline, readWatchlist, toggleWatch, diffToCSV, searchCase, caseReport, decodeViewState, edgesToCSV, encodeViewState, monthWindow, nextPlaybackMonth, nodesToCSV, caseBundle, compareDuplicates, mergeNotes, parseCaseNotes, provenanceGaps, readCaseBundle, searchNoteIndex, removeSavedView, upsertSavedView, readSavedViews, SAVED_VIEW_STORAGE_KEY, normalizeNote, rankSearch, readNotes, resolveNodeRef, viewToJSON, type Evidence, type Filters, type GraphEdge, type GraphNode, type PathTimeline, type View, type ViewUrlState, type DatasetDiff, type CaseHit, type EntityTimeline } from './graph-data';
+import { COLORS, TYPES, LIMITS, NOTE_STORAGE_KEY, WATCH_STORAGE_KEY, FRESH_WINDOWS, DEFAULT_FRESH_MONTHS, riskToCSV, watchToCSV, watchReport, watchChanges, watchChangesToCSV, entityBrief, watchBrief, caseArchive, zipStore, evidenceToCSV, entityTimeline, primacyToCSV, readWatchlist, toggleWatch, diffToCSV, searchCase, caseReport, decodeViewState, edgesToCSV, encodeViewState, monthWindow, nextPlaybackMonth, nodesToCSV, caseBundle, compareDuplicates, mergeNotes, parseCaseNotes, provenanceGaps, readCaseBundle, searchNoteIndex, removeSavedView, upsertSavedView, readSavedViews, SAVED_VIEW_STORAGE_KEY, normalizeNote, rankSearch, readNotes, resolveNodeRef, viewToJSON, type Evidence, type Filters, type GraphEdge, type GraphNode, type PathTimeline, type View, type ViewUrlState, type DatasetDiff, type CaseHit, type EntityTimeline } from './graph-data';
 import type { NetworkHandle, PathHighlight } from './NetworkGraph';
 import type { WorkerRequest, WorkerResponse } from './protocol';
 import { loadStaticGraph, requestResearch, type Standby } from '../../src/lib/dataFetcher';
@@ -352,7 +352,7 @@ export default function Dashboard() {
   const exportArchive = useCallback(() => {
     if (!view) return;
     const generated = new Date().toISOString();
-    const report = caseReport({ stats: view.stats, nodes: view.nodes, edges: view.edges, analytics: view.analytics, insights: view.insights, timeline: view.timeline, duplicates: view.duplicates, vulnerability: view.vulnerability, gaps: view.gaps, sharedSources: view.sharedSources, conflicts: view.conflicts, freshness: view.freshness, risk: view.risk, notes }, generated, lang);
+    const report = caseReport({ stats: view.stats, nodes: view.nodes, edges: view.edges, analytics: view.analytics, insights: view.insights, timeline: view.timeline, duplicates: view.duplicates, vulnerability: view.vulnerability, gaps: view.gaps, sharedSources: view.sharedSources, conflicts: view.conflicts, freshness: view.freshness, risk: view.risk, primacy: view.primacy, notes }, generated, lang);
     const files = caseArchive({
       report,
       ...(watch.length ? { watchBrief: watchBrief(watch, briefContext(), generated, lang) } : {}),
@@ -445,7 +445,7 @@ export default function Dashboard() {
   const noteHits = useMemo(() => (view && Object.keys(notes).length ? searchNoteIndex(view.nodes, notes, noteQuery) : []), [notes, noteQuery, view]);
   const exportCaseBundle = () => {
     if (!view) return;
-    const report = caseReport({ stats: view.stats, nodes: view.nodes, edges: view.edges, analytics: view.analytics, insights: view.insights, timeline: view.timeline, duplicates: view.duplicates, vulnerability: view.vulnerability, gaps: view.gaps, sharedSources: view.sharedSources, conflicts: view.conflicts, freshness: view.freshness, risk: view.risk, notes }, new Date().toISOString(), lang);
+    const report = caseReport({ stats: view.stats, nodes: view.nodes, edges: view.edges, analytics: view.analytics, insights: view.insights, timeline: view.timeline, duplicates: view.duplicates, vulnerability: view.vulnerability, gaps: view.gaps, sharedSources: view.sharedSources, conflicts: view.conflicts, freshness: view.freshness, risk: view.risk, primacy: view.primacy, notes }, new Date().toISOString(), lang);
     downloadText('puppetnet-fallakte.json', caseBundle({ notes, views: savedViews, report, generated: new Date().toISOString() }), 'application/json');
     setAnnouncement(t('dash.annBundle', { notes: number(Object.keys(notes).length), views: number(savedViews.length) }));
   };
@@ -712,6 +712,31 @@ export default function Dashboard() {
                 <button type="button" className="text-button" onClick={() => downloadText(riskToCSV(view.risk!), 'puppetnet-belastbarkeit.csv', 'text/csv')}>{t('dash.riskCsv')}</button></>}
             <p className="muted">{t('dash.riskText')}</p>
           </div>}
+          {view.primacy && <div className="primacy-panel">
+            <h4 className="hub-heading">{t('dash.primacyTitle')}</h4>
+            <p className="muted small-text">{t('dash.primacySummary', {
+              firsts: number(view.primacy.outlets.reduce((sum, entry) => sum + entry.firsts, 0)),
+              followups: number(view.primacy.outlets.reduce((sum, entry) => sum + entry.followups, 0)),
+              solo: number(view.primacy.solo), undated: number(view.primacy.undated),
+            })}</p>
+            {view.primacy.outlets.length === 0
+              ? <p className="muted" role="status">{t('dash.primacyNone')}</p>
+              : <>
+                <h5 className="gaps-heading">{t('dash.primacyOutlets')}</h5>
+                <ul className="hub-list primacy-outlets">{view.primacy.outlets.map(entry => <li key={entry.outlet}>
+                  <span className="primacy-outlet">{entry.outlet || '—'}</span>
+                  <span className="hub-rank">{t('dash.primacyOutletRow', { firsts: number(entry.firsts), followups: number(entry.followups), lag: entry.meanLag === undefined ? '' : t('dash.primacyLag', { days: number(entry.meanLag) }) })}</span>
+                </li>)}</ul>
+                {view.primacy.relationships.length > 0 && <><h5 className="gaps-heading">{t('dash.primacyRelations')}</h5>
+                  <ul className="hub-list primacy-claims">{view.primacy.relationships.map(claim => <li key={claim.key}>
+                    <span className="primacy-relation">{claim.label}</span>
+                    <span className="hub-rank">{t('dash.primacyFirst', { outlet: claim.first.outlet, date: claim.first.date })}</span>
+                    {claim.followers.length > 0 && <span className="hub-rank">{t('dash.primacyFollowers', { list: claim.followers.map(follower => `${follower.outlet} +${follower.lag}d`).join(', ') })}</span>}
+                  </li>)}</ul></>}
+                <button type="button" className="text-button" onClick={() => downloadText('puppetnet-erstmeldungen.csv', primacyToCSV(view.primacy!), 'text/csv;charset=utf-8')}>{t('dash.primacyCsv')}</button>
+              </>}
+            <p className="muted">{t('dash.primacyText')}</p>
+          </div>}
           {view.freshness && <div className="fresh-panel">
             <h4 className="hub-heading">{t('dash.freshTitle')}</h4>
             <div className="fresh-window" role="group" aria-label={t('dash.freshWindow')}>{FRESH_WINDOWS.map(months => <button key={months} type="button" disabled={busy} className={`window-button${view.freshness?.months === months ? ' is-active' : ''}`} aria-pressed={view.freshness?.months === months} aria-label={t('dash.freshWindowAria', { months })} onClick={() => setFilters(f => ({ ...f, fresh: months === DEFAULT_FRESH_MONTHS ? undefined : months }))}>{t('dash.freshWindowLabel', { months })}</button>)}</div>
@@ -845,7 +870,7 @@ export default function Dashboard() {
         <div id="visualization-stage" className={mode === 'network' ? 'graph-pane' : 'graph-pane hidden-pane'}>{mode === 'network' && <NetworkGraph ref={network} view={view} onSelect={select} onSelectEdge={selectEdge} onRatio={onRatio} onClear={clearSelected} colorMode={colorMode} path={pathHighlight} />}<div className="graph-tools"><button aria-label={t('dash.zoomInAria')} onClick={() => network.current?.zoom(.65)}>+</button><button aria-label={t('dash.zoomOutAria')} onClick={() => network.current?.zoom(1.5)}>−</button><button aria-label={t('dash.fitAria')} onClick={() => network.current?.reset()}>⌖</button><button onClick={() => send({ kind: 'layout', running: !layoutRunning })}>{layoutRunning ? 'Pause' : 'Layout'}</button></div></div>
         {mode === 'map' && <><MapModule points={view?.mapPoints ?? []} onSelect={id => select(id)} /><div className="data-footnote">{t('dash.mapFootnote', { count: number(view?.stats.locatedNodes) })}</div></>}
         {mode === 'list' && <EntityTable rows={tableRows} total={list.length} page={listPage} pageSize={pageSize} query={search} onQuery={value => { setSearch(value); setListPage(0); }} onPage={setListPage} onSelect={select} onFocusGraph={id => { changeMode('network'); select(id); requestAnimationFrame(() => network.current?.focus(id)); }} />}
-        <div className="visualization-footer"><span><span className="status-dot" /> {t('dash.nodesLoaded', { count: number(view?.stats.totalNodes) })}</span><span className="view-export"><button type="button" onClick={() => downloadText('puppetnet-knoten.csv', nodesToCSV(view?.nodes ?? []), 'text/csv;charset=utf-8')}>{t('dash.nodesCsv')}</button><button type="button" onClick={() => downloadText('puppetnet-kanten.csv', edgesToCSV(view?.edges ?? []), 'text/csv;charset=utf-8')}>{t('dash.edgesCsv')}</button><button type="button" onClick={() => downloadText('puppetnet-ansicht.json', viewToJSON({ nodes: view?.nodes ?? [], edges: view?.edges ?? [], analytics: view?.analytics, insights: view?.insights }), 'application/json')}>JSON ↓</button><button type="button" aria-label={t('dash.evidenceCsvAria')} onClick={() => { if (!view) return; send({ kind: 'evidenceCsv', version: version.current }); }}>{t('dash.evidenceCsv')}</button><button type="button" aria-label={t('dash.caseBundleAria')} onClick={exportCaseBundle}>{t('dash.caseBundle')}</button><button type="button" aria-label={t('dash.archiveAria')} onClick={exportArchive}>{t('dash.archive')}</button><button type="button" aria-label={t('dash.reportAria')} onClick={() => { if (!view) return; downloadText('puppetnet-fallbericht.md', caseReport({ stats: view.stats, nodes: view.nodes, edges: view.edges, analytics: view.analytics, insights: view.insights, timeline: view.timeline, duplicates: view.duplicates, vulnerability: view.vulnerability, gaps: view.gaps, sharedSources: view.sharedSources, conflicts: view.conflicts, freshness: view.freshness, risk: view.risk, notes }, new Date().toISOString(), lang), 'text/markdown;charset=utf-8'); }}>{t('dash.reportButton')}</button></span><span>{view?.stats.focused ? <button onClick={() => requestView('reset')}>{t('dash.showAll')}</button> : t('dash.clickHintFoot')}</span></div>
+        <div className="visualization-footer"><span><span className="status-dot" /> {t('dash.nodesLoaded', { count: number(view?.stats.totalNodes) })}</span><span className="view-export"><button type="button" onClick={() => downloadText('puppetnet-knoten.csv', nodesToCSV(view?.nodes ?? []), 'text/csv;charset=utf-8')}>{t('dash.nodesCsv')}</button><button type="button" onClick={() => downloadText('puppetnet-kanten.csv', edgesToCSV(view?.edges ?? []), 'text/csv;charset=utf-8')}>{t('dash.edgesCsv')}</button><button type="button" onClick={() => downloadText('puppetnet-ansicht.json', viewToJSON({ nodes: view?.nodes ?? [], edges: view?.edges ?? [], analytics: view?.analytics, insights: view?.insights }), 'application/json')}>JSON ↓</button><button type="button" aria-label={t('dash.evidenceCsvAria')} onClick={() => { if (!view) return; send({ kind: 'evidenceCsv', version: version.current }); }}>{t('dash.evidenceCsv')}</button><button type="button" aria-label={t('dash.caseBundleAria')} onClick={exportCaseBundle}>{t('dash.caseBundle')}</button><button type="button" aria-label={t('dash.archiveAria')} onClick={exportArchive}>{t('dash.archive')}</button><button type="button" aria-label={t('dash.reportAria')} onClick={() => { if (!view) return; downloadText('puppetnet-fallbericht.md', caseReport({ stats: view.stats, nodes: view.nodes, edges: view.edges, analytics: view.analytics, insights: view.insights, timeline: view.timeline, duplicates: view.duplicates, vulnerability: view.vulnerability, gaps: view.gaps, sharedSources: view.sharedSources, conflicts: view.conflicts, freshness: view.freshness, risk: view.risk, primacy: view.primacy, notes }, new Date().toISOString(), lang), 'text/markdown;charset=utf-8'); }}>{t('dash.reportButton')}</button></span><span>{view?.stats.focused ? <button onClick={() => requestView('reset')}>{t('dash.showAll')}</button> : t('dash.clickHintFoot')}</span></div>
       </section>
       <SidePanel node={selected} evidence={evidence} edge={selectedEdge} edgeEvidence={edgeEvidence} edgeLabels={{
         source: selectedEdge ? view?.nodes.find(n => n.id === selectedEdge.source)?.label ?? selectedEdge.source : '',
