@@ -612,3 +612,23 @@ test('wave 33: a source verdict is a state with reasons, never a score', () => {
   for (const key of ['scorecardTitle', 'scorecardText', 'scorecardSummary', 'scorecardNone', 'scorecardContradictory', 'scorecardLeader', 'scorecardFollower', 'scorecardThin', 'scorecardRow', 'scorecardLag', 'scorecardSelf', 'scorecardSolo', 'scorecardCsv'])
     assert.ok((strings.match(new RegExp(`'dash\\.${key}'`, 'g')) ?? []).length === 2, `dash.${key} exists in both languages`);
 });
+
+test('wave 34: the case at a glance only orders what the panels already proved', () => {
+  const data = read('apps/web/app/dashboard/graph-data.ts');
+  assert.match(data, /export function caseSummary\(input: CaseSummaryInput, lang: 'de' \| 'en' = 'de'\): CaseSummary/,
+    'the summary is pure and bilingual');
+  assert.match(data, /if \(!nodes \|\| !edges\) \{/, 'an empty slice refuses to summarise itself');
+  assert.match(data, /flags: flags\.slice\(0, 3\)/, 'at most three findings');
+  assert.match(data, /export type CaseAction =\n  \| \{ kind: 'dispute' \}/, 'every finding carries the filter it belongs to');
+  assert.match(data, /FRESH_WINDOWS as readonly number\[\]\)\.includes\(fresh\.months\)/, 'a window the filter does not offer is not invented');
+  assert.doesNotMatch(data.match(/export function caseSummary[\s\S]*?\n}/)?.[0] ?? '', /new Date\(\)|toFixed|Math\.random/, 'no clock, no fake precision');
+  assert.match(data, /## \$\{text\.summary\}/, 'the report leads with the glance');
+  const dashboard = read('apps/web/app/dashboard/Dashboard.tsx');
+  assert.ok(dashboard.includes("t('dash.summaryTitle')"), 'the panel is titled');
+  assert.ok(dashboard.includes('applyCaseFlag'), 'a finding is an entry point, not a dead end');
+  assert.ok(dashboard.includes("t('dash.summaryJumped'"), 'jumping announces itself for screen readers');
+  assert.ok(/summary: summary \?\? undefined/.test(dashboard), 'the archive carries the same summary');
+  const strings = read('apps/web/lib/i18n-strings.ts');
+  for (const key of ['summaryTitle', 'summaryText', 'summaryEmpty', 'summaryFlags', 'summaryFlagDispute', 'summaryFlagSelf', 'summaryFlagSingle', 'summaryFlagStale', 'summaryJumpAria', 'summaryJumped'])
+    assert.equal((strings.match(new RegExp(`'dash\\.${key}'`, 'g')) ?? []).length, 2, `dash.${key} exists in both languages`);
+});

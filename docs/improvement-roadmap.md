@@ -838,6 +838,34 @@ Panel „Quellen im Urteil" (Stand als Satz, Zahlen dahinter, CSV), Berichtsabsc
 (dashboard 69) + 1 neuer Release-Pin (release 40) — `ci:pages` grün, 0 zusätzliche
 Actions-Minuten.
 
+### Welle 34 — Aktenlage auf einen Blick — ✅ umgesetzt (2026-10-21)
+
+- **Das fehlende erste Bild**: 33 Wellen beantworten je eine Frage — Größe, Belege,
+  Widersprüche, Belastbarkeit, Aktualität, Quellen, Erstmeldungen, Urteil. Wer die Akte
+  öffnet, braucht zuerst die *Summe*: Was ist das hier, und wo schaue ich zuerst hin?
+- **Kein neues Urteil**: `caseSummary()` erfindet nichts, es ordnet nur, was die Panels
+  darunter schon belegen. Deshalb kann die Zusammenfassung nicht widersprechen, was sie
+  zusammenfasst — sie wird aus denselben Berichten abgeleitet und verschwindet mit ihnen.
+- **Ein Satz pro Dimension**: Größe und Quellenzahl in der Kopfzeile, dann Belege,
+  Nachrecherche, Aktualität, Quellen und Streitfälle — jeweils als nackte Zahl mit
+  Nenner, ohne Adjektive. Fehlt eine Dimension, fehlt ihre Zeile (keine erfundene Null).
+- **Höchstens drei Befunde, nach Kosten sortiert**: ein Streit untergräbt eine Aussage,
+  eine Quelle, die sich selbst widerspricht, untergräbt die Quelle, eine Ein-Quellen-
+  Beziehung ist eine Lücke, die man schließen kann, veraltetes Material eine, die man
+  auffrischen kann. Ein vierter Befund würde aus dem Blick wieder einen Bericht machen.
+- **Jeder Befund ist ein Einstieg, kein Sackgassen-Text**: er trägt den Filter mit, der
+  ihn zeigt (Streit-Ansicht, Quellenfilter, Ein-Quellen-Ansicht, Zeitfenster). Ein
+  Fenster, das der Filter nicht anbietet, springt auf das Standardfenster, statt eines zu
+  erfinden.
+- **Im Bericht zuerst**: der Fallbericht beginnt mit `## Aktenlage`, damit die Fallakte
+  und das ZIP mit derselben Summe beginnen, die im Browser steht.
+
+**Geliefert (Welle 34)**: `caseSummary()`, `CaseSummary`/`CaseFlag`/`CaseAction`,
+Panel „Aktenlage" mit Kopfzeile, Zeilenliste und Sprung-Befunden, Berichtsabschnitt
+`## Aktenlage`, 10 neue DE/EN-Schlüssel, token-only CSS, 1 neuer Datenlagen-Test
+(dashboard 70) + 1 neuer Release-Pin (release 41) — `ci:pages` grün, 0 zusätzliche
+Actions-Minuten.
+
 ## 4. Budget-Zusammenfassung
 
 | Welle | Ort | Zusätzliche Actions-Minuten | Status |
@@ -875,6 +903,7 @@ Actions-Minuten.
 | 31 Chronologie je Entität | Browser | **0** | ✅ umgesetzt |
 | 32 Erstmeldungen je Quelle | Browser/Worker | **0** | ✅ umgesetzt |
 | 33 Quellen im Urteil | Browser/Worker | **0** | ✅ umgesetzt |
+| 34 Aktenlage auf einen Blick | Browser | **0** | ✅ umgesetzt |
 
 Kein Schritt erzeugt neue Workflows, neue Cron-Jobs, längere Jobs oder bezahlte
 Dienste. Die einzigen verbrauchsrelevanten Grenzen sind die bestehenden: 3
@@ -1678,6 +1707,33 @@ pin (release 39) — `ci:pages` green, 0 extra Actions minutes.
 (dashboard 69) + 1 new release pin (release 40) — `ci:pages` green, 0 extra Actions
 minutes.
 
+### Wave 34 — case at a glance — ✅ implemented (2026-10-21)
+
+- **The missing first picture**: 33 waves each answer one question — size, documents,
+  contradictions, sturdiness, currency, sources, first reports, verdict. Someone opening
+  the file needs the *sum* first: what is this, and where do I look first?
+- **No new verdict**: `caseSummary()` invents nothing; it only orders what the panels
+  below already support. That is why the summary cannot contradict what it summarises —
+  it is derived from the same reports and disappears with them.
+- **One sentence per dimension**: size and source count in the headline, then documents,
+  follow-up, currency, sources and disputes — each as a bare number with its denominator,
+  no adjectives. A dimension that is missing loses its line (no invented zero).
+- **At most three findings, ordered by cost**: a dispute undermines a conclusion, a
+  source contradicting itself undermines the source, a single-source link is a gap you
+  can close, stale material one you can refresh. A fourth would turn the glance back into
+  a report.
+- **Every finding is an entrance, not a dead end**: it carries the filter that shows it
+  (dispute view, outlet filter, single-source view, time window). A window the filter
+  does not offer jumps to the default instead of faking one.
+- **First in the report**: the case report starts with `## Case at a glance`, so the file
+  and the archive open with the same sum the browser shows.
+
+**Delivered (Wave 34)**: `caseSummary()`, `CaseSummary`/`CaseFlag`/`CaseAction`,
+"Case at a glance" panel with headline, line list and jump findings, report section
+`## Case at a glance`, 10 new DE/EN keys, token-only CSS, 1 new data-layer test
+(dashboard 70) + 1 new release pin (release 41) — `ci:pages` green, 0 extra Actions
+minutes.
+
 ## 4. Budget summary
 
 | Wave | Location | Additional Actions minutes | Status |
@@ -1715,6 +1771,7 @@ minutes.
 | 31 entity chronology | browser | **0** | ✅ implemented |
 | 32 first reports per source | browser/worker | **0** | ✅ implemented |
 | 33 sources judged | browser/worker | **0** | ✅ implemented |
+| 34 case at a glance | browser | **0** | ✅ implemented |
 
 No step creates new workflows, new cron jobs, longer jobs or paid services. The only
 consumption-relevant limits remain the existing ones: 3 reservations/UTC day, 5-minute

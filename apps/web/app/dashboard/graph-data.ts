@@ -1895,6 +1895,111 @@ export function sourceScorecardCSV(report: SourceScorecardReport): string {
   return [header, ...rows].join('\n') + '\n';
 }
 
+/** Wave 34: the case at a glance. Every other panel answers one question; this
+ * one answers "what is this file, and what should I look at first?" — in a few
+ * sentences and at most three findings that lead straight to the filter which
+ * shows them. It adds no new judgement: it only orders what the reports already
+ * say, so a reader who trusts the panels can trust the summary. */
+export type CaseFlagKind = 'dispute' | 'selfContradiction' | 'singleSource' | 'stale';
+
+/** The filter a finding jumps to — the UI must not invent its own. */
+export type CaseAction =
+  | { kind: 'dispute' }
+  | { kind: 'outlet'; outlet: string }
+  | { kind: 'singleSource' }
+  | { kind: 'fresh'; months: FreshWindow };
+
+export interface CaseFlag {
+  kind: CaseFlagKind;
+  count: number;
+  /** The name the finding is about, when it is about one thing (an outlet). */
+  subject?: string;
+  action: CaseAction;
+}
+
+export interface CaseSummary {
+  /** One sentence: how big is this file and how well is it backed. */
+  headline: string;
+  /** Decision-relevant facts, in the order the report lists them. */
+  lines: string[];
+  /** At most three findings worth checking first. */
+  flags: CaseFlag[];
+  /** True when the slice shows no relationship at all — nothing to summarise. */
+  empty: boolean;
+}
+
+export interface CaseSummaryInput {
+  stats?: { filteredNodes: number; filteredEdges: number; totalNodes?: number; totalEdges?: number };
+  conflicts?: PairConflict[];
+  gaps?: ProvenanceGaps;
+  freshness?: Freshness;
+  risk?: RiskReport;
+  scorecard?: SourceScorecardReport;
+  primacy?: PrimacyReport;
+}
+
+/**
+ * Wave 34: one paragraph per dimension, no new claims. Flags are ordered by how
+ * much they cost the reader if ignored — a dispute undermines a conclusion, a
+ * source contradicting itself undermines the source, a single-source link is a
+ * gap to close, stale material is a gap to refresh — and capped at three so the
+ * summary stays a glance and not a second report. Pure, deterministic, clock-free.
+ */
+export function caseSummary(input: CaseSummaryInput, lang: 'de' | 'en' = 'de'): CaseSummary {
+  const en = lang === 'en';
+  const locale = en ? 'en-GB' : 'de-DE';
+  const nodes = Math.max(0, Math.trunc(input.stats?.filteredNodes ?? 0));
+  const edges = Math.max(0, Math.trunc(input.stats?.filteredEdges ?? 0));
+  if (!nodes || !edges) {
+    return {
+      headline: en ? 'No relationship is visible in this slice.' : 'In diesem Ausschnitt ist keine Beziehung sichtbar.',
+      lines: [], flags: [], empty: true,
+    };
+  }
+  const conflicts = (input.conflicts ?? []).filter(entry => entry.kind === 'conflict');
+  const undatedConflicts = (input.conflicts ?? []).filter(entry => entry.kind === 'undated').length;
+  const card = input.scorecard;
+  const sources = card?.sources ?? 0;
+  const outletWord = sources === 1 ? (en ? '1 source' : '1 Quelle') : `${sources.toLocaleString(locale)} ${en ? 'sources' : 'Quellen'}`;
+  const headline = en
+    ? `${nodes.toLocaleString(locale)} entities · ${edges.toLocaleString(locale)} relationships${sources ? ` · ${outletWord}` : ' · no named source'}`
+    : `${nodes.toLocaleString(locale)} Entitäten · ${edges.toLocaleString(locale)} Beziehungen${sources ? ` · ${outletWord}` : ' · keine benannte Quelle'}`;
+  const lines: string[] = [];
+  const gaps = input.gaps;
+  if (gaps) lines.push(en
+    ? `Documents: ${gaps.edgesBacked}/${gaps.edges} relationships · ${gaps.singleSourceCount} from a single outlet`
+    : `Belege: ${gaps.edgesBacked}/${gaps.edges} Beziehungen · ${gaps.singleSourceCount} aus einer einzigen Quelle`);
+  const risk = input.risk;
+  if (risk) lines.push(en
+    ? `Follow-up: ${risk.weakCount}/${risk.entities} entities (${risk.months} months)`
+    : `Nachrecherche: ${risk.weakCount}/${risk.entities} Entitäten (${risk.months} Monate)`);
+  const fresh = input.freshness;
+  if (fresh) lines.push(en
+    ? `Currency: ${fresh.staleCount}/${fresh.entities} entities older than ${fresh.months} months${fresh.undatedCount ? ` · ${fresh.undatedCount} without a date` : ''}`
+    : `Aktualität: ${fresh.staleCount}/${fresh.entities} Entitäten älter als ${fresh.months} Monate${fresh.undatedCount ? ` · ${fresh.undatedCount} ohne Datum` : ''}`);
+  if (card) lines.push(en
+    ? `Sources (${card.sources}): first ${card.leaders} · follow only ${card.followers} · self-contradicting ${card.contradictory}${card.contested ? ` · in a dispute ${card.contested}` : ''}`
+    : `Quellen (${card.sources}): zuerst ${card.leaders} · folgen nur ${card.followers} · selbst widersprüchlich ${card.contradictory}${card.contested ? ` · im Streit ${card.contested}` : ''}`);
+  if (conflicts.length || undatedConflicts) lines.push(en
+    ? `Disputes: ${conflicts.length}${undatedConflicts ? ` · ${undatedConflicts} without a usable date` : ''}`
+    : `Streitfälle: ${conflicts.length}${undatedConflicts ? ` · ${undatedConflicts} ohne verwertbares Datum` : ''}`);
+  const flags: CaseFlag[] = [];
+  if (conflicts.length) flags.push({ kind: 'dispute', count: conflicts.length, action: { kind: 'dispute' } });
+  const selfContradicting = (card?.profiles ?? []).filter(entry => entry.selfConflicts > 0);
+  if (selfContradicting.length) {
+    const first = selfContradicting[0];
+    flags.push({ kind: 'selfContradiction', count: selfContradicting.length, subject: first.outlet, action: { kind: 'outlet', outlet: first.outlet } });
+  }
+  if (gaps?.singleSourceCount) flags.push({ kind: 'singleSource', count: gaps.singleSourceCount, action: { kind: 'singleSource' } });
+  if (fresh?.staleCount) {
+    // The filter only offers fixed windows, so a report built with another window
+    // jumps to the default instead of faking a window that is not on offer.
+    const months = (FRESH_WINDOWS as readonly number[]).includes(fresh.months) ? fresh.months as FreshWindow : DEFAULT_FRESH_MONTHS;
+    flags.push({ kind: 'stale', count: fresh.staleCount, action: { kind: 'fresh', months } });
+  }
+  return { headline, lines, flags: flags.slice(0, 3), empty: false };
+}
+
 /** Wave 31: one dated step in an entity's history. `document` is a source that
  * mentions it, `relation` the first document of a relationship, `conflict` a
  * clash found on that day. Undated material is reported separately instead of
@@ -2496,6 +2601,8 @@ export interface CaseReportInput {
   risk?: RiskReport;
   primacy?: PrimacyReport;
   scorecard?: SourceScorecardReport;
+  /** Wave 34: the glance, rendered first so the reader sees the state immediately. */
+  summary?: CaseSummary;
   notes?: Record<string, string>;
 }
 /** Wave 11 case report: a deterministic Markdown file for the case folder —
@@ -2518,6 +2625,7 @@ const CASE_REPORT_TEXT = {
     risk: 'Belastbarkeit der Akte', riskNone: 'alle Entitäten sind gedeckt',
     primacy: 'Erstmeldungen je Quelle', primacyNone: 'keine Beziehung mit mehreren datierten Quellen',
     scorecard: 'Quellen im Urteil', scorecardNone: 'keine Quelle zurechenbar',
+    summary: 'Aktenlage', summaryEmpty: 'Kein Ausschnitt, über den sich etwas sagen lässt.',
     standingContradictory: 'widerspricht sich selbst', standingLeader: 'meldet zuerst', standingFollower: 'folgt nur', standingThin: 'nur Einzelbelege', riskStates: 'ohne Beleg / dünn und alt / nur eine Quelle / veraltet / ohne Datum / solide',
     footer: 'Hinweise, keine Beweise: Quellen prüfen; personenbezogene Daten nur mit Rechtsgrundlage verarbeiten.',
   },
@@ -2535,6 +2643,7 @@ const CASE_REPORT_TEXT = {
     risk: 'How much the file can carry', riskNone: 'every entity is covered',
     primacy: 'First reports per source', primacyNone: 'no relationship with several dated sources',
     scorecard: 'Sources judged', scorecardNone: 'no attributable source',
+    summary: 'Case at a glance', summaryEmpty: 'No slice worth summarising.',
     standingContradictory: 'contradicts itself', standingLeader: 'reports first', standingFollower: 'only follows', standingThin: 'single claims only', riskStates: 'no document / thin and old / single source / outdated / undated / solid',
     footer: 'Hints, not proof: verify the sources; process personal data only with a legal basis.',
   },
@@ -2550,6 +2659,13 @@ export function caseReport(input: CaseReportInput, generated: string, lang: 'de'
   lines.push(`${text.scope}: ${stats.filteredNodes.toLocaleString(locale)} ${text.nodes} / ${stats.filteredEdges.toLocaleString(locale)} ${text.edges} ${text.of} ${stats.totalNodes.toLocaleString(locale)} / ${stats.totalEdges.toLocaleString(locale)}`);
   const levelText = lang === 'en' ? ({ Einzelknoten: 'single nodes', Gruppen: 'groups', Feingruppen: 'fine groups', Übersicht: 'overview' } as Record<string, string>)[clean(stats.level)] ?? clean(stats.level) : clean(stats.level);
   lines.push(`${text.level}: ${levelText} · ${text.focus}: ${stats.focused ? text.yes : text.no} · ${text.lod}: ${stats.grouped ? text.yes : text.no}`);
+  if (input.summary) {
+    const summary = input.summary;
+    lines.push('', `## ${text.summary}`, '');
+    lines.push(`- ${summary.headline}`);
+    if (summary.empty) lines.push(`- ${text.summaryEmpty}`);
+    for (const line of summary.lines) lines.push(`- ${line}`);
+  }
   const labelOf = new Map(input.nodes.map(node => [node.id, node.label]));
   const notes = Object.entries(input.notes ?? {})
     .map(([id, note]) => ({ id, note: normalizeNote(note), label: clean(labelOf.get(id) ?? id) }))

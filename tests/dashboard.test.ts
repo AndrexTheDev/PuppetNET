@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
-import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, monthWindow, bundleEdges, structuralVulnerability, pathTimeline, normalizeNote, readNotes, caseReport, nextPlaybackMonth, evidenceWindow, compareDuplicates, multiFailureImpact, normalizeSavedName, readSavedViews, upsertSavedView, removeSavedView, evidenceToCSV, parseCaseNotes, mergeNotes, searchNoteIndex, caseBundle, readCaseBundle, provenanceGaps, edgeSources, sharedSourceGroups, normalizeEvidence, edgeSourceStatus, sourceRegistry, pairConflicts, evidenceFreshness, monthsBefore, FRESH_WINDOWS, DEFAULT_FRESH_MONTHS, isFreshWindow, filterDataset, nodeBacking, evidenceRisk, riskToCSV, diffDatasets, diffToCSV, searchCase, noteSnippet, WATCH_LIMIT, readWatchlist, toggleWatch, watchReport, watchToCSV, watchChanges, watchChangesToCSV, entityBrief, watchBrief, caseArchive, zipStore, crc32, entityTimeline, sourcePrimacy, primacyToCSV, sourceScorecard, sourceScorecardCSV, TYPES, SAVED_VIEW_LIMIT, NOTE_LIMIT, EGO_DEPTH_LIMIT, VULNERABILITY_NODE_LIMIT, normalizeInsights, ANALYSIS_LIMITS, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
+import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, monthWindow, bundleEdges, structuralVulnerability, pathTimeline, normalizeNote, readNotes, caseReport, nextPlaybackMonth, evidenceWindow, compareDuplicates, multiFailureImpact, normalizeSavedName, readSavedViews, upsertSavedView, removeSavedView, evidenceToCSV, parseCaseNotes, mergeNotes, searchNoteIndex, caseBundle, readCaseBundle, provenanceGaps, edgeSources, sharedSourceGroups, normalizeEvidence, edgeSourceStatus, sourceRegistry, pairConflicts, evidenceFreshness, monthsBefore, FRESH_WINDOWS, DEFAULT_FRESH_MONTHS, isFreshWindow, filterDataset, nodeBacking, evidenceRisk, riskToCSV, diffDatasets, diffToCSV, searchCase, noteSnippet, WATCH_LIMIT, readWatchlist, toggleWatch, watchReport, watchToCSV, watchChanges, watchChangesToCSV, entityBrief, watchBrief, caseArchive, zipStore, crc32, entityTimeline, sourcePrimacy, primacyToCSV, sourceScorecard, sourceScorecardCSV, caseSummary, TYPES, SAVED_VIEW_LIMIT, NOTE_LIMIT, EGO_DEPTH_LIMIT, VULNERABILITY_NODE_LIMIT, normalizeInsights, ANALYSIS_LIMITS, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
 import { apiBase, readResponse } from '../apps/web/app/dashboard/api';
 const filters: Filters = { confidence: 0, weight: 0, types: [...TYPES], lod: true, ratio: 1 };
 test('normalizes Worker and Graphology nodes without inventing coordinates', () => {
@@ -1719,4 +1719,74 @@ test('wave 33 judges a source by what it did, not by a made-up score', () => {
   const undatedCard = sourceScorecard(undatedOnly.edges, undatedOnly.evidence, []);
   assert.deepEqual([undatedCard.profiles[0].standing, undatedCard.profiles[0].undatedDocuments, undatedCard.profiles[0].firsts],
     ['thin', 1, 0], 'a named but undated document is evidence without timing — it never becomes a first report');
+});
+
+test('wave 34 summarises the case without adding a claim of its own', () => {
+  const data = normalizeDataset({
+    nodes: [{ key: 'a', name: 'Alpha' }, { key: 'b', name: 'Beta' }, { key: 'c', name: 'Gamma' }, { key: 'd', name: 'Delta' }],
+    evidence: [
+      { id: 'h1', title: 'H1', source: 'Handelsblatt', date: '2019-01-01' },
+      { id: 'p1', title: 'P1', source: 'Presse', date: '2019-02-01' },
+      { id: 'g1', title: 'G1', source: 'Gazette', date: '2019-03-01' },
+      { id: 'g2', title: 'G2', source: 'Gazette', date: '2019-09-01' },
+      { id: 'g3', title: 'G3', source: 'Gazette', date: '2019-04-01' },
+      { id: 'g4', title: 'G4', source: 'Gazette', date: '2019-05-01' },
+      { id: 'b1', title: 'B1', source: 'Blog', date: '2019-06-01' },
+    ],
+    edges: [
+      { source: 'a', target: 'b', type: 'OWNS', evidenceIds: ['h1', 'p1'] },
+      { source: 'c', target: 'd', type: 'OWNS', evidenceIds: ['g1', 'g2'] },
+      { source: 'c', target: 'd', type: 'SOLD', evidenceIds: ['g3', 'g4'] },
+      { source: 'b', target: 'c', type: 'MET', evidenceIds: ['b1'] },
+    ],
+  });
+  const conflicts = pairConflicts(data.nodes, data.edges, data.evidence);
+  const scorecard = sourceScorecard(data.edges, data.evidence, conflicts);
+  const gaps = provenanceGaps(data.nodes, data.edges);
+  const risk = evidenceRisk(data.nodes, data.edges, data.evidence, '2020-01-01', 12)!;
+  const stats = { totalNodes: 4, totalEdges: 4, filteredNodes: 4, filteredEdges: 4, locatedNodes: 0, grouped: false, level: 'Einzelknoten', focused: false, truncated: false };
+  const summary = caseSummary({ stats, conflicts, gaps, scorecard, risk }, 'de');
+  assert.ok(summary.headline.startsWith('4 Entitäten · 4 Beziehungen · '), 'the headline states the size of the slice');
+  assert.ok(summary.headline.endsWith('Quellen'), 'and how many sources can be named');
+  assert.deepEqual(summary.lines, [
+    'Belege: 4/4 Beziehungen · 0 aus einer einzigen Quelle',
+    'Nachrecherche: 1/4 Entitäten (12 Monate)',
+    'Quellen (4): zuerst 1 · folgen nur 1 · selbst widersprüchlich 1 · im Streit 1',
+    'Streitfälle: 1',
+  ], 'one plain sentence per dimension, no adjectives');
+  assert.deepEqual(summary.flags, [
+    { kind: 'dispute', count: 1, action: { kind: 'dispute' } },
+    { kind: 'selfContradiction', count: 1, subject: 'gazette', action: { kind: 'outlet', outlet: 'gazette' } },
+  ], 'a dispute outranks a self-contradicting source, and every finding carries its filter');
+  assert.equal(summary.empty, false);
+  assert.deepEqual(caseSummary({ stats, conflicts, gaps, scorecard, risk }, 'en').lines, [
+    'Documents: 4/4 relationships · 0 from a single outlet',
+    'Follow-up: 1/4 entities (12 months)',
+    'Sources (4): first 1 · follow only 1 · self-contradicting 1 · in a dispute 1',
+    'Disputes: 1',
+  ], 'the summary exists in both languages, not as a translation of the panels');
+  assert.deepEqual(caseSummary({ stats: { filteredNodes: 0, filteredEdges: 0 } }), {
+    headline: 'In diesem Ausschnitt ist keine Beziehung sichtbar.', lines: [], flags: [], empty: true,
+  }, 'an empty slice says exactly that instead of inventing a zero summary');
+  assert.ok(caseSummary({ stats: { filteredNodes: 1, filteredEdges: 0 } }).empty, 'no relationship means nothing to summarise');
+  const crowded = caseSummary({
+    stats, conflicts,
+    gaps: { ...gaps, singleSourceCount: 3 },
+    scorecard, risk,
+    freshness: { reference: '2020-01-01', months: 12, entities: 4, stale: [], staleCount: 2, undatedCount: 1 },
+  }, 'de');
+  assert.deepEqual(crowded.flags.map(flag => flag.kind), ['dispute', 'selfContradiction', 'singleSource'],
+    'at most three findings — a fourth would turn the glance into a second report');
+  assert.deepEqual(crowded.flags[2].action, { kind: 'singleSource' }, 'the single-source finding filters on it');
+  const staleFirst = caseSummary({
+    stats,
+    gaps: { ...gaps, singleSourceCount: 0 },
+    freshness: { reference: '2020-01-01', months: 18, entities: 4, stale: [], staleCount: 2, undatedCount: 0 },
+  }, 'de');
+  assert.deepEqual(staleFirst.flags, [{ kind: 'stale', count: 2, action: { kind: 'fresh', months: 12 } }],
+    'a report window the filter does not offer jumps to the default window instead of faking one');
+  assert.match(staleFirst.lines.join(' '), /Aktualität: 2\/4 Entitäten älter als 18 Monate/);
+  assert.deepEqual(caseSummary({ stats, conflicts, gaps, scorecard, risk }), summary, 'deterministic');
+  const report = caseReport({ stats, nodes: data.nodes, edges: data.edges, conflicts, gaps, scorecard, summary }, '2026-10-21', 'de');
+  assert.match(report, /## Aktenlage\n\n- 4 Entitäten · 4 Beziehungen · 4 Quellen\n- Belege: 4\/4/, 'the glance leads the case report');
 });

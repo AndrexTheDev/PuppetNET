@@ -2,7 +2,7 @@
 import dynamic from 'next/dynamic';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import EntityTable, { type TableRow } from './EntityTable';
-import { COLORS, TYPES, LIMITS, NOTE_STORAGE_KEY, WATCH_STORAGE_KEY, FRESH_WINDOWS, DEFAULT_FRESH_MONTHS, riskToCSV, watchToCSV, watchReport, watchChanges, watchChangesToCSV, entityBrief, watchBrief, caseArchive, zipStore, evidenceToCSV, entityTimeline, primacyToCSV, sourceScorecardCSV, readWatchlist, toggleWatch, diffToCSV, searchCase, caseReport, decodeViewState, edgesToCSV, encodeViewState, monthWindow, nextPlaybackMonth, nodesToCSV, caseBundle, compareDuplicates, mergeNotes, parseCaseNotes, provenanceGaps, readCaseBundle, searchNoteIndex, removeSavedView, upsertSavedView, readSavedViews, SAVED_VIEW_STORAGE_KEY, normalizeNote, rankSearch, readNotes, resolveNodeRef, viewToJSON, type Evidence, type Filters, type GraphEdge, type GraphNode, type PathTimeline, type View, type ViewUrlState, type DatasetDiff, type CaseHit, type EntityTimeline } from './graph-data';
+import { COLORS, TYPES, LIMITS, NOTE_STORAGE_KEY, WATCH_STORAGE_KEY, FRESH_WINDOWS, DEFAULT_FRESH_MONTHS, riskToCSV, watchToCSV, watchReport, watchChanges, watchChangesToCSV, entityBrief, watchBrief, caseArchive, zipStore, evidenceToCSV, entityTimeline, primacyToCSV, sourceScorecardCSV, caseSummary, readWatchlist, toggleWatch, diffToCSV, searchCase, caseReport, decodeViewState, edgesToCSV, encodeViewState, monthWindow, nextPlaybackMonth, nodesToCSV, caseBundle, compareDuplicates, mergeNotes, parseCaseNotes, provenanceGaps, readCaseBundle, searchNoteIndex, removeSavedView, upsertSavedView, readSavedViews, SAVED_VIEW_STORAGE_KEY, normalizeNote, rankSearch, readNotes, resolveNodeRef, viewToJSON, type Evidence, type Filters, type GraphEdge, type GraphNode, type PathTimeline, type View, type ViewUrlState, type DatasetDiff, type CaseHit, type EntityTimeline, type CaseFlag } from './graph-data';
 import type { NetworkHandle, PathHighlight } from './NetworkGraph';
 import type { WorkerRequest, WorkerResponse } from './protocol';
 import { loadStaticGraph, requestResearch, type Standby } from '../../src/lib/dataFetcher';
@@ -331,6 +331,29 @@ export default function Dashboard() {
     return [...set].sort();
   }, [view]);
   const pathHighlight = useMemo<PathHighlight | null>(() => pathResult && view && !view.stats.grouped ? { nodes: pathResult.ids, edges: pathResult.edgeIds } : null, [pathResult, view]);
+  // Wave 34: the glance is derived, never stored — it re-renders with the slice and
+  // therefore can never disagree with the panels it summarises. Gaps are computed
+  // once here because both the summary and the report need the same numbers.
+  const gaps = useMemo(() => (view ? view.gaps ?? provenanceGaps(view.nodes, view.edges) : null), [view]);
+  const caseFlagText = useCallback((flag: CaseFlag) => t(flag.kind === 'dispute' ? 'dash.summaryFlagDispute'
+    : flag.kind === 'selfContradiction' ? 'dash.summaryFlagSelf'
+      : flag.kind === 'singleSource' ? 'dash.summaryFlagSingle' : 'dash.summaryFlagStale',
+  { count: flag.count, subject: flag.subject ?? '' }), [t]);
+  const summary = useMemo(() => (view ? caseSummary({
+    stats: view.stats, conflicts: view.conflicts, gaps: gaps ?? undefined,
+    freshness: view.freshness, risk: view.risk, scorecard: view.scorecard, primacy: view.primacy,
+  }, lang) : null), [view, gaps, lang]);
+  // Wave 34: a finding leads straight to the filter that shows it, so the summary is
+  // an entry point instead of a dead end.
+  const applyCaseFlag = useCallback((flag: CaseFlag) => {
+    const action = flag.action;
+    if (mode !== 'network') changeMode('network');
+    if (action.kind === 'dispute') setFilters(f => ({ ...f, dispute: true }));
+    else if (action.kind === 'outlet') setFilters(f => ({ ...f, outlet: action.outlet }));
+    else if (action.kind === 'singleSource') setFilters(f => ({ ...f, sources: 'thin' }));
+    else setFilters(f => ({ ...f, fresh: action.months }));
+    setAnnouncement(t('dash.summaryJumped', { finding: caseFlagText(flag) }));
+  }, [mode, changeMode, t, caseFlagText]);
   // Wave 29: the hand-over documents. They are built from the same view data the
   // panels read, so a brief cannot disagree with what is on screen.
   const briefContext = useCallback(() => ({
@@ -355,7 +378,7 @@ export default function Dashboard() {
   const exportArchive = useCallback(() => {
     if (!view) return;
     const generated = new Date().toISOString();
-    const report = caseReport({ stats: view.stats, nodes: view.nodes, edges: view.edges, analytics: view.analytics, insights: view.insights, timeline: view.timeline, duplicates: view.duplicates, vulnerability: view.vulnerability, gaps: view.gaps, sharedSources: view.sharedSources, conflicts: view.conflicts, freshness: view.freshness, risk: view.risk, primacy: view.primacy, scorecard: view.scorecard, notes }, generated, lang);
+    const report = caseReport({ stats: view.stats, nodes: view.nodes, edges: view.edges, analytics: view.analytics, insights: view.insights, timeline: view.timeline, duplicates: view.duplicates, vulnerability: view.vulnerability, gaps: view.gaps, sharedSources: view.sharedSources, conflicts: view.conflicts, freshness: view.freshness, risk: view.risk, primacy: view.primacy, scorecard: view.scorecard, summary: summary ?? undefined, notes }, generated, lang);
     const files = caseArchive({
       report,
       ...(watch.length ? { watchBrief: watchBrief(watch, briefContext(), generated, lang) } : {}),
@@ -448,7 +471,7 @@ export default function Dashboard() {
   const noteHits = useMemo(() => (view && Object.keys(notes).length ? searchNoteIndex(view.nodes, notes, noteQuery) : []), [notes, noteQuery, view]);
   const exportCaseBundle = () => {
     if (!view) return;
-    const report = caseReport({ stats: view.stats, nodes: view.nodes, edges: view.edges, analytics: view.analytics, insights: view.insights, timeline: view.timeline, duplicates: view.duplicates, vulnerability: view.vulnerability, gaps: view.gaps, sharedSources: view.sharedSources, conflicts: view.conflicts, freshness: view.freshness, risk: view.risk, primacy: view.primacy, scorecard: view.scorecard, notes }, new Date().toISOString(), lang);
+    const report = caseReport({ stats: view.stats, nodes: view.nodes, edges: view.edges, analytics: view.analytics, insights: view.insights, timeline: view.timeline, duplicates: view.duplicates, vulnerability: view.vulnerability, gaps: view.gaps, sharedSources: view.sharedSources, conflicts: view.conflicts, freshness: view.freshness, risk: view.risk, primacy: view.primacy, scorecard: view.scorecard, summary: summary ?? undefined, notes }, new Date().toISOString(), lang);
     downloadText('puppetnet-fallakte.json', caseBundle({ notes, views: savedViews, report, generated: new Date().toISOString() }), 'application/json');
     setAnnouncement(t('dash.annBundle', { notes: number(Object.keys(notes).length), views: number(savedViews.length) }));
   };
@@ -473,7 +496,6 @@ export default function Dashboard() {
     } catch { setBundleStatus(t('dash.notesImportError')); }
     finally { if (bundleInput.current) bundleInput.current.value = ''; }
   };
-  const gaps = useMemo(() => (view ? view.gaps ?? provenanceGaps(view.nodes, view.edges) : null), [view]);
   const timelineMax = useMemo(() => (view?.timeline ?? []).reduce((max, bucket) => Math.max(max, bucket.count), 0), [view]);
   useEffect(() => {
     const wanted = initialFocus.current;
@@ -585,6 +607,20 @@ export default function Dashboard() {
                 <p className="muted">{t('dash.dupeCompareNote')}</p>
               </div>)}
           </>}
+          {summary && <div className="summary-panel">
+            <h4 className="hub-heading">{t('dash.summaryTitle')}</h4>
+            <p className="summary-headline">{summary.headline}</p>
+            {summary.empty
+              ? <p className="muted" role="status">{t('dash.summaryEmpty')}</p>
+              : <>
+                {summary.lines.length > 0 && <ul className="summary-lines">{summary.lines.map(line => <li key={line}>{line}</li>)}</ul>}
+                {summary.flags.length > 0 && <><h5 className="gaps-heading">{t('dash.summaryFlags')}</h5>
+                  <ul className="summary-flags">{summary.flags.map(flag => <li key={flag.kind}>
+                    <button type="button" className="text-button" aria-label={t('dash.summaryJumpAria', { finding: caseFlagText(flag) })} onClick={() => applyCaseFlag(flag)}>{caseFlagText(flag)}</button>
+                  </li>)}</ul></>}
+              </>}
+            <p className="muted">{t('dash.summaryText')}</p>
+          </div>}
           {view.analytics.hubs.length > 0 && <><h4 className="hub-heading">{t('dash.topHubs')}</h4><ol className="hub-list">{view.analytics.hubs.map(hub => <li key={hub.id}><button type="button" className="text-button" onClick={() => { if (mode !== 'network') changeMode('network'); select(hub.id); requestAnimationFrame(() => network.current?.focus(hub.id)); }}>{hub.name}</button><span className="hub-rank">{(hub.rank * 100).toFixed(1)} %</span></li>)}</ol></>}
           {view.vulnerability && <div className="vuln-panel">
             <h4 className="hub-heading">{t('dash.vulnTitle')}</h4>

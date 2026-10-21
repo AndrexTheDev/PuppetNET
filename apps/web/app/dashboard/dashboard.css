@@ -273,3 +273,11 @@
 .scorecard-standing{border:1px solid var(--line);border-radius:var(--radius-1,0.25rem);padding:0 var(--space-1,.25rem);font-size:0.85em}
 .scorecard-contradictory{color:var(--color-danger)}
 .scorecard-leader{color:var(--color-gold)}
+.summary-panel{margin-bottom:var(--space-3,1rem);border:1px solid var(--line);border-radius:var(--radius-1,0.25rem);padding:var(--space-2,0.5rem)}
+.summary-headline{margin:0;font-size:1.05em;font-weight:600;color:var(--color-white);overflow-wrap:anywhere}
+.summary-lines{margin:var(--space-2,0.5rem) 0 0;padding-left:var(--space-3,0.75rem);font-size:0.9em;color:var(--color-muted)}
+.summary-lines li{margin-bottom:var(--space-1,0.25rem);overflow-wrap:anywhere}
+.summary-flags{margin:0;padding:0;list-style:none}
+.summary-flags li{margin-bottom:var(--space-1,0.25rem)}
+.summary-flags .text-button{color:var(--color-gold)}
+
