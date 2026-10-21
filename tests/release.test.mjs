@@ -385,7 +385,8 @@ test('wave 22: the dispute view and its window are bounded and reversible', () =
   assert.match(data, /if \(filters\.dispute\) \{/, 'the dispute narrowing is part of the one filter function');
   assert.match(data, /\.filter\(entry => entry\.kind === 'conflict'\)/, 'only real conflicts narrow the network, developments do not');
   const worker = read('apps/web/app/dashboard/graph.worker.ts');
-  assert.match(worker, /const analysisSlice = filters\.dispute \? filterDataset\(effectiveDataset\(\), \{ \.\.\.filters, dispute: undefined \}\) : filtered;/,
+  const analysisSlice = /const analysisSlice = [^;]+/.exec(worker)?.[0] ?? '';
+  assert.ok(analysisSlice.includes('dispute: undefined') && analysisSlice.includes('filterDataset(effectiveDataset()'),
     'conflicts are judged before the dispute view narrows, so the panel stays complete');
   assert.match(worker, /isFreshWindow\(filters\.fresh\) \? filters\.fresh : DEFAULT_FRESH_MONTHS/, 'an unknown window falls back to the default instead of guessing');
   const dashboard = read('apps/web/app/dashboard/Dashboard.tsx');
@@ -393,4 +394,23 @@ test('wave 22: the dispute view and its window are bounded and reversible', () =
   assert.ok(dashboard.includes("t('dash.conflictNoneInScope')"), 'an empty dispute set is stated honestly');
   assert.ok(dashboard.includes('FRESH_WINDOWS.map('), 'the window is switchable in the panel');
   assert.ok(dashboard.includes('aria-pressed={view.freshness?.months === months}'), 'the active window is exposed to assistive tech');
+});
+
+test('wave 23: backing is one definition, and the panel outlives its own filter', () => {
+  const data = read('apps/web/app/dashboard/graph-data.ts');
+  assert.match(data, /export function nodeBacking\(nodes: GraphNode\[\], edges: GraphEdge\[\], evidence: Evidence\[\]\): Map<string, \{ documents: number; sources: number; newest\?: string \}>/,
+    'the counting rule lives in exactly one exported place');
+  assert.match(data, /if \(filters\.weak\) \{[\s\S]{0,220}nodeBacking\(nodes, edges, data\.evidence\)/, 'the filter reuses that one definition');
+  assert.doesNotMatch(data.match(/if \(filters\.weak\)[\s\S]{0,400}?\n  \}/)?.[0] ?? '', /new Date\(\)/,
+    'the thin-file filter carries no clock, so it is reproducible');
+  assert.match(data, /export function evidenceRisk\(nodes: GraphNode\[\], edges: GraphEdge\[\], evidence: Evidence\[\], reference: string, months = 12, limit = 8\): RiskReport \| null/, 'risk is pure and takes its reference date');
+  assert.match(data, /export function riskToCSV\(report: RiskReport\): string/, 'the follow-up list is exportable');
+  const worker = read('apps/web/app/dashboard/graph.worker.ts');
+  assert.match(worker, /const narrowed = filters\.dispute \|\| filters\.weak;/, 'both narrowing views share one pre-filter slice');
+  assert.match(worker, /evidenceRisk\(analysisSlice\.nodes, analysisSlice\.edges, dataset\.evidence/, 'the risk panel is judged before narrowing');
+  const dashboard = read('apps/web/app/dashboard/Dashboard.tsx');
+  assert.ok(dashboard.includes("t('dash.riskText')"), 'the panel explains the two dimensions and the unnamed-document rule');
+  assert.ok(dashboard.includes("t('dash.riskNone')"), 'an all-solid file is stated positively');
+  assert.ok(dashboard.includes('riskToCSV(view.risk!)'), 'the CSV button is wired');
+  assert.ok(dashboard.includes('aria-pressed') || dashboard.includes("t('dash.riskOnlyWeakAria')"), 'the toggle is announced');
 });

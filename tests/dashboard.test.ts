@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
-import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, monthWindow, bundleEdges, structuralVulnerability, pathTimeline, normalizeNote, readNotes, caseReport, nextPlaybackMonth, evidenceWindow, compareDuplicates, multiFailureImpact, normalizeSavedName, readSavedViews, upsertSavedView, removeSavedView, evidenceToCSV, parseCaseNotes, mergeNotes, searchNoteIndex, caseBundle, readCaseBundle, provenanceGaps, edgeSources, sharedSourceGroups, normalizeEvidence, edgeSourceStatus, sourceRegistry, pairConflicts, evidenceFreshness, monthsBefore, FRESH_WINDOWS, DEFAULT_FRESH_MONTHS, isFreshWindow, filterDataset, TYPES, SAVED_VIEW_LIMIT, NOTE_LIMIT, EGO_DEPTH_LIMIT, VULNERABILITY_NODE_LIMIT, normalizeInsights, ANALYSIS_LIMITS, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
+import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, monthWindow, bundleEdges, structuralVulnerability, pathTimeline, normalizeNote, readNotes, caseReport, nextPlaybackMonth, evidenceWindow, compareDuplicates, multiFailureImpact, normalizeSavedName, readSavedViews, upsertSavedView, removeSavedView, evidenceToCSV, parseCaseNotes, mergeNotes, searchNoteIndex, caseBundle, readCaseBundle, provenanceGaps, edgeSources, sharedSourceGroups, normalizeEvidence, edgeSourceStatus, sourceRegistry, pairConflicts, evidenceFreshness, monthsBefore, FRESH_WINDOWS, DEFAULT_FRESH_MONTHS, isFreshWindow, filterDataset, nodeBacking, evidenceRisk, riskToCSV, TYPES, SAVED_VIEW_LIMIT, NOTE_LIMIT, EGO_DEPTH_LIMIT, VULNERABILITY_NODE_LIMIT, normalizeInsights, ANALYSIS_LIMITS, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
 import { apiBase, readResponse } from '../apps/web/app/dashboard/api';
 const filters: Filters = { confidence: 0, weight: 0, types: [...TYPES], lod: true, ratio: 1 };
 test('normalizes Worker and Graphology nodes without inventing coordinates', () => {
@@ -1030,4 +1030,113 @@ test('wave 22 the currency window is a closed vocabulary and survives the permal
   assert.equal(evidenceFreshness(data.nodes, data.evidence, '2026-10-21', 24)?.staleCount, 1, 'a two-year window forgives the older entity');
   assert.deepEqual(evidenceFreshness(data.nodes, data.evidence, '2026-10-21', 24)?.stale.map(entry => entry.id), ['old']);
   assert.equal(evidenceFreshness(data.nodes, data.evidence, '2026-10-21', 60)?.staleCount, 0);
+});
+
+test('wave 23 backing counts documents and independent sources honestly', () => {
+  const data = normalizeDataset({
+    nodes: [{ key: 'a', name: 'Alpha' }, { key: 'b', name: 'Beta', evidenceIds: ['d3', 'd4'] }, { key: 'c', name: 'Gamma' }],
+    evidence: [
+      { id: 'd1', title: 'One', source: 'Handelsblatt', date: '2026-01-10' },
+      { id: 'd2', title: 'Two', source: '  handelsblatt ', date: '2025-02-01' },
+      { id: 'd3', title: 'Three', source: 'Presse', date: '2024-03-01' },
+      { id: 'd4', title: 'Four' },
+      { id: 'd5', title: 'Five', source: 'Blog', date: '2023-01-01' },
+    ],
+    edges: [
+      { source: 'a', target: 'b', type: 'OWNS', evidenceIds: ['d1', 'd2'] },
+      { source: 'b', target: 'c', type: 'OWNS', evidenceIds: ['d4'] },
+      { source: 'c', target: 'a', type: 'OWNS', evidenceIds: ['d5'] },
+    ],
+  });
+  const backing = nodeBacking(data.nodes, data.edges, data.evidence);
+  assert.deepEqual(backing.get('a'), { documents: 3, sources: 2, newest: '2026-01-10' },
+    'documents arrive via relationships too, and one outlet written twice is one source');
+  assert.deepEqual(backing.get('b'), { documents: 4, sources: 2, newest: '2026-01-10' },
+    'both incident edges add their documents, so the newest one comes from the a-b edge');
+  assert.deepEqual(backing.get('c'), { documents: 2, sources: 1, newest: '2023-01-01' },
+    'an unnamed document backs the claim but never becomes a second source');
+  assert.deepEqual(nodeBacking([{ ...data.nodes[0], evidenceIds: [] }], [], data.evidence).get('a'), { documents: 0, sources: 0 });
+  assert.deepEqual(nodeBacking([], [], []).size, 0);
+});
+
+test('wave 23 risk ranks thin-and-old above merely thin', () => {
+  const data = normalizeDataset({
+    nodes: [
+      { key: 'weak', name: 'Weak' }, { key: 'thin', name: 'Thin' }, { key: 'stale', name: 'Stale' },
+      { key: 'undated', name: 'Undated' }, { key: 'none', name: 'None' }, { key: 'solid', name: 'Solid' },
+    ],
+    evidence: [
+      { id: 'w', title: 'W', source: 'HR', date: '2024-01-01' },
+      { id: 't', title: 'T', source: 'HR', date: '2026-09-01' },
+      { id: 's1', title: 'S1', source: 'Presse', date: '2023-05-01' },
+      { id: 's2', title: 'S2', source: 'Blog', date: '2023-06-01' },
+      { id: 'u1', title: 'U1', source: 'Presse' },
+      { id: 'u2', title: 'U2', source: 'Blog' },
+      { id: 'g1', title: 'G1', source: 'Presse', date: '2026-07-01' },
+      { id: 'g2', title: 'G2', source: 'Blog', date: '2026-08-01' },
+    ],
+    edges: [
+      { source: 'weak', target: 'solid', type: 'OWNS', evidenceIds: ['w'] },
+      { source: 'thin', target: 'solid', type: 'OWNS', evidenceIds: ['t'] },
+      { source: 'stale', target: 'solid', type: 'OWNS', evidenceIds: ['s1', 's2'] },
+      { source: 'undated', target: 'solid', type: 'OWNS', evidenceIds: ['u1', 'u2'] },
+    ],
+  });
+  const report = evidenceRisk(data.nodes, data.edges, data.evidence, '2026-10-21');
+  assert.deepEqual(report?.states, { unbacked: 1, weak: 1, thin: 1, stale: 1, undated: 1, solid: 1 },
+    'one entity of each kind; the unconnected one has no document at all');
+  assert.equal(report?.entities, 6);
+  assert.deepEqual(report?.entries.map(entry => [entry.id, entry.state]), [
+    ['weak', 'weak'],
+    ['stale', 'stale'],
+    ['thin', 'thin'],
+    ['undated', 'undated'],
+    ['none', 'unbacked'],
+  ], 'worst first: thin and old, then old, then thin, then undatable, then undocumented');
+  assert.equal(report?.weakCount, 5);
+  assert.deepEqual(evidenceRisk(data.nodes, data.edges, data.evidence, '2026-10-21'), report, 'deterministic');
+  assert.equal(evidenceRisk(data.nodes, data.edges, data.evidence, 'junk'), null);
+  assert.equal(evidenceRisk(data.nodes, data.edges, data.evidence, '2026-10-21', 60)?.states.weak, 0, 'a wide window forgives age, not a missing second source');
+  assert.equal(evidenceRisk(data.nodes, data.edges, data.evidence, '2026-10-21', 12, 2)?.entries.length, 2, 'bounded');
+  const grouped = [...data.nodes.map(node => ({ ...node, id: `g:${node.id}`, group: true, label: 'grp' })), ...data.nodes];
+  assert.equal(evidenceRisk(grouped, data.edges, data.evidence, '2026-10-21')?.entities, 6, 'display groups are not entities');
+  const csv = riskToCSV(report!);
+  assert.ok(csv.startsWith('id,label,type,state,documents,sources,relations,last\n'));
+  assert.ok(csv.includes('weak,Weak,Other,weak,1,1,1,2024-01-01'), 'the CSV carries the judgment, not just the raw counts');
+  assert.equal(csv.trim().split('\n').length, 6, 'header + the non-solid entries only');
+  const nasty = normalizeDataset({ nodes: [{ key: 'x', name: 'X, "quoted"' }], evidence: [{ id: 'q', title: 'Q', source: 'S', date: '2026-01-01' }], edges: [{ source: 'x', target: 'x', type: 'SELF', evidenceIds: ['q'] }] });
+  const quoted = riskToCSV(evidenceRisk(nasty.nodes, nasty.edges, nasty.evidence, '2026-10-21')!);
+  assert.ok(quoted.includes('"X, ""quoted"""'), 'RFC-4180 quoting is reused');
+});
+
+test('wave 23 the thin-file view narrows without touching its own judgment', () => {
+  const data = normalizeDataset({
+    nodes: [{ key: 'a', name: 'Alpha' }, { key: 'b', name: 'Beta', evidenceIds: ['d3', 'd4'] }, { key: 'c', name: 'Gamma' }],
+    evidence: [
+      { id: 'd1', title: 'One', source: 'Handelsblatt', date: '2026-01-10' },
+      { id: 'd2', title: 'Two', source: 'Presse', date: '2025-02-01' },
+      { id: 'd3', title: 'Three', source: 'Blog', date: '2026-03-01' },
+      { id: 'd4', title: 'Four' },
+    ],
+    edges: [
+      { source: 'a', target: 'b', type: 'OWNS', evidenceIds: ['d1', 'd2'] },
+      { source: 'b', target: 'c', type: 'OWNS', evidenceIds: ['d3', 'd4'] },
+    ],
+  });
+  const base: Filters = { confidence: 0, weight: 0, types: [...TYPES], lod: false, ratio: 1 };
+  const narrow = filterDataset(data, { ...base, weak: true });
+  assert.deepEqual(narrow.nodes.map(node => node.id), ['c'], 'only the entity with a single independent source survives');
+  assert.deepEqual(narrow.edges, [], 'its only relationship pointed at a better-backed entity and must not dangle');
+  assert.equal(filterDataset(data, base).nodes.length, 3, 'the unfiltered slice is untouched');
+  assert.deepEqual(filterDataset(data, { ...base, weak: true }), narrow, 'stable when applied twice');
+  const allThin = normalizeDataset({
+    nodes: [{ key: 'x', name: 'X' }, { key: 'y', name: 'Y' }],
+    evidence: [{ id: 'z1', title: 'Z1', source: 'HR', date: '2026-01-01' }, { id: 'z2', title: 'Z2' }],
+    edges: [{ source: 'x', target: 'y', type: 'OWNS', evidenceIds: ['z1', 'z2'] }],
+  });
+  const kept = filterDataset(allThin, { ...base, weak: true });
+  assert.deepEqual([kept.nodes.length, kept.edges.length], [2, 1], 'two unnamed documents never become a second source');
+  assert.equal(encodeViewState({ weak: true }), 'weak=1');
+  assert.deepEqual(decodeViewState('?weak=1&dispute=1'), { dispute: true, weak: true });
+  assert.deepEqual(decodeViewState('?weak=0'), {});
 });

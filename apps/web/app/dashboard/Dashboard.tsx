@@ -2,7 +2,7 @@
 import dynamic from 'next/dynamic';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import EntityTable, { type TableRow } from './EntityTable';
-import { COLORS, TYPES, LIMITS, NOTE_STORAGE_KEY, FRESH_WINDOWS, DEFAULT_FRESH_MONTHS, caseReport, decodeViewState, edgesToCSV, encodeViewState, monthWindow, nextPlaybackMonth, nodesToCSV, caseBundle, compareDuplicates, mergeNotes, parseCaseNotes, provenanceGaps, readCaseBundle, searchNoteIndex, removeSavedView, upsertSavedView, readSavedViews, SAVED_VIEW_STORAGE_KEY, normalizeNote, rankSearch, readNotes, resolveNodeRef, viewToJSON, type Evidence, type Filters, type GraphEdge, type GraphNode, type PathTimeline, type View, type ViewUrlState } from './graph-data';
+import { COLORS, TYPES, LIMITS, NOTE_STORAGE_KEY, FRESH_WINDOWS, DEFAULT_FRESH_MONTHS, riskToCSV, caseReport, decodeViewState, edgesToCSV, encodeViewState, monthWindow, nextPlaybackMonth, nodesToCSV, caseBundle, compareDuplicates, mergeNotes, parseCaseNotes, provenanceGaps, readCaseBundle, searchNoteIndex, removeSavedView, upsertSavedView, readSavedViews, SAVED_VIEW_STORAGE_KEY, normalizeNote, rankSearch, readNotes, resolveNodeRef, viewToJSON, type Evidence, type Filters, type GraphEdge, type GraphNode, type PathTimeline, type View, type ViewUrlState } from './graph-data';
 import type { NetworkHandle, PathHighlight } from './NetworkGraph';
 import type { WorkerRequest, WorkerResponse } from './protocol';
 import { loadStaticGraph, requestResearch, type Standby } from '../../src/lib/dataFetcher';
@@ -21,7 +21,7 @@ export default function Dashboard() {
   // Shareable permalink state: mode, query, focus, community, time window, color mode.
   const initialUrl = useRef<ViewUrlState>(typeof window === 'undefined' ? {} : decodeViewState(window.location.search));
   const [view, setView] = useState<View | null>(null), [busy, setBusy] = useState(true);
-  const [filters, setFilters] = useState<Filters>(() => ({ ...initialFilters, ...(initialUrl.current.community ? { community: initialUrl.current.community } : {}), ...(initialUrl.current.from ? { from: initialUrl.current.from } : {}), ...(initialUrl.current.to ? { to: initialUrl.current.to } : {}), ...(initialUrl.current.sources ? { sources: initialUrl.current.sources } : {}), ...(initialUrl.current.outlet ? { outlet: initialUrl.current.outlet } : {}), ...(initialUrl.current.fresh ? { fresh: initialUrl.current.fresh } : {}), ...(initialUrl.current.dispute ? { dispute: true } : {}) }));
+  const [filters, setFilters] = useState<Filters>(() => ({ ...initialFilters, ...(initialUrl.current.community ? { community: initialUrl.current.community } : {}), ...(initialUrl.current.from ? { from: initialUrl.current.from } : {}), ...(initialUrl.current.to ? { to: initialUrl.current.to } : {}), ...(initialUrl.current.sources ? { sources: initialUrl.current.sources } : {}), ...(initialUrl.current.outlet ? { outlet: initialUrl.current.outlet } : {}), ...(initialUrl.current.fresh ? { fresh: initialUrl.current.fresh } : {}), ...(initialUrl.current.dispute ? { dispute: true } : {}), ...(initialUrl.current.weak ? { weak: true } : {}) }));
   const filtersRef = useRef(filters); filtersRef.current = filters;
   const busyRef = useRef(busy); busyRef.current = busy;
   const viewLatest = useRef<View | null>(null); viewLatest.current = view;
@@ -231,7 +231,7 @@ export default function Dashboard() {
   // URL without adding history entries (bound values only, no free text blobs).
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    const query = encodeViewState({ mode, q: search || undefined, focus: selected?.id || undefined, community: filters.community, from: filters.from, to: filters.to, color: colorMode, sources: filters.sources, outlet: filters.outlet, fresh: filters.fresh, dispute: filters.dispute });
+    const query = encodeViewState({ mode, q: search || undefined, focus: selected?.id || undefined, community: filters.community, from: filters.from, to: filters.to, color: colorMode, sources: filters.sources, outlet: filters.outlet, fresh: filters.fresh, dispute: filters.dispute, weak: filters.weak });
     window.history.replaceState(null, '', query ? `${window.location.pathname}?${query}` : window.location.pathname);
   }, [mode, search, selected, filters.community, filters.from, filters.to, colorMode]);
   const onRatio = useCallback((ratio: number) => { if (busyRef.current) return; const bucket = ratio >= .55 ? 1 : ratio >= .18 ? .35 : .1; setFilters(f => f.ratio === bucket ? f : { ...f, ratio: bucket }); }, []);
@@ -333,7 +333,7 @@ export default function Dashboard() {
   const saveCurrentView = () => {
     const name = viewName.trim();
     if (!name) { setViewsStatus(t('dash.viewsNeedName')); return; }
-    const query = encodeViewState({ mode, q: search || undefined, community: filters.community, from: filters.from, to: filters.to, color: colorMode, focus: selected?.id, sources: filters.sources, outlet: filters.outlet, fresh: filters.fresh, dispute: filters.dispute });
+    const query = encodeViewState({ mode, q: search || undefined, community: filters.community, from: filters.from, to: filters.to, color: colorMode, focus: selected?.id, sources: filters.sources, outlet: filters.outlet, fresh: filters.fresh, dispute: filters.dispute, weak: filters.weak });
     setSavedViews(list => upsertSavedView(list, name, query || 'mode=list', new Date().toISOString()));
     setViewName('');
     setViewsStatus(t('dash.viewsSaved', { name }));
@@ -369,7 +369,7 @@ export default function Dashboard() {
   const noteHits = useMemo(() => (view && Object.keys(notes).length ? searchNoteIndex(view.nodes, notes, noteQuery) : []), [notes, noteQuery, view]);
   const exportCaseBundle = () => {
     if (!view) return;
-    const report = caseReport({ stats: view.stats, nodes: view.nodes, edges: view.edges, analytics: view.analytics, insights: view.insights, timeline: view.timeline, duplicates: view.duplicates, vulnerability: view.vulnerability, gaps: view.gaps, sharedSources: view.sharedSources, conflicts: view.conflicts, freshness: view.freshness, notes }, new Date().toISOString(), lang);
+    const report = caseReport({ stats: view.stats, nodes: view.nodes, edges: view.edges, analytics: view.analytics, insights: view.insights, timeline: view.timeline, duplicates: view.duplicates, vulnerability: view.vulnerability, gaps: view.gaps, sharedSources: view.sharedSources, conflicts: view.conflicts, freshness: view.freshness, risk: view.risk, notes }, new Date().toISOString(), lang);
     downloadText('puppetnet-fallakte.json', caseBundle({ notes, views: savedViews, report, generated: new Date().toISOString() }), 'application/json');
     setAnnouncement(t('dash.annBundle', { notes: number(Object.keys(notes).length), views: number(savedViews.length) }));
   };
@@ -553,6 +553,23 @@ export default function Dashboard() {
             </li>)}</ul>}
             <p className="muted">{t('dash.conflictText')}</p>
           </div>}
+          {view.risk && <div className="risk-panel">
+            <h4 className="hub-heading">{t('dash.riskTitle')}</h4>
+            <p className="muted small-text">{t('dash.riskSummary', { weak: number(view.risk.weakCount), entities: number(view.risk.entities), months: view.risk.months })}</p>
+            {filters.weak
+              ? <p className="muted small-text" role="status">{t('dash.riskActive', { nodes: number(view.nodes.length) })} <button type="button" className="text-button" onClick={() => setFilters(f => ({ ...f, weak: undefined }))}>{t('dash.riskShowAll')}</button></p>
+              : <button type="button" className="text-button" aria-label={t('dash.riskOnlyWeakAria')} onClick={() => setFilters(f => ({ ...f, weak: true }))}>{t('dash.riskOnlyWeak')}</button>}
+            {view.risk.weakCount === 0
+              ? <p className="muted" role="status">{t('dash.riskNone')}</p>
+              : <><h5 className="gaps-heading">{t('dash.riskListHeading', { count: number(view.risk.weakCount) })}</h5>
+                <ul className="hub-list risk-list">{view.risk.entries.map(entry => <li key={entry.id} className={`risk-${entry.state}`}>
+                  <button type="button" className="text-button" aria-label={t('dash.riskAria', { label: entry.label, state: t(`dash.risk${entry.state[0].toUpperCase()}${entry.state.slice(1)}`) })} onClick={() => { if (mode !== 'network') changeMode('network'); select(entry.id); requestAnimationFrame(() => network.current?.focus(entry.id)); }}>{entry.label}</button>
+                  <span className="risk-state">{t(`dash.risk${entry.state[0].toUpperCase()}${entry.state.slice(1)}`)}</span>
+                  <span className="hub-rank">{t('dash.riskDocs', { documents: number(entry.documents), sources: number(entry.sources), relations: number(entry.relations) })}</span>
+                </li>)}</ul>
+                <button type="button" className="text-button" onClick={() => downloadText(riskToCSV(view.risk!), 'puppetnet-belastbarkeit.csv', 'text/csv')}>{t('dash.riskCsv')}</button></>}
+            <p className="muted">{t('dash.riskText')}</p>
+          </div>}
           {view.freshness && <div className="fresh-panel">
             <h4 className="hub-heading">{t('dash.freshTitle')}</h4>
             <div className="fresh-window" role="group" aria-label={t('dash.freshWindow')}>{FRESH_WINDOWS.map(months => <button key={months} type="button" disabled={busy} className={`window-button${view.freshness?.months === months ? ' is-active' : ''}`} aria-pressed={view.freshness?.months === months} aria-label={t('dash.freshWindowAria', { months })} onClick={() => setFilters(f => ({ ...f, fresh: months === DEFAULT_FRESH_MONTHS ? undefined : months }))}>{t('dash.freshWindowLabel', { months })}</button>)}</div>
@@ -686,7 +703,7 @@ export default function Dashboard() {
         <div id="visualization-stage" className={mode === 'network' ? 'graph-pane' : 'graph-pane hidden-pane'}>{mode === 'network' && <NetworkGraph ref={network} view={view} onSelect={select} onSelectEdge={selectEdge} onRatio={onRatio} onClear={clearSelected} colorMode={colorMode} path={pathHighlight} />}<div className="graph-tools"><button aria-label={t('dash.zoomInAria')} onClick={() => network.current?.zoom(.65)}>+</button><button aria-label={t('dash.zoomOutAria')} onClick={() => network.current?.zoom(1.5)}>−</button><button aria-label={t('dash.fitAria')} onClick={() => network.current?.reset()}>⌖</button><button onClick={() => send({ kind: 'layout', running: !layoutRunning })}>{layoutRunning ? 'Pause' : 'Layout'}</button></div></div>
         {mode === 'map' && <><MapModule points={view?.mapPoints ?? []} onSelect={id => select(id)} /><div className="data-footnote">{t('dash.mapFootnote', { count: number(view?.stats.locatedNodes) })}</div></>}
         {mode === 'list' && <EntityTable rows={tableRows} total={list.length} page={listPage} pageSize={pageSize} query={search} onQuery={value => { setSearch(value); setListPage(0); }} onPage={setListPage} onSelect={select} onFocusGraph={id => { changeMode('network'); select(id); requestAnimationFrame(() => network.current?.focus(id)); }} />}
-        <div className="visualization-footer"><span><span className="status-dot" /> {t('dash.nodesLoaded', { count: number(view?.stats.totalNodes) })}</span><span className="view-export"><button type="button" onClick={() => downloadText('puppetnet-knoten.csv', nodesToCSV(view?.nodes ?? []), 'text/csv;charset=utf-8')}>{t('dash.nodesCsv')}</button><button type="button" onClick={() => downloadText('puppetnet-kanten.csv', edgesToCSV(view?.edges ?? []), 'text/csv;charset=utf-8')}>{t('dash.edgesCsv')}</button><button type="button" onClick={() => downloadText('puppetnet-ansicht.json', viewToJSON({ nodes: view?.nodes ?? [], edges: view?.edges ?? [], analytics: view?.analytics, insights: view?.insights }), 'application/json')}>JSON ↓</button><button type="button" aria-label={t('dash.evidenceCsvAria')} onClick={() => { if (!view) return; send({ kind: 'evidenceCsv', version: version.current }); }}>{t('dash.evidenceCsv')}</button><button type="button" aria-label={t('dash.caseBundleAria')} onClick={exportCaseBundle}>{t('dash.caseBundle')}</button><button type="button" aria-label={t('dash.reportAria')} onClick={() => { if (!view) return; downloadText('puppetnet-fallbericht.md', caseReport({ stats: view.stats, nodes: view.nodes, edges: view.edges, analytics: view.analytics, insights: view.insights, timeline: view.timeline, duplicates: view.duplicates, vulnerability: view.vulnerability, gaps: view.gaps, sharedSources: view.sharedSources, conflicts: view.conflicts, freshness: view.freshness, notes }, new Date().toISOString(), lang), 'text/markdown;charset=utf-8'); }}>{t('dash.reportButton')}</button></span><span>{view?.stats.focused ? <button onClick={() => requestView('reset')}>{t('dash.showAll')}</button> : t('dash.clickHintFoot')}</span></div>
+        <div className="visualization-footer"><span><span className="status-dot" /> {t('dash.nodesLoaded', { count: number(view?.stats.totalNodes) })}</span><span className="view-export"><button type="button" onClick={() => downloadText('puppetnet-knoten.csv', nodesToCSV(view?.nodes ?? []), 'text/csv;charset=utf-8')}>{t('dash.nodesCsv')}</button><button type="button" onClick={() => downloadText('puppetnet-kanten.csv', edgesToCSV(view?.edges ?? []), 'text/csv;charset=utf-8')}>{t('dash.edgesCsv')}</button><button type="button" onClick={() => downloadText('puppetnet-ansicht.json', viewToJSON({ nodes: view?.nodes ?? [], edges: view?.edges ?? [], analytics: view?.analytics, insights: view?.insights }), 'application/json')}>JSON ↓</button><button type="button" aria-label={t('dash.evidenceCsvAria')} onClick={() => { if (!view) return; send({ kind: 'evidenceCsv', version: version.current }); }}>{t('dash.evidenceCsv')}</button><button type="button" aria-label={t('dash.caseBundleAria')} onClick={exportCaseBundle}>{t('dash.caseBundle')}</button><button type="button" aria-label={t('dash.reportAria')} onClick={() => { if (!view) return; downloadText('puppetnet-fallbericht.md', caseReport({ stats: view.stats, nodes: view.nodes, edges: view.edges, analytics: view.analytics, insights: view.insights, timeline: view.timeline, duplicates: view.duplicates, vulnerability: view.vulnerability, gaps: view.gaps, sharedSources: view.sharedSources, conflicts: view.conflicts, freshness: view.freshness, risk: view.risk, notes }, new Date().toISOString(), lang), 'text/markdown;charset=utf-8'); }}>{t('dash.reportButton')}</button></span><span>{view?.stats.focused ? <button onClick={() => requestView('reset')}>{t('dash.showAll')}</button> : t('dash.clickHintFoot')}</span></div>
       </section>
       <SidePanel node={selected} evidence={evidence} edge={selectedEdge} edgeEvidence={edgeEvidence} edgeLabels={{
         source: selectedEdge ? view?.nodes.find(n => n.id === selectedEdge.source)?.label ?? selectedEdge.source : '',

@@ -26,7 +26,7 @@ export interface GraphNode {
 }
 export interface GraphEdge { id: string; source: string; target: string; type: string; confidence: number; weight: number; evidenceIds: string[]; count?: number; types?: string[] }
 export interface Dataset { nodes: GraphNode[]; edges: GraphEdge[]; evidence: Evidence[]; truncated?: boolean; analytics?: GraphAnalytics; insights?: GraphInsight[] }
-export interface Filters { confidence: number; weight: number; types: EntityType[]; lod: boolean; ratio: number; community?: string; from?: string; to?: string; bundle?: boolean; sources?: SourceFilter; outlet?: string; fresh?: FreshWindow; dispute?: boolean }
+export interface Filters { confidence: number; weight: number; types: EntityType[]; lod: boolean; ratio: number; community?: string; from?: string; to?: string; bundle?: boolean; sources?: SourceFilter; outlet?: string; fresh?: FreshWindow; dispute?: boolean; weak?: boolean }
 export interface Vulnerability {
   cutVertices: { id: string; label: string; degree: number; impact: { components: number; largest: number } }[];
   cutEdges: number;
@@ -78,6 +78,8 @@ export interface View {
   conflicts?: PairConflict[];
   /** Wave 21: how current the documented evidence behind the slice is. */
   freshness?: Freshness;
+  /** Wave 23: which claims are thin and/or old — the follow-up list. */
+  risk?: RiskReport;
 }
 export const LIMITS = { nodes: 200_000, edges: 500_000, bytes: 64 * 1024 * 1024 };
 const record = (v: unknown): Record<string, unknown> => v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {};
@@ -311,6 +313,16 @@ export function filterDataset(data: Dataset, filters: Filters): Dataset {
     const touched = new Set<string>();
     for (const edge of edges) { touched.add(edge.source); touched.add(edge.target); }
     nodes = nodes.filter(node => touched.has(node.id));
+  }
+  // Wave 23: thin-file view — only entities that rest on at most one independent
+  // source. Deliberately date-free: the filter must be reproducible without a
+  // clock, so it narrows the dimension that is fixable (add a second source), and
+  // the panel keeps the two-dimensional judgment (thin *and* old) for reading.
+  if (filters.weak) {
+    const backing = nodeBacking(nodes, edges, data.evidence);
+    nodes = nodes.filter(node => (backing.get(node.id)?.sources ?? 0) <= 1);
+    const allowed = new Set(nodes.map(node => node.id));
+    edges = edges.filter(edge => allowed.has(edge.source) && allowed.has(edge.target));
   }
   return { nodes, edges, evidence: data.evidence, ...(data.analytics ? { analytics: data.analytics } : {}),
     ...(data.insights ? { insights: data.insights } : {}) };
@@ -1309,6 +1321,107 @@ export function isFreshWindow(value: unknown): value is FreshWindow {
   return FRESH_WINDOWS.includes(value as FreshWindow);
 }
 
+/** Wave 23: how far a claim can be trusted — two honest dimensions, no invented
+ * score. `sources` counts *independent* sources: unnamed documents can back a
+ * claim but can never corroborate it (Wave 18's rule), so two unnamed documents
+ * still leave an entity on a single source. */
+export type RiskState = 'unbacked' | 'weak' | 'thin' | 'stale' | 'undated' | 'solid';
+export interface RiskEntry {
+  id: string; label: string; type: EntityType;
+  documents: number; sources: number; relations: number; last?: string;
+  state: RiskState;
+}
+export interface RiskReport {
+  reference: string; months: number; entities: number;
+  states: Record<RiskState, number>;
+  /** Every entity that is not solid, worst first. */
+  entries: RiskEntry[];
+  weakCount: number;
+}
+
+/** Wave 23: per entity, the documents that mention it — attached directly or via
+ * a visible relationship — the distinct *independent* source names behind them
+ * (unnamed documents can back a claim but never corroborate it, Wave 18's rule)
+ * and the newest usable date. Shared by the panel and the thin-file filter so
+ * both always mean the same thing. */
+export function nodeBacking(nodes: GraphNode[], edges: GraphEdge[], evidence: Evidence[]): Map<string, { documents: number; sources: number; newest?: string }> {
+  const dates = new Map(evidence.map(doc => [doc.id, isoDate(doc.date)]));
+  const names = new Map(evidence.map(doc => [doc.id, (doc.source ?? '').trim().toLowerCase()]));
+  const documents = new Map<string, Set<string>>();
+  const addDoc = (id: string, docId: string) => {
+    const set = documents.get(id) ?? new Set<string>();
+    set.add(docId);
+    documents.set(id, set);
+  };
+  for (const node of nodes) for (const docId of node.evidenceIds) addDoc(node.id, docId);
+  for (const edge of edges) for (const docId of edge.evidenceIds) { addDoc(edge.source, docId); addDoc(edge.target, docId); }
+  const backing = new Map<string, { documents: number; sources: number; newest?: string }>();
+  for (const node of nodes) {
+    const sources = new Set<string>();
+    let count = 0, newest: string | undefined;
+    for (const docId of documents.get(node.id) ?? []) {
+      if (!dates.has(docId) && !names.has(docId)) continue;
+      count++;
+      const name = names.get(docId);
+      if (name) sources.add(name);
+      const day = dates.get(docId);
+      if (day && (!newest || day > newest)) newest = day;
+    }
+    backing.set(node.id, { documents: count, sources: sources.size, ...(newest ? { newest } : {}) });
+  }
+  return backing;
+}
+
+/**
+ * Wave 23: ranks the file by what it can actually carry. Each visible entity
+ * gets its document count, its *independent* source count and its newest date;
+ * the combination decides the state — `weak` is thin *and* old (the claim needs
+ * a second source and a fresher one), `thin` is thin but current, `stale` is
+ * corroborated but old, `undated` is corroborated but undateable, `unbacked` has
+ * no document at all. Deterministic, bounded, groups excluded.
+ */
+export function evidenceRisk(nodes: GraphNode[], edges: GraphEdge[], evidence: Evidence[], reference: string, months = 12, limit = 8): RiskReport | null {
+  const cutoff = monthsBefore(reference, months), day = isoDate(reference);
+  if (!cutoff || !day) return null;
+  const relations = new Map<string, number>();
+  for (const edge of edges) {
+    if (edge.source === edge.target) continue;
+    relations.set(edge.source, (relations.get(edge.source) ?? 0) + 1);
+    relations.set(edge.target, (relations.get(edge.target) ?? 0) + 1);
+  }
+  const backing = nodeBacking(nodes, edges, evidence);
+  const states: Record<RiskState, number> = { unbacked: 0, weak: 0, thin: 0, stale: 0, undated: 0, solid: 0 };
+  const entries: RiskEntry[] = [];
+  let entities = 0;
+  for (const node of nodes) {
+    if (node.group) continue;
+    entities++;
+    const own = backing.get(node.id) ?? { documents: 0, sources: 0 };
+    const newest = own.newest;
+    let state: RiskState;
+    if (own.documents === 0) state = 'unbacked';
+    else if (own.sources <= 1) state = !newest || newest < cutoff ? 'weak' : 'thin';
+    else state = !newest ? 'undated' : newest < cutoff ? 'stale' : 'solid';
+    states[state]++;
+    entries.push({ id: node.id, label: node.label, type: node.type, documents: own.documents, sources: own.sources, relations: relations.get(node.id) ?? 0, ...(newest ? { last: newest } : {}), state });
+  }
+  const rank: Record<RiskState, number> = { weak: 0, stale: 1, thin: 2, undated: 3, unbacked: 4, solid: 5 };
+  entries.sort((a, b) => rank[a.state] - rank[b.state]
+    || a.sources - b.sources
+    || (a.last ?? '') .localeCompare(b.last ?? '')
+    || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  const ranked = entries.filter(entry => entry.state !== 'solid');
+  return { reference: day, months: Math.max(1, Math.trunc(months)), entities, states, entries: ranked.slice(0, Math.max(1, limit)), weakCount: ranked.length };
+}
+
+/** Wave 23: the weak-file list as RFC-4180 CSV — the part of a case file that
+ * needs a follow-up call, ready to hand over. */
+export function riskToCSV(report: RiskReport): string {
+  const header = ['id', 'label', 'type', 'state', 'documents', 'sources', 'relations', 'last'].map(csvCell).join(',');
+  const rows = report.entries.map(entry => [entry.id, entry.label, entry.type, entry.state, entry.documents, entry.sources, entry.relations, entry.last].map(csvCell).join(','));
+  return [header, ...rows].join('\n') + '\n';
+}
+
 export const CONFIDENCE_THRESHOLD = 0.5;
 
 /**
@@ -1372,6 +1485,7 @@ export interface CaseReportInput {
   sharedSources?: { document: string; entities: { id: string; label: string }[] }[];
   conflicts?: PairConflict[];
   freshness?: Freshness;
+  risk?: RiskReport;
   notes?: Record<string, string>;
 }
 /** Wave 11 case report: a deterministic Markdown file for the case folder —
@@ -1391,6 +1505,7 @@ const CASE_REPORT_TEXT = {
     rules: 'Regelhinweise', duplicates: 'Mögliche Dubletten', mixed: 'gemischte Typen',
     timeline: 'Erwähnungen pro Monat',
     conflicts: 'Widersprüchliche Aussagen', conflictsNone: 'keine abweichenden Aussagen', currency: 'Aktualität der Belege',
+    risk: 'Belastbarkeit der Akte', riskNone: 'alle Entitäten sind gedeckt', riskStates: 'ohne Beleg / dünn und alt / nur eine Quelle / veraltet / ohne Datum / solide',
     footer: 'Hinweise, keine Beweise: Quellen prüfen; personenbezogene Daten nur mit Rechtsgrundlage verarbeiten.',
   },
   en: {
@@ -1404,6 +1519,7 @@ const CASE_REPORT_TEXT = {
     rules: 'Rule hits', duplicates: 'Possible duplicates', mixed: 'mixed types',
     timeline: 'Mentions per month',
     conflicts: 'Conflicting claims', conflictsNone: 'no differing claims', currency: 'Currency of the evidence',
+    risk: 'How much the file can carry', riskNone: 'every entity is covered', riskStates: 'no document / thin and old / single source / outdated / undated / solid',
     footer: 'Hints, not proof: verify the sources; process personal data only with a legal basis.',
   },
 } as const;
@@ -1466,6 +1582,14 @@ export function caseReport(input: CaseReportInput, generated: string, lang: 'de'
     lines.push(`- ${f.staleCount}/${f.entities} ${lang === 'en' ? 'entities without evidence inside the window' : 'Entitäten ohne Beleg im Fenster'} · ${f.undatedCount} ${lang === 'en' ? 'undated' : 'ohne Datum'}`);
     if (f.stale.length) lines.push(`  - ${f.stale.map(entity => `${clean(entity.label)} (${entity.last})`).join(', ')}`);
   }
+  if (input.risk) {
+    const r = input.risk;
+    lines.push('', `## ${text.risk}`, '');
+    lines.push(`- ${r.weakCount}/${r.entities} ${lang === 'en' ? 'entities need a follow-up' : 'Entitäten brauchen eine Nachrecherche'} (${r.months} ${lang === 'en' ? 'months' : 'Monate'})`);
+    lines.push(`- ${Object.entries(r.states).map(([state, count]) => `${state}: ${count}`).join(' · ')}`);
+    if (!r.weakCount) lines.push(`- ${text.riskNone}`);
+    for (const entry of r.entries) lines.push(`  - ${clean(entry.label)} — ${entry.state} (${entry.documents} ${lang === 'en' ? 'doc(s)' : 'Beleg(e)'}, ${entry.sources} ${lang === 'en' ? 'source(s)' : 'Quelle(n)'}, ${entry.relations} ${lang === 'en' ? 'rel.' : 'Bez.'}${entry.last ? `, ${entry.last}` : ''})`);
+  }
   if (input.conflicts) {
     lines.push('', `## ${text.conflicts}`, '');
     if (!input.conflicts.length) lines.push(`- ${text.conflictsNone}`);
@@ -1499,7 +1623,7 @@ export function viewToJSON(view: { nodes: GraphNode[]; edges: GraphEdge[]; analy
 }
 
 /** Shareable permalinks: bounded, validated URL state (no secrets, no free text). */
-export interface ViewUrlState { mode?: 'network' | 'map' | 'list'; q?: string; focus?: string; community?: string; from?: string; to?: string; color?: 'type' | 'community'; sources?: SourceFilter; outlet?: string; fresh?: FreshWindow; dispute?: boolean }
+export interface ViewUrlState { mode?: 'network' | 'map' | 'list'; q?: string; focus?: string; community?: string; from?: string; to?: string; color?: 'type' | 'community'; sources?: SourceFilter; outlet?: string; fresh?: FreshWindow; dispute?: boolean; weak?: boolean }
 export function encodeViewState(state: ViewUrlState): string {
   const params = new URLSearchParams();
   if (state.mode) params.set('mode', state.mode);
@@ -1513,6 +1637,7 @@ export function encodeViewState(state: ViewUrlState): string {
   const outlet = state.outlet?.trim().slice(0, 80);
   if (outlet) params.set('outlet', outlet);
   if (state.dispute) params.set('dispute', '1');
+  if (state.weak) params.set('weak', '1');
   if (state.fresh && isFreshWindow(state.fresh) && state.fresh !== DEFAULT_FRESH_MONTHS) params.set('fresh', String(state.fresh));
   return params.toString();
 }
@@ -1533,6 +1658,7 @@ export function decodeViewState(search: string): ViewUrlState {
   const outlet = bounded('outlet', 80);
   if (outlet) state.outlet = outlet;
   if (params.get('dispute') === '1') state.dispute = true;
+  if (params.get('weak') === '1') state.weak = true;
   const fresh = Number(params.get('fresh'));
   if (isFreshWindow(fresh)) state.fresh = fresh;
   return state;

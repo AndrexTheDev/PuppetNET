@@ -538,6 +538,36 @@ Fenster-Buttons im Aktualitäts-Panel, 10 neue DE/EN-Schlüssel, token-only CSS,
 `ci:pages` grün, 0 zusätzliche Actions-Minuten. Zwei Wellen-Pins aus Welle 21 wurden
 dabei auf stabile Muster umgestellt, weil Welle 22 dieselben Zeilen erweitert hat.
 
+### Welle 23 — Belastbarkeit der Akte — ✅ umgesetzt (2026-10-21)
+
+- **Zwei ehrliche Maße statt einer erfundenen Punktzahl**: je Entität werden die
+  Belege, die Zahl der **unabhängigen** Quellen und der jüngste Beleg gegenübergestellt.
+  Daraus folgen sechs benannte Zustände: **ohne Beleg**, **dünn und alt** (die
+  Kombination, die einen Anruf braucht), **nur eine Quelle** (dünn, aber aktuell),
+  **veraltet** (korroboriert, aber alt), **ohne Datum** (korroboriert, aber nicht
+  datierbar) und **solide**.
+- **Unbenannte Dokumente stützen, belegen aber nicht unabhängig** (Regel aus Welle 18):
+  drei namenlose Dokumente bleiben eine Quelle. Belege, die über eine sichtbare
+  Beziehung an eine Entität gelangen, zählen mit (Regel aus Welle 20) — sonst hieße
+  eine Entität „unbelegt", nur weil der Export das Dokument an die Kante gehängt hat.
+  Beide Regeln liegen in **einer** exportierten Funktion (`nodeBacking`), die Panel
+  und Filter gemeinsam nutzen.
+- **Dünn-Filter** (`Filters.weak`): schneidet auf Entitäten mit höchstens einer
+  unabhängigen Quelle — bewusst **ohne Uhr**, damit er reproduzierbar ist; die
+  zweidimensionale Bewertung (dünn *und* alt) bleibt Aufgabe des Panels.
+- **CSV-Export** der Nachrecherche-Liste (RFC-4180, gleiche Quoting-Funktion wie die
+  übrigen Exporte) und ein eigener Berichtsabschnitt DE/EN. Das Panel rechnet wie
+  Konflikte und Register auf dem Ausschnitt **vor** der Einschränkung, damit das
+  Einschränken die eigene Bewertung nicht verfälscht.
+
+**Geliefert (Welle 23)**: `nodeBacking()`, `evidenceRisk()`, `riskToCSV()`,
+`Filters.weak` als letzter Schritt in `filterDataset()`, `weak=1` im Permalink (beide
+Writer), Risiko-Panel mit Zustandsliste, CSV-Knopf, Umschalter und ehrlichem
+Alles-solide-Zustand, Berichtsabschnitt, 18 neue DE/EN-Schlüssel, token-only CSS,
+3 neue Datenlagen-Tests (dashboard 54) + 1 neuer Release-Pin (release 29) —
+`ci:pages` grün, 0 zusätzliche Actions-Minuten. Der Welle-22-Pin wurde dabei erneut auf
+ein Verhaltensmuster umgestellt, statt eine Zeile festzunageln.
+
 ## 4. Budget-Zusammenfassung
 
 | Welle | Ort | Zusätzliche Actions-Minuten | Status |
@@ -564,6 +594,7 @@ dabei auf stabile Muster umgestellt, weil Welle 22 dieselben Zeilen erweitert ha
 | 20 Quellen-Register | Browser/Worker | **0** | ✅ umgesetzt |
 | 21 Widersprüche/Aktualität | Browser/Worker | **0** | ✅ umgesetzt |
 | 22 Widerspruchs-Ansicht/Zeitfenster | Browser/Worker | **0** | ✅ umgesetzt |
+| 23 Belastbarkeit der Akte | Browser/Worker | **0** | ✅ umgesetzt |
 
 Kein Schritt erzeugt neue Workflows, neue Cron-Jobs, längere Jobs oder bezahlte
 Dienste. Die einzigen verbrauchsrelevanten Grenzen sind die bestehenden: 3
@@ -1087,6 +1118,33 @@ narrowing, toggles in the conflict panel and window buttons in the currency pane
 pin (release 28) — `ci:pages` green, 0 extra Actions minutes. Two wave-21 pins moved to
 stable patterns because wave 22 extends the same lines.
 
+### Wave 23 — how much the file can carry — ✅ implemented (2026-10-21)
+
+- **Two honest measures instead of an invented score**: per entity the documents, the
+  number of **independent** sources and the newest document are put side by side. Six
+  named states follow: **no document**, **thin and old** (the combination that needs a
+  phone call), **single source** (thin but current), **outdated** (corroborated but old),
+  **undated** (corroborated but undateable) and **solid**.
+- **Unnamed documents back a claim but never corroborate independently** (Wave 18's
+  rule): three nameless documents stay one source. Documents that arrive through a
+  visible relationship count (Wave 20's rule) — otherwise an entity would read "no
+  document" only because the export attached the document to the edge. Both rules live
+  in **one** exported function (`nodeBacking`) shared by panel and filter.
+- **Thin-file filter** (`Filters.weak`): narrows to entities with at most one
+  independent source — deliberately **clock-free** so it stays reproducible; the
+  two-dimensional judgment (thin *and* old) stays with the panel.
+- **CSV export** of the follow-up list (RFC-4180, same quoting helper as every other
+  export) plus its own bilingual report section. Like conflicts and the registry, the
+  panel is computed on the slice **before** narrowing, so narrowing never distorts its
+  own judgment.
+
+**Delivered (Wave 23)**: `nodeBacking()`, `evidenceRisk()`, `riskToCSV()`,
+`Filters.weak` as the last step in `filterDataset()`, `weak=1` in the permalink (both
+writers), risk panel with state list, CSV button, toggle and an honest all-solid state,
+report section, 18 new DE/EN keys, token-only CSS, 3 new data-layer tests (dashboard 54)
++ 1 new release pin (release 29) — `ci:pages` green, 0 extra Actions minutes. The wave-22
+pin moved to a behaviour pattern instead of pinning a line.
+
 ## 4. Budget summary
 
 | Wave | Location | Additional Actions minutes | Status |
@@ -1113,6 +1171,7 @@ stable patterns because wave 22 extends the same lines.
 | 20 source registry | browser/worker | **0** | ✅ implemented |
 | 21 contradictions/currency | browser/worker | **0** | ✅ implemented |
 | 22 dispute view/time window | browser/worker | **0** | ✅ implemented |
+| 23 how much the file can carry | browser/worker | **0** | ✅ implemented |
 
 No step creates new workflows, new cron jobs, longer jobs or paid services. The only
 consumption-relevant limits remain the existing ones: 3 reservations/UTC day, 5-minute

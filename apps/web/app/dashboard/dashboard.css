@@ -228,3 +228,8 @@
 .window-button:hover{border-color:var(--color-gold)}
 .window-button.is-active{border-color:var(--color-gold);font-weight:600}
 .window-button:disabled{opacity:.5;cursor:not-allowed}
+.risk-panel{margin-top:var(--space-3,1rem);border-top:1px solid var(--line);padding-top:var(--space-2,0.5rem)}
+.risk-list li{display:flex;flex-wrap:wrap;gap:var(--space-1,.25rem);align-items:baseline}
+.risk-list li.risk-weak .risk-state{color:var(--color-danger)}
+.risk-list li.risk-unbacked .risk-state,.risk-list li.risk-stale .risk-state{color:var(--color-gold)}
+.risk-state{font-size:.8em;font-weight:600}
