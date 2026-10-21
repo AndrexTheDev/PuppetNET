@@ -36,31 +36,66 @@ def atomic_json(path: Path, data: Any) -> None:
     os.replace(name, path)
 
 
-def reserve_run(path: Path, event: str, day: str | None = None) -> bool:
-    """Durable quota shared by scheduled/manual runs: TOTAL <=3/day = cron <=2 + manual <=1.
+#: Absolute ceilings for the run ledger, independent of the active profile.
+#: Values beyond these are corruption, not a different policy.
+MAX_SCHEDULED_SLOTS = 12
+MAX_MANUAL_SLOTS = 4
 
-    Two cron slots (03:00 and 15:00 UTC) guarantee the twice-daily publication;
-    one manual slot keeps a dispatch/research run possible without eating a cron
-    slot. Caller MUST serialize writers and persist this file even on ingestion
-    failure. This is not a distributed database lock. A missing file starts a
-    new ledger; a corrupt file raises and fails closed instead of silently
-    replenishing quota. Ledgers written by the older 2-total/1-cron policy stay
-    valid within these bounds; a legacy same-day ledger with 2 manual entries
-    fails closed for the rest of that UTC day.
+
+def run_slots_from_env() -> tuple[int, int]:
+    """(scheduled, manual) slots per UTC day; default 2 + 1 (conservative profile).
+
+    The public-repository profile raises them through DAILY_SCHEDULED_SLOTS /
+    DAILY_MANUAL_SLOTS (set by the workflow only after verifying visibility).
     """
+    def bounded(name: str, default: int, low: int, high: int) -> int:
+        raw = os.getenv(name, "").strip()
+        if not raw:
+            return default
+        if not raw.isdigit() or not low <= int(raw) <= high:
+            raise ValueError(f"{name} must be an integer in [{low}, {high}]")
+        return int(raw)
+    return bounded("DAILY_SCHEDULED_SLOTS", 2, 1, MAX_SCHEDULED_SLOTS), bounded("DAILY_MANUAL_SLOTS", 1, 0, MAX_MANUAL_SLOTS)
+
+
+def reserve_run(path: Path, event: str, day: str | None = None, *,
+                scheduled_slots: int | None = None, manual_slots: int | None = None) -> bool:
+    """Durable quota shared by scheduled/manual runs; default TOTAL <=3/day = cron <=2 + manual <=1.
+
+    Conservative profile: two cron slots (03:00 and 15:00 UTC) guarantee the
+    twice-daily publication; one manual slot keeps a dispatch/research run
+    possible without eating a cron slot. The public-repository profile passes
+    larger slot counts (GitHub-hosted standard runners are free for public
+    repositories); hard ceilings stay MAX_SCHEDULED_SLOTS/MAX_MANUAL_SLOTS.
+    Caller MUST serialize writers and persist this file even on ingestion
+    failure. This is not a distributed database lock. A missing file starts a
+    new ledger; a corrupt file (wrong types, negative or beyond the hard
+    ceilings, inconsistent totals) raises and fails closed instead of silently
+    replenishing quota. A valid ledger already above the *active* slot counts
+    (e.g. after switching back from the public profile mid-day) simply closes
+    the rest of that UTC day.
+    """
+    env_scheduled, env_manual = run_slots_from_env()
+    scheduled_cap = env_scheduled if scheduled_slots is None else scheduled_slots
+    manual_cap = env_manual if manual_slots is None else manual_slots
+    if not (1 <= scheduled_cap <= MAX_SCHEDULED_SLOTS and 0 <= manual_cap <= MAX_MANUAL_SLOTS):
+        raise ValueError("Run slot counts outside the hard ceilings")
     day = day or datetime.now(timezone.utc).date().isoformat()
     state = json.loads(path.read_text()) if path.exists() else {}
     if state.get("day") != day:
         state = {"day": day, "total": 0, "scheduled": 0, "manual": 0}
     if event not in {"schedule", "repository_dispatch", "workflow_dispatch"}:
         raise ValueError("Unsupported run trigger")
-    bounds = {"total": 3, "scheduled": 2, "manual": 1}
-    if any(type(state.get(k)) is not int or not 0 <= state[k] <= cap for k, cap in bounds.items()):
+    hard = {"total": MAX_SCHEDULED_SLOTS + MAX_MANUAL_SLOTS, "scheduled": MAX_SCHEDULED_SLOTS, "manual": MAX_MANUAL_SLOTS}
+    if any(type(state.get(k)) is not int or not 0 <= state[k] <= cap for k, cap in hard.items()):
         raise ValueError("Invalid daily quota ledger")
     if state["manual"] + state["scheduled"] != state["total"]:
         raise ValueError("Inconsistent daily quota ledger")
     kind = "scheduled" if event == "schedule" else "manual"
-    if state["total"] >= bounds["total"] or state[kind] >= bounds[kind]:
+    caps = {"scheduled": scheduled_cap, "manual": manual_cap}
+    if any(state[k] > caps[k] for k in caps):
+        return False  # above the active profile (e.g. switched back mid-day): day closed
+    if state["total"] >= scheduled_cap + manual_cap or state[kind] >= caps[kind]:
         return False
     state["total"] += 1
     state[kind] += 1
@@ -95,12 +130,23 @@ def auto_released(row: dict, feeds: set[str]) -> bool:
         isinstance(url, str) and url in feeds for url in [row.get("feed_url"), *provenance])
 
 
+def llm_auto_release_allowed() -> bool:
+    """GEMINI_AUTO_RELEASE=true lets uncorroborated cloud edges use the normal policy."""
+    return os.getenv("GEMINI_AUTO_RELEASE", "false").strip().lower() == "true"
+
+
 def approved(row: dict, feeds: set[str] | None = None) -> bool:
     feeds = verified_feeds() if feeds is None else feeds
     if any(row.get(flag) for flag in ("private", "noindex", "release_blocked", "negated", "hedged", "calculated")):
         return False
     if row.get("public_released") is False:  # explicit operator withdrawal
         return False
+    if row.get("method") == "llm" and not llm_auto_release_allowed():
+        # Cloud-model edge without local corroboration: neither confidence (noisy-OR
+        # grows with repetition) nor verified-feed provenance may auto-publish it.
+        # Only an explicit operator release does. Local corroboration rewrites the
+        # stored method (schema upsert), which lifts this veto.
+        return row.get("public_released") is True
     automatic = auto_released(row, feeds)
     if row.get("requires_review") and not automatic and row.get("public_released") is not True:
         return False
@@ -171,7 +217,7 @@ def read_neo4j(limit: int = MAX_NODES) -> dict:
             RETURN {source:a.canonical_key,target:b.canonical_key,type:type(r),public:r.public,
                     public_released:r.public_released,release_blocked:r.release_blocked,
                     requires_review:r.requires_review,calculated:r.calculated,
-                    negated:r.negated,hedged:r.hedged,confidence:r.confidence,weight:r.weight,
+                    negated:r.negated,hedged:r.hedged,confidence:r.confidence,weight:r.weight,method:r.method,
                     doc_ids:coalesce(r.doc_ids,[]),doc_id:r.doc_id} AS edge
             ORDER BY edge.source,edge.target,edge.type LIMIT $limit
         """, keys=keys, limit=MAX_EDGES)]

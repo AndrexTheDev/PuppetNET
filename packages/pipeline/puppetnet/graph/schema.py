@@ -321,8 +321,13 @@ ON MATCH SET
                      ELSE (coalesce(r.doc_ids, []) + [row.doc_id])[-{doc_id_cap}..] END,
     r.source_weight = CASE WHEN row.source_weight > coalesce(r.source_weight, 0)
                            THEN row.source_weight ELSE r.source_weight END,
+    // 'llm' (cloud model, uncorroborated) never downgrades a locally grounded
+    // method; a later local extraction of the same edge upgrades 'llm' instead.
     r.method = CASE WHEN row.method = 'dependency' OR coalesce(r.method, '') = 'dependency'
-                    THEN 'dependency' ELSE row.method END,
+                    THEN 'dependency'
+                    WHEN row.method = 'llm' AND coalesce(r.method, '') <> ''
+                    THEN r.method
+                    ELSE row.method END,
     r.evidence = (coalesce(r.evidence, []) + [row.evidence])[-5..],
     r.evidence_scores = (coalesce(r.evidence_scores, []) + [row.evidence_score])[-5..],
     r.verb = CASE WHEN coalesce(row.verb, '') <> '' THEN row.verb ELSE r.verb END,

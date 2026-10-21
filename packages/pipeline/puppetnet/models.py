@@ -207,6 +207,11 @@ class ExtractionMethod(str, Enum):
     STRUCTURED = "structured"        # direct field mapping from an API/dataset
     PATTERN = "pattern"              # EntityRuler / apposition / possessive rules
     GAZETTEER = "gazetteer"          # craft identifier regex + gazetteer match
+    #: Cloud language model (Gemini) without local corroboration. Never a release
+    #: signal on its own: the static exporter vetoes ``method == "llm"`` edges
+    #: unless GEMINI_AUTO_RELEASE=true, and the Neo4j upsert never lets "llm"
+    #: overwrite a locally grounded method on an existing edge.
+    LLM = "llm"
 
     @property
     def factor(self) -> float:

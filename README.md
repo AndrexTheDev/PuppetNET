@@ -30,9 +30,12 @@ Aktueller Drei-Phasen-Vertrag und Betriebsgrenzen: [Ressourcenmodus](docs/resour
   kopiert sie für Legacy nach `/styles/globals.css`. Keine externen Fonts/Ad-Skripte.
 - **Betrieb:** Pages liefert statische JSONs. Der optionale authentifizierte
   Zero-KV-Worker stößt nur Recherche an. GitHub Actions verarbeitet lokal
-  (Regex → spaCy), Cloud-Modell standardmäßig aus; höchstens drei reservierte
-  Pipeline-Läufe pro UTC-Tag (zwei Cron-Läufe 03:00/15:00 UTC + ein manueller
-  Slot), fünf Minuten Job-Limit. Daten werden nach der automatischen
+  (Regex → spaCy), Cloud-Modell standardmäßig aus; standardmäßig höchstens drei
+  reservierte Pipeline-Läufe pro UTC-Tag (zwei Cron-Läufe 03:00/15:00 UTC + ein
+  manueller Slot), fünf Minuten Job-Limit. Opt-in-Public-Profil (nur bei per API
+  bestätigtem öffentlichem Repo): 8 + 3 Läufe, 30 Dokumente, 20 Minuten. Gemini
+  optional über einen Free-Tier-Budget-Broker:
+  [Gemini-Strategie](docs/gemini-strategy.md). Daten werden nach der automatischen
   Freigabepolicy exportiert und durch einen Pages-Neubuild veröffentlicht.
 - **Kostenkontrolle:** Free-Tier-orientiert, keine Nullkosten-Garantie. Provider-
   Kontingente und Abrechnung beobachten; Cloud-Fallback und optionale Dienste
@@ -51,18 +54,22 @@ Aktueller Drei-Phasen-Vertrag und Betriebsgrenzen: [Ressourcenmodus](docs/resour
   `SEARCH_AUTH_TOKEN` (>=32 zufällige Zeichen) für berechtigte Betreiber.
   Keine alten Secret-Aliasse; niemals `GH_PAT` im Browser nutzen.
 - 5 Minuten Job-Limit, 90 Sekunden Ingestion intern / 105 Sekunden Prozesslimit,
-  45 Sekunden Export. Kalter Modell-Download kann trotzdem zum Timeout führen.
+  45 Sekunden Export (Standardprofil; Public-Profil: 20 min / 600 s / 660 s / 120 s).
+  Kalter Modell-Download kann trotzdem zum Timeout führen.
 - Keine NLP-/Modell-Inferenz im Browser. Parsing, Filter und Rendering bleiben
   Browserarbeit; **0 % CPU** für eine interaktive Website ist nicht möglich.
   Tabellenmodus und ausgeschaltete Physik reduzieren die Standardlast. Legacy
   nutzt für neue Einstellungen ein nicht animiertes Grid statt Force-Layout.
 - **95 % lokale NER** ist kein gemessener Qualitätswert. NER läuft vollständig
   lokal; nur ausgewählte unklare Relationen dürfen optional in die Cloud.
-- **Actions-Minuten/Monat:** zwei Cron-Läufe/Tag à maximal 5 Minuten ergeben bis zu
-  310 Minuten/Monat allein für die Daily-Pipeline (62 Läufe); manuelle Läufe
-  (max. 1/UTC-Tag) und CI kommen hinzu. Das alte Planungsziel ~100 Minuten/Monat
-  gilt mit dem zweiten täglichen Lauf nicht mehr. Es gelten maximal
-  3 Reservierungen/UTC-Tag.
+- **Actions-Minuten/Monat:** Das Repository ist öffentlich (per API geprüft am
+  21.10.2026). Standard-GitHub-Runner sind für öffentliche Repos kostenlos und
+  minutenmäßig unbegrenzt; die frühere Rechnung „bis zu 310 Minuten/Monat“ gilt
+  nur noch, falls das Repo privat wird. Es bleiben harte Grenzen (6 h/Job, Cron
+  unzuverlässig, Deaktivierung nach 60 Tagen Inaktivität, Fair-Use-Klausel) und
+  maximal 3 Reservierungen/UTC-Tag im Standard- bzw. 11 im Public-Profil
+  (harte Obergrenze 12 + 4). Echte Engpässe: Gemini-RPD, Cloudflare-Pages-Builds
+  (500/Monat), Neo4j-Aura-Kapazität.
   Bei aktivierter neuer Pipeline werden redundante tägliche Legacy-Tests und
   Keep-alive-Jobs übersprungen. Geplante Ausführungen sind nicht minutengenau.
 - Statische Pages-Dateien bleiben ohne laufende Pipeline abrufbar, jedoch ohne
@@ -142,7 +149,9 @@ Current three-phase contract and operational limits:
   `SEARCH_AUTH_TOKEN` (>=32 random characters) for authorized operators.
   No legacy secret aliases; never use `GH_PAT` in the browser.
 - 5-minute job limit, 90 seconds ingestion internally / 105 seconds process
-  limit, 45 seconds export. A cold model download can still cause a timeout.
+  limit, 45 seconds export (default profile; opt-in public profile for a verified
+  public repository: 20 min / 600 s / 660 s / 120 s, 8 + 3 runs per UTC day; see
+  [Gemini strategy](docs/gemini-strategy.md)). A cold model download can still cause a timeout.
 - No NLP/model inference in the browser. Parsing, filters and rendering remain
   browser work; **0 % CPU** for an interactive website is not possible. Table
   mode and disabled physics reduce the default load. Legacy uses a

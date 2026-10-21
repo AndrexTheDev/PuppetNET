@@ -290,11 +290,41 @@ def test_daily_quota_accepts_legacy_two_total_ledger_and_rejects_manual_overflow
     path.write_text(json.dumps({"day": "2026-10-19", "total": 2, "scheduled": 1, "manual": 1}))
     assert not reserve_run(path, "workflow_dispatch", "2026-10-19")
     assert reserve_run(path, "schedule", "2026-10-19")
-    # A legacy ledger with 2 manual entries exceeds the new manual bound and
-    # fails closed instead of silently rebalancing.
-    path.write_text(json.dumps({"day": "2026-10-19", "total": 2, "scheduled": 0, "manual": 2}))
+    # A ledger with 2 manual entries exceeds the conservative manual bound: the
+    # rest of the UTC day closes (fail closed) instead of silently rebalancing,
+    # and the file is not rewritten. (Valid after a mid-day profile switch.)
+    legacy = json.dumps({"day": "2026-10-19", "total": 2, "scheduled": 0, "manual": 2})
+    path.write_text(legacy)
+    assert not reserve_run(path, "schedule", "2026-10-19")
+    assert not reserve_run(path, "workflow_dispatch", "2026-10-19")
+    assert path.read_text() == legacy
+    # Beyond the hard ceilings it is corruption and raises.
+    path.write_text(json.dumps({"day": "2026-10-19", "total": 5, "scheduled": 0, "manual": 5}))
     with pytest.raises(ValueError, match="Invalid"):
         reserve_run(path, "schedule", "2026-10-19")
+
+
+def test_daily_quota_public_profile_slots_and_hard_ceilings(tmp_path, monkeypatch):
+    path = tmp_path / "budget.json"
+    monkeypatch.setenv("DAILY_SCHEDULED_SLOTS", "8")
+    monkeypatch.setenv("DAILY_MANUAL_SLOTS", "3")
+    assert all(reserve_run(path, "schedule", "2026-10-19") for _ in range(8))
+    assert not reserve_run(path, "schedule", "2026-10-19")
+    assert all(reserve_run(path, "workflow_dispatch", "2026-10-19") for _ in range(3))
+    assert not reserve_run(path, "repository_dispatch", "2026-10-19")
+    assert json.loads(path.read_text()) == {"day": "2026-10-19", "total": 11, "scheduled": 8, "manual": 3}
+    # Switching back to the conservative profile mid-day closes the day.
+    monkeypatch.delenv("DAILY_SCHEDULED_SLOTS")
+    monkeypatch.delenv("DAILY_MANUAL_SLOTS")
+    assert not reserve_run(path, "schedule", "2026-10-19")
+    for bad in ("13", "0", "-1", "x"):
+        monkeypatch.setenv("DAILY_SCHEDULED_SLOTS", bad)
+        with pytest.raises(ValueError):
+            reserve_run(path, "schedule", "2026-10-20")
+    monkeypatch.setenv("DAILY_SCHEDULED_SLOTS", "2")
+    monkeypatch.setenv("DAILY_MANUAL_SLOTS", "5")
+    with pytest.raises(ValueError):
+        reserve_run(path, "schedule", "2026-10-20")
 
 
 def test_cleanup_removes_boilerplate_and_deduplicates():
@@ -549,19 +579,45 @@ def test_german_reversed_and_direct_verbs_keep_canonical_direction():
     assert triples(["Siemens", "übernimmt", "Acme"], ["Siemens", "übernehmen", "Acme"], orgs) == [("Siemens", "ACQUIRED", "Acme")]
 
 
-def test_workflow_is_five_minutes_opt_in_serialized_and_no_payload_shell():
+def test_workflow_is_profile_bounded_opt_in_serialized_and_no_payload_shell():
     root = Path(__file__).resolve().parents[1]
     text = (root / ".github/workflows/daily_ingestion.yml").read_text()
     data = yaml.safe_load(text)
     # YAML 1.1 treats 'on' as bool; GitHub uses YAML 1.2.
     triggers = data.get("on", data.get(True))
-    # Two bounded cron runs per UTC day, twelve hours apart (since 2026-10-20).
-    assert [entry["cron"] for entry in triggers["schedule"]] == ["0 3 * * *", "0 15 * * *"]
+    # Two conservative cron runs twelve hours apart plus a public-profile-only
+    # slot list (off the top of the hour) that needs a verified public repo.
+    public_cron = "30 0,6,9,12,18,21 * * *"
+    assert [entry["cron"] for entry in triggers["schedule"]] == ["0 3 * * *", "0 15 * * *", public_cron]
     job = data["jobs"]["publish"]
-    assert job["timeout-minutes"] == 5
-    assert job["env"]["MAX_RUNTIME_SECONDS"] == "90"
-    assert "timeout 105s python" in text
-    assert "timeout 45s python" in text
+    profile = data["jobs"]["profile"]
+    public = "needs.profile.outputs.public == 'true'"
+    assert job["needs"] == "profile"
+    assert "!cancelled()" in job["if"] and f"github.event.schedule != '{public_cron}' || {public}" in job["if"]
+    assert "vars.PIPELINE_PROFILE == 'public'" in profile["if"] and "refs/heads/main" in profile["if"]
+    detect = profile["steps"][0]["run"]
+    assert "gh api" in detect and '[ "$private" = "false" ]' in detect and "public=false" in detect
+    assert "github.event.repository.private" not in job["if"] + profile["if"]
+    # Conservative values are the fallback of every profile expression.
+    for key, (public_value, default) in {
+            "timeout-minutes": (20, 5)}.items():
+        assert job[key] == f"${{{{ {public} && {public_value} || {default} }}}}"
+    for key, (public_value, default) in {
+            "DAILY_SCHEDULED_SLOTS": ("8", "2"), "DAILY_MANUAL_SLOTS": ("3", "1"),
+            "MAX_DOCUMENTS_TOTAL": ("30", "10"), "MAX_RUNTIME_SECONDS": ("600", "90"),
+            "INGEST_TIMEOUT_SECONDS": ("660", "105"), "EXPORT_TIMEOUT_SECONDS": ("120", "45"),
+            "GEMINI_RUNS_PER_DAY": ("8", "2")}.items():
+        assert job["env"][key] == f"${{{{ {public} && '{public_value}' || '{default}' }}}}", key
+    assert 'timeout "${INGEST_TIMEOUT_SECONDS}s" python' in text
+    assert '--limit "$MAX_DOCUMENTS_TOTAL"' in text
+    assert 'timeout "${EXPORT_TIMEOUT_SECONDS}s" python' in text
+    # Gemini broker is opt-in and its ledger is persisted even after failures.
+    assert job["env"]["ENABLE_GEMINI_BROKER"] == "${{ vars.ENABLE_GEMINI_BROKER || 'false' }}"
+    assert job["env"]["GEMINI_MODE"] == "${{ vars.GEMINI_MODE || 'pair' }}"
+    assert job["env"]["GEMINI_AUTO_RELEASE"] == "${{ vars.GEMINI_AUTO_RELEASE || 'false' }}"
+    assert job["env"]["GEMINI_BROKER_LEDGER"] == ".pipeline-state/gemini-broker.json"
+    persist = next(step for step in job["steps"] if step.get("name", "").startswith("Persist cloud"))
+    assert persist["if"].startswith("always()") and ".pipeline-state/gemini-broker.json" in persist["run"]
     assert "ENABLE_DAILY_STATIC" in job["if"]
     assert data["concurrency"]["cancel-in-progress"] is False
     assert all("client_payload" not in step.get("run", "") for step in job["steps"])

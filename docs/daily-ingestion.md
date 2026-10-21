@@ -57,6 +57,21 @@ Reservierung wird VOR Modellinstallation und Datenbankarbeit auf main gesichert.
 
 Hartes Joblimit 5 Minuten; Ingestion intern 90 Sekunden, Prozesslimit 105 Sekunden,
 Export 45 Sekunden. Kalte Installation/Aura-Wakeup kann den Job trotzdem abbrechen.
+
+**Public-Profil (opt-in, seit 21.10.2026):** Mit der Repository-Variable
+`PIPELINE_PROFILE=public` prüft ein vorgeschalteter Job per `gh api`, ob das
+Repository wirklich öffentlich ist (Standard-Runner-Minuten dann kostenlos).
+Nur dann gelten 8 Cron- + 3 manuelle Slots pro UTC-Tag (zusätzlicher Cron
+`30 0,6,9,12,18,21 * * *`), 30 Dokumente, Joblimit 20 Minuten, Ingestion
+600/660 Sekunden, Export 120 Sekunden. Ist die Sichtbarkeit privat oder
+unbekannt, bleibt alles konservativ und der Zusatz-Cron wird übersprungen.
+Harte Obergrenze im Ledger: 12 + 4. Details: [Gemini-Strategie](gemini-strategy.md).
+
+**Gemini-Dokumentmodus (opt-in):** `ENABLE_GEMINI_BROKER=true` +
+`GEMINI_MODE=document` ersetzt den Satzpaar-Fallback durch einen budgetierten
+Request pro Dokument (Ledger `.pipeline-state/gemini-broker.json`, Pacific-Tag,
+80 % Sicherheitsabstand). KI-Kanten (`method=llm`) werden nur mit explizitem
+`public_released=true` exportiert.
 Gemini standardmäßig aus, höchstens 120 Eingabe- + 50 Ausgabetokens pro Generierung,
 3 Reservierungen/Lauf, 6/Tag. Default-Modell seit 2026-10: `gemini-flash-lite-latest`
 (QA-live-verifiziert; `gemini-1.5-flash` ist eingestellt). Jeder Modellname ist

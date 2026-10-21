@@ -890,6 +890,30 @@ Sprung-Aktionen, Erstmeldungen, Nachmeldungen, Einzelbelegen und Streitfällen, 
 DE/EN-Schlüssel, token-only CSS, 1 neuer Datenlagen-Test (dashboard 71) + 1 neuer
 Release-Pin (release 42) — `ci:pages` grün, 0 zusätzliche Actions-Minuten.
 
+### Welle 36 — Gemini Free Tier systematisch nutzen + Public-Repo-Profil — ✅ umgesetzt (2026-10-21, opt-in)
+
+- **Befund**: Der knappe Free-Tier-Rohstoff sind Requests/Tag, nicht Tokens. Der
+  Satzpaar-Fallback nutzte ≈ 1 % der Flash-Lite-RPD mit ≈ 110-Token-Prompts.
+  Außerdem wurden Cloud-Relationen als `pattern` gespeichert und konnten über
+  verifizierte Feeds **automatisch veröffentlicht** werden.
+- **Budget-Broker** `src/gemini_broker.py`: Budget pro Modell und Projekt,
+  Pacific-Tag, 80 % Sicherheitsabstand, Lernen aus 429 (`QuotaFailure`),
+  RPM/TPM-Fenster, Fair Share pro Lauf, Buchung vor dem Senden, fail-closed-Ledger.
+- **Dokument-Extraktion** `src/gemini_tasks.py`: ein schema-validierter Request pro
+  Dokument. Lokal geprüft werden wörtliches Zitat, beide Namen, Negation/Hedging
+  und das geschlossene Prädikatvokabular. Ergebnis: `method=llm`, Konfidenz ≤ 0,6.
+- **Export-Veto**: `llm`-Kanten nur mit `public_released=true`. Eine lokale
+  Bestätigung überschreibt `llm` im Graph-Upsert.
+- **Public-Profil**: Das öffentliche Repo ist per API bestätigt, Standard-Runner
+  sind damit kostenlos. Opt-in `PIPELINE_PROFILE=public` erlaubt 8 + 3 Läufe/Tag,
+  30 Dokumente und 20-min-Jobs; ohne Bestätigung bleibt alles konservativ.
+- Vollständige Fakten, Rechnung, Aktivierung und Risiken:
+  [Gemini-Strategie](gemini-strategy.md).
+
+**Geliefert (Welle 36)**: Broker, Dokument-Extraktor, Engine-Merge, Export-Veto,
+Profil-Job + Zusatz-Cron, konfigurierbare Run-Slots (harte Obergrenze 12 + 4),
+28 neue Python-Tests (`tests/test_gemini_broker.py`) + 2 angepasste Workflow-/Ledger-Pins.
+
 ## 4. Budget-Zusammenfassung
 
 | Welle | Ort | Zusätzliche Actions-Minuten | Status |
@@ -929,11 +953,15 @@ Release-Pin (release 42) — `ci:pages` grün, 0 zusätzliche Actions-Minuten.
 | 33 Quellen im Urteil | Browser/Worker | **0** | ✅ umgesetzt |
 | 34 Aktenlage auf einen Blick | Browser | **0** | ✅ umgesetzt |
 | 35 Quellen-Dossier | Browser/Worker | **0** | ✅ umgesetzt |
+| 36 Gemini-Broker + Public-Profil | bestehender Daily-Workflow | **0 € (öffentliches Repo)**, opt-in mehr Läufe | ✅ umgesetzt (opt-in) |
 
-Kein Schritt erzeugt neue Workflows, neue Cron-Jobs, längere Jobs oder bezahlte
-Dienste. Die einzigen verbrauchsrelevanten Grenzen sind die bestehenden: 3
-Reservierungen/UTC-Tag, 5-Minuten-Job-Limit, 6 Gemini-Calls/Tag (geteilt),
-500 Pages-Builds/Monat, 100 000 Worker-Requests/Tag.
+Wellen 1–35 erzeugen keine neuen Workflows, Cron-Jobs, längeren Jobs oder bezahlten
+Dienste. Welle 36 ergänzt im **bestehenden** Workflow ein opt-in-Profil: Nur bei
+per API bestätigtem öffentlichem Repository (Runner-Minuten kostenlos) gibt es mehr
+und längere Läufe. Standardgrenzen: 3 Reservierungen/UTC-Tag, 5-Minuten-Job-Limit,
+6 Gemini-Calls/Tag. Public-Profil: 11 Reservierungen, 20 Minuten, Gemini nach
+Broker-Budget (≤ 80 % der AI-Studio-Limits pro Modell). Unverändert: 500
+Pages-Builds/Monat, 100 000 Worker-Requests/Tag.
 
 ---
 
@@ -1821,8 +1849,12 @@ token-only CSS, 1 new data-layer test (dashboard 71) + 1 new release pin (releas
 | 33 sources judged | browser/worker | **0** | ✅ implemented |
 | 34 case at a glance | browser | **0** | ✅ implemented |
 | 35 source dossier | browser/worker | **0** | ✅ implemented |
+| 36 Gemini broker + public profile | existing daily workflow | **$0 (public repo)**, opt-in more runs | ✅ implemented (opt-in) |
 
-No step creates new workflows, new cron jobs, longer jobs or paid services. The only
+Wave 36 (see [Gemini strategy](gemini-strategy.md)) adds an opt-in, API-verified
+public-repository profile (8 + 3 runs/day, 20-minute jobs) and a free-tier Gemini
+budget broker to the existing workflow; defaults are unchanged. Otherwise, no step
+creates new workflows, new cron jobs, longer jobs or paid services. The only
 consumption-relevant limits remain the existing ones: 3 reservations/UTC day, 5-minute
 job limit, 6 Gemini calls/day (shared), 500 Pages builds/month, 100,000 worker
 requests/day.
