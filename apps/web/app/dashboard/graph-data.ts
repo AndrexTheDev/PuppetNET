@@ -1611,6 +1611,131 @@ export function watchChangesToCSV(changes: WatchChange[]): string {
   return [header, ...rows].join('\n') + '\n';
 }
 
+/** Wave 29: a hand-over brief for one entity — everything the case knows about it
+ * in one document, with the honest gaps named instead of rounded up. */
+export interface BriefInput {
+  id: string;
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  evidence: Evidence[];
+  risk?: RiskReport;
+  conflicts?: PairConflict[];
+  notes?: Record<string, string>;
+  watched?: boolean;
+  /** Wave 28 digest entries for this entity, if a comparison is loaded. */
+  changes?: WatchChange[];
+}
+
+const BRIEF_TEXT = {
+  de: {
+    title: '# PuppetNET — Kurzbericht', generated: 'Erzeugt', type: 'Typ', confidence: 'Konfidenz',
+    watched: 'Beobachtet', watchYes: 'ja (in dieser Browser-Sitzung)', notFound: 'Diese Entität ist im aktuellen Ausschnitt nicht sichtbar.',
+    backing: 'Belege', documents: 'Dokumente', sources: 'unabhängige Quellen', newest: 'jüngster Beleg',
+    state: 'Belastbarkeit', noFinding: 'kein Befund in der Auffälligkeitsliste (das ist nicht dasselbe wie „solide")',
+    none: 'keine', relations: 'Beziehungen', noRelations: 'keine sichtbaren Beziehungen',
+    window: 'Belegzeitraum', undated: 'ohne Datum', singleSource: 'nur eine Quelle',
+    conflicts: 'Widersprüchliche Aussagen', noConflicts: 'keine — es gibt keinen belegten Widerspruch zu dieser Entität',
+    notes: 'Ermittlungsnotizen', noNotes: '_Keine Notiz erfasst._',
+    changes: 'Änderungen gegenüber dem Vergleichsstand', noChanges: 'keine Änderung bei dieser Entität',
+    kinds: { conflict: 'neuer Widerspruch', gone: 'nicht mehr im Export', added: 'neu', corroborated: 'zweite unabhängige Quelle', relation: 'Beziehung geändert', document: 'neues Dokument' },
+    footer: 'Hinweise, keine Beweise: Quellen prüfen; personenbezogene Daten nur mit Rechtsgrundlage verarbeiten.',
+  },
+  en: {
+    title: '# PuppetNET — entity brief', generated: 'Generated', type: 'Type', confidence: 'Confidence',
+    watched: 'Watched', watchYes: 'yes (in this browser session)', notFound: 'This entity is not visible in the current slice.',
+    backing: 'Evidence', documents: 'documents', sources: 'independent sources', newest: 'newest document',
+    state: 'Sturdiness', noFinding: 'no finding in the follow-up list (which is not the same as "solid")',
+    none: 'none', relations: 'Relationships', noRelations: 'no visible relationships',
+    window: 'Documented window', undated: 'undated', singleSource: 'single source',
+    conflicts: 'Contradicting claims', noConflicts: 'none — there is no documented contradiction for this entity',
+    notes: 'Research notes', noNotes: '_No note recorded._',
+    changes: 'Changes against the comparison state', noChanges: 'no change for this entity',
+    kinds: { conflict: 'new contradiction', gone: 'no longer in the export', added: 'new', corroborated: 'second independent source', relation: 'relationship changed', document: 'new document' },
+    footer: 'Hints, not proof: verify sources; process personal data only on a legal basis.',
+  },
+} as const;
+
+/**
+ * Wave 29: one entity as a document. Every number comes from the same functions the
+ * panels use (`nodeBacking`, `evidenceRisk`, `pairConflicts`, `edgeSourceStatus`), so a
+ * brief can never disagree with what the investigator saw on screen. Missing findings
+ * are named as missing, and a stale or single-source backing is spelled out rather
+ * than left for the reader to infer.
+ */
+export function entityBrief(input: BriefInput, generated: string, lang: 'de' | 'en' = 'de'): string {
+  const text = BRIEF_TEXT[lang] ?? BRIEF_TEXT.de;
+  const clean = (value: string) => value.replace(/\s+/g, ' ').trim();
+  const node = input.nodes.find(entry => entry.id === input.id);
+  const lines: string[] = [text.title, ''];
+  lines.push(`- ${text.generated}: ${clean(generated)}`);
+  if (!node) { lines.push(`- ${text.notFound}`); lines.push('', '---', text.footer); return lines.join('\n') + '\n'; }
+  lines.push(`- ${clean(node.label)} — \`${node.id}\``);
+  lines.push(`- ${text.type}: ${node.type} · ${text.confidence}: ${(node.confidence * 100).toFixed(1)} %`);
+  if (input.watched !== undefined) lines.push(`- ${text.watched}: ${input.watched ? text.watchYes : text.none}`);
+
+  const backing = nodeBacking([node], input.edges, input.evidence).get(node.id) ?? { documents: 0, sources: 0 };
+  const finding = (input.risk?.entries ?? []).find(entry => entry.id === node.id);
+  lines.push('', `## ${text.backing}`, '');
+  lines.push(`- ${text.documents}: ${backing.documents} · ${text.sources}: ${backing.sources}${backing.newest ? ` · ${text.newest}: ${backing.newest}` : ` · ${text.newest}: ${text.undated}`}`);
+  lines.push(`- ${text.state}: ${finding ? finding.state : text.noFinding}`);
+
+  const incident = input.edges.filter(edge => edge.source === node.id || edge.target === node.id);
+  lines.push('', `## ${text.relations}`, '');
+  if (!incident.length) lines.push(`- ${text.noRelations}`);
+  for (const edge of incident) {
+    const other = edge.source === node.id ? edge.target : edge.source;
+    const otherLabel = input.nodes.find(entry => entry.id === other)?.label ?? other;
+    const arrow = edge.source === node.id ? '→' : '←';
+    const status = edgeSourceStatus(edge, input.evidence);
+    const dates = edge.evidenceIds.map(docId => isoDate(input.evidence.find(doc => doc.id === docId)?.date)).filter((day): day is string => Boolean(day)).sort();
+    const window = dates.length ? `${dates[0]}${dates[dates.length - 1] !== dates[0] ? ` → ${dates[dates.length - 1]}` : ''}` : text.undated;
+    lines.push(`- ${arrow} ${clean(otherLabel)} · ${clean(edge.type)} · ${(edge.confidence * 100).toFixed(1)} % · ${text.window}: ${window}${status === 'independent' ? '' : ` · ${text.singleSource}`}`);
+  }
+
+  const mine = (input.conflicts ?? []).filter(conflict => conflict.pair.includes(node.id));
+  lines.push('', `## ${text.conflicts}`, '');
+  if (!mine.length) lines.push(`- ${text.noConflicts}`);
+  for (const conflict of mine) {
+    const other = conflict.pair[0] === node.id ? conflict.labels[1] : conflict.labels[0];
+    lines.push(`- ${clean(other)} — ${conflict.kind}`);
+    for (const claim of conflict.claims) lines.push(`  - ${clean(claim.type)}: ${claim.documents} ${lang === 'en' ? 'doc(s)' : 'Beleg(e)'}${claim.first ? ` · ${claim.first}${claim.last && claim.last !== claim.first ? ` → ${claim.last}` : ''}` : ''}`);
+  }
+
+  const note = input.notes?.[node.id];
+  lines.push('', `## ${text.notes}`, '');
+  if (note) note.split('\n').forEach(line => lines.push(`  ${line}`));
+  else lines.push(text.noNotes);
+
+  if (input.changes) {
+    lines.push('', `## ${text.changes}`, '');
+    lines.push(input.changes.length ? `- ${[...new Set(input.changes.flatMap(change => change.kinds))].map(kind => text.kinds[kind]).join(', ')}` : `- ${text.noChanges}`);
+  }
+  lines.push('', '---', text.footer);
+  return lines.join('\n') + '\n';
+}
+
+/** Wave 29: briefs for a whole watchlist in one document — the hand-over that
+ * matches the list the investigator actually keeps. Bounded, and it names the
+ * entries that are no longer in the export instead of skipping them. */
+export function watchBrief(list: string[], context: Omit<BriefInput, 'id'>, generated: string, lang: 'de' | 'en' = 'de', limit = 50): string {
+  const text = BRIEF_TEXT[lang] ?? BRIEF_TEXT.de;
+  const ids = list.slice(0, Math.max(1, limit));
+  const labelOf = (id: string) => context.nodes.find(node => node.id === id)?.label ?? id;
+  // Each entry becomes a section: its own title and the (identical) generation line
+  // are dropped, the rest of the brief stays untouched.
+  const bodies = ids.map(id => {
+    const body = entityBrief({ ...context, id, watched: true }, generated, lang).split('\n');
+    const rest = body.slice(1)
+      .filter(line => !line.startsWith(`- ${text.generated}:`))
+      .map(line => (line.startsWith('## ') ? `### ${line.slice(3)}` : line));
+    while (rest.length && !rest[0].trim()) rest.shift();
+    return [`## ${labelOf(id)}`, '', ...rest].join('\n');
+  });
+  const header = [`${text.title} — ${text.watched} (${ids.length})`, '', `- ${text.generated}: ${generated}`, '', ''];
+  if (list.length > ids.length) header.push(`- ${lang === 'en' ? `${list.length - ids.length} more watched entit(ies) are not in this document (limit ${limit}).` : `${list.length - ids.length} weitere beobachtete Entität(en) fehlen in diesem Dokument (Grenze ${limit}).`}`, '');
+  return header.join('\n') + bodies.join('\n---\n\n');
+}
+
 /** Wave 25: one search over the whole case file. Every hit keeps the kind that
  * produced it, so the UI can say *why* something matched — an entity, a
  * contradiction, a sturdiness finding, a source, or a research note. */

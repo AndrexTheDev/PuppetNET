@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
-import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, monthWindow, bundleEdges, structuralVulnerability, pathTimeline, normalizeNote, readNotes, caseReport, nextPlaybackMonth, evidenceWindow, compareDuplicates, multiFailureImpact, normalizeSavedName, readSavedViews, upsertSavedView, removeSavedView, evidenceToCSV, parseCaseNotes, mergeNotes, searchNoteIndex, caseBundle, readCaseBundle, provenanceGaps, edgeSources, sharedSourceGroups, normalizeEvidence, edgeSourceStatus, sourceRegistry, pairConflicts, evidenceFreshness, monthsBefore, FRESH_WINDOWS, DEFAULT_FRESH_MONTHS, isFreshWindow, filterDataset, nodeBacking, evidenceRisk, riskToCSV, diffDatasets, diffToCSV, searchCase, noteSnippet, WATCH_LIMIT, readWatchlist, toggleWatch, watchReport, watchToCSV, watchChanges, watchChangesToCSV, TYPES, SAVED_VIEW_LIMIT, NOTE_LIMIT, EGO_DEPTH_LIMIT, VULNERABILITY_NODE_LIMIT, normalizeInsights, ANALYSIS_LIMITS, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
+import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, monthWindow, bundleEdges, structuralVulnerability, pathTimeline, normalizeNote, readNotes, caseReport, nextPlaybackMonth, evidenceWindow, compareDuplicates, multiFailureImpact, normalizeSavedName, readSavedViews, upsertSavedView, removeSavedView, evidenceToCSV, parseCaseNotes, mergeNotes, searchNoteIndex, caseBundle, readCaseBundle, provenanceGaps, edgeSources, sharedSourceGroups, normalizeEvidence, edgeSourceStatus, sourceRegistry, pairConflicts, evidenceFreshness, monthsBefore, FRESH_WINDOWS, DEFAULT_FRESH_MONTHS, isFreshWindow, filterDataset, nodeBacking, evidenceRisk, riskToCSV, diffDatasets, diffToCSV, searchCase, noteSnippet, WATCH_LIMIT, readWatchlist, toggleWatch, watchReport, watchToCSV, watchChanges, watchChangesToCSV, entityBrief, watchBrief, TYPES, SAVED_VIEW_LIMIT, NOTE_LIMIT, EGO_DEPTH_LIMIT, VULNERABILITY_NODE_LIMIT, normalizeInsights, ANALYSIS_LIMITS, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
 import { apiBase, readResponse } from '../apps/web/app/dashboard/api';
 const filters: Filters = { confidence: 0, weight: 0, types: [...TYPES], lod: true, ratio: 1 };
 test('normalizes Worker and Graphology nodes without inventing coordinates', () => {
@@ -1372,4 +1372,77 @@ test('wave 28 the watch digest reports only what changed, worst first', () => {
   const csv = watchChangesToCSV(digest);
   assert.ok(csv.startsWith('id,label,changes\n'));
   assert.ok(csv.includes('b,Beta,conflict | corroborated | relation | document'), 'the CSV carries the full kind list');
+});
+
+test('wave 29 the entity brief agrees with the panels and names its gaps', () => {
+  const data = normalizeDataset({
+    nodes: [{ key: 'a', name: 'Alpha' }, { key: 'b', name: 'Beta' }, { key: 'c', name: 'Gamma' }, { key: 'd', name: 'Delta', evidenceIds: ['d3', 'd4'] }],
+    evidence: [
+      { id: 'd1', title: 'One', source: 'HR', date: '2024-01-01' },
+      { id: 'd2', title: 'Two', source: 'Presse', date: '2025-02-01' },
+      { id: 'd3', title: 'Three', source: 'Blog', date: '2026-06-01' },
+      { id: 'd4', title: 'Four', source: 'Portal', date: '2026-07-01' },
+    ],
+    edges: [
+      { source: 'a', target: 'b', type: 'OWNS', evidenceIds: ['d1'], confidence: 0.9 },
+      { source: 'b', target: 'a', type: 'SOLD', evidenceIds: ['d2'], confidence: 0.8 },
+    ],
+  });
+  const context = {
+    nodes: data.nodes, edges: data.edges, evidence: data.evidence,
+    risk: evidenceRisk(data.nodes, data.edges, data.evidence, '2026-10-21'),
+    conflicts: pairConflicts(data.nodes, data.edges, data.evidence),
+    notes: { a: 'Nachrecherche im Handelsregister offen.' },
+  };
+  const de = entityBrief({ ...context, id: 'a', watched: true }, '2026-10-21T10:00:00Z', 'de');
+  assert.ok(de.startsWith('# PuppetNET — Kurzbericht'), 'a brief names itself');
+  assert.ok(de.includes('- Erzeugt: 2026-10-21T10:00:00Z'), 'the generation time is part of the document');
+  assert.ok(de.includes('- Alpha — `a`'), 'label and id identify the entity');
+  assert.ok(de.includes('- Beobachtet: ja'), 'watch status is carried when known');
+  assert.ok(de.includes('Dokumente: 2 · unabhängige Quellen: 2 · jüngster Beleg: 2025-02-01'),
+    'backing counts match nodeBacking, including evidence that arrives through a relationship');
+  assert.ok(de.includes('Belastbarkeit: stale'), 'the sturdiness finding is the same one the panel shows');
+  assert.ok(de.includes('→ Beta · OWNS · 90.0 % · Belegzeitraum: 2024-01-01'), 'each relationship carries direction, type, confidence and window');
+  assert.ok(de.includes('← Beta · SOLD'), 'incoming relationships are marked as such');
+  assert.ok(de.includes('nur eine Quelle'), 'a single-source relationship is named, not implied');
+  assert.ok(de.includes('## Widersprüchliche Aussagen'), 'contradictions have their own section');
+  assert.ok(de.includes('- Beta — sequence'), 'the conflict kind is stated honestly');
+  assert.ok(de.includes('Nachrecherche im Handelsregister offen.'), 'the note is part of the hand-over');
+  const en = entityBrief({ ...context, id: 'a' }, '2026-10-21', 'en');
+  assert.ok(en.startsWith('# PuppetNET — entity brief'));
+  assert.ok(en.includes('## Contradicting claims') && en.includes('single source'), 'the brief is fully bilingual');
+  assert.ok(!en.includes('Widersprüch'), 'no German leaks into the English brief');
+  const healthy = entityBrief({ ...context, id: 'd' }, '2026-10-21', 'en');
+  assert.ok(healthy.includes('no finding in the follow-up list (which is not the same as "solid")'),
+    'an entity without a finding says so instead of claiming it is solid');
+  assert.ok(healthy.includes('no visible relationships'));
+  assert.ok(healthy.includes('no — there is no documented contradiction for this entity'.slice(3)) || healthy.includes('none — there is no documented contradiction for this entity'));
+  assert.ok(healthy.includes('_No note recorded._'));
+  const missing = entityBrief({ ...context, id: 'gibt-es-nicht' }, '2026-10-21', 'de');
+  assert.ok(missing.includes('nicht sichtbar'), 'an unknown id is reported instead of producing an empty document');
+  assert.ok(missing.includes('Hinweise, keine Beweise'), 'the disclaimer survives every path');
+  const withChanges = entityBrief({ ...context, id: 'a', changes: [{ id: 'a', label: 'Alpha', kinds: ['conflict', 'document'] }] }, '2026-10-21', 'de');
+  assert.ok(withChanges.includes('neuer Widerspruch, neues Dokument'), 'the digest travels into the brief, in the reader language');
+  assert.ok(entityBrief({ ...context, id: 'a', changes: [] }, '2026-10-21', 'de').includes('keine Änderung bei dieser Entität'));
+  assert.equal(entityBrief({ ...context, id: 'a' }, '2026-10-21'), entityBrief({ ...context, id: 'a' }, '2026-10-21'), 'deterministic');
+});
+
+test('wave 29 the watchlist brief is one document with honest sections', () => {
+  const data = normalizeDataset({
+    nodes: [{ key: 'a', name: 'Alpha' }, { key: 'b', name: 'Beta' }],
+    evidence: [{ id: 'd1', title: 'One', source: 'HR', date: '2024-01-01' }],
+    edges: [{ source: 'a', target: 'b', type: 'OWNS', evidenceIds: ['d1'] }],
+  });
+  const context = { nodes: data.nodes, edges: data.edges, evidence: data.evidence, notes: { b: 'Zweite Quelle fehlt.' } };
+  const brief = watchBrief(['a', 'b'], context, '2026-10-21', 'de');
+  assert.ok(brief.startsWith('# PuppetNET — Kurzbericht — Beobachtet (2)'), 'the document names its scope and size');
+  assert.equal((brief.match(/^# /gm) || []).length, 1, 'exactly one document title');
+  assert.equal((brief.match(/^## /gm) || []).length, 2, 'one section per watched entity');
+  assert.ok(brief.includes('## Alpha') && brief.includes('## Beta'));
+  assert.ok(brief.includes('### Belege'), 'sections inside an entity are demoted so the hierarchy stays true');
+  assert.equal((brief.match(/- Erzeugt:/g) || []).length, 1, 'the generation time is printed once, not per entity');
+  assert.ok(brief.includes('Zweite Quelle fehlt.'), 'notes travel with their entity');
+  const limited = watchBrief(['a', 'b'], context, '2026-10-21', 'en', 1);
+  assert.ok(limited.includes('1 more watched entit(ies) are not in this document'), 'a truncated document says what is missing');
+  assert.ok(watchBrief([], context, '2026-10-21', 'de').startsWith('# PuppetNET — Kurzbericht — Beobachtet (0)'), 'an empty list is an honest empty document');
 });

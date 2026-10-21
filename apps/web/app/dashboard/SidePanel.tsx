@@ -4,7 +4,7 @@ import { COLORS, NOTE_LIMIT, communityColor, cypherExport, edgeSources, evidence
 import { downloadText as download } from './download';
 import { useLanguage, useT } from './i18n';
 import { NUMBER_LOCALE } from '../../lib/i18n-strings';
-export default function SidePanel({ node, evidence, edge, edgeEvidence, edgeLabels, onDrill, onEgo, onClose, detailError, note = '', onNote, watched = false, onWatch }: { node: GraphNode | null; evidence: Evidence[]; edge: GraphEdge | null; edgeEvidence: Evidence[]; edgeLabels: { source: string; target: string }; onDrill: (id: string) => void; onEgo?: (id: string) => void; onClose: () => void; detailError: string; note?: string; onNote?: (text: string) => void; watched?: boolean; onWatch?: () => void }) {
+export default function SidePanel({ node, evidence, edge, edgeEvidence, edgeLabels, onDrill, onEgo, onClose, detailError, note = '', onNote, watched = false, onWatch, onBrief }: { node: GraphNode | null; evidence: Evidence[]; edge: GraphEdge | null; edgeEvidence: Evidence[]; edgeLabels: { source: string; target: string }; onDrill: (id: string) => void; onEgo?: (id: string) => void; onClose: () => void; detailError: string; note?: string; onNote?: (text: string) => void; watched?: boolean; onWatch?: () => void; onBrief?: () => void }) {
   const [copied, setCopied] = useState('');
   // Wave 11: the note draft follows the selected entity, never leaks between nodes.
   const [draft, setDraft] = useState('');
@@ -54,6 +54,7 @@ export default function SidePanel({ node, evidence, edge, edgeEvidence, edgeLabe
       {node.lat !== undefined && <div><dt>{t('inspector.coords')}</dt><dd>{node.lat.toFixed(4)}, {node.lon?.toFixed(4)}</dd></div>}</dl>
     {onEgo && <button type="button" className="outline-button ego-expand" onClick={() => onEgo(node.id)}>{t('inspector.egoButton')}</button>}
     {!node.group && onWatch && <button type="button" className={`outline-button watch-toggle${watched ? ' is-watched' : ''}`} aria-pressed={watched} onClick={onWatch}>{watched ? t('inspector.watchRemove') : t('inspector.watchAdd')}</button>}
+    {!node.group && onBrief && <button type="button" className="outline-button" aria-label={t('inspector.briefAria', { label: node.label })} onClick={onBrief}>{t('inspector.brief')}</button>}
     {!node.group && onNote && <div className="note-block">
       <div className="section-heading"><h3>{t('inspector.noteTitle')}</h3><span className="note-counter">{t('inspector.noteCount', { count: draft.length, max: NOTE_LIMIT })}</span></div>
       <textarea aria-label={t('inspector.noteTitle')} value={draft} maxLength={NOTE_LIMIT} rows={4} placeholder={t('inspector.notePlaceholder')} onChange={e => setDraft(e.target.value)} />

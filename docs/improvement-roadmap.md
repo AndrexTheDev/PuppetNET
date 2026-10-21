@@ -704,6 +704,32 @@ Arten-Chips, CSV, gekürzt-Hinweis, ehrlicher „nichts geändert"-Zustand), 10 
 token-only CSS, 2 neue Datenlagen-Tests (dashboard 61) + 1 neuer Release-Pin (release 35) —
 `ci:pages` grün, 0 zusätzliche Actions-Minuten.
 
+### Welle 29 — Fallkurzbericht — ✅ umgesetzt (2026-10-21)
+
+- **Der Übergabe-Artefakt**: ein Markdown-Dokument zu **einer Entität** — Identität, Typ,
+  Konfidenz, Beobachtungsstatus, Belege (Dokumente, **unabhängige** Quellen, jüngster
+  Beleg), Belastbarkeit, jede Beziehung mit Richtung/Typ/Konfidenz/Belegzeitraum und
+  Ein-Quellen-Hinweis, alle Widersprüche mit den Aussagen, die Notiz und — falls ein
+  Vergleich geladen ist — die Änderungen aus Welle 28. Dazu der **Sammelbericht** der
+  ganzen Beobachtungsliste in einem Dokument.
+- **Kann nicht von den Panels abweichen**: alle Zahlen kommen aus denselben Funktionen
+  (`nodeBacking`, `evidenceRisk`, `pairConflicts`, `edgeSourceStatus`). Ein Kurzbericht,
+  der andere Werte zeigt als der Bildschirm, wäre schlimmer als keiner.
+- **Lücken werden benannt, nicht gerundet**: „kein Befund in der Auffälligkeitsliste (das
+  ist nicht dasselbe wie ‚solide')", „ohne Datum", „nur eine Quelle", und bei unbekannter
+  ID ein ehrlicher Satz statt eines leeren Dokuments. Der Hinweis „Hinweise, keine
+  Beweise" überlebt jeden Pfad.
+- **Sammelbericht mit wahrer Gliederung**: genau ein Dokumenttitel, ein `##`-Abschnitt je
+  Entität, innere Abschnitte zu `###` degradiert, Erzeugungszeit nur einmal; bei
+  Überschreitung der Grenze (50) steht im Dokument, **wie viele** fehlen.
+- Vollständig **zweisprachig** (DE/EN, inklusive der Änderungsarten), reine Funktionen,
+  deterministisch, 0 zusätzliche Actions-Minuten.
+
+**Geliefert (Welle 29)**: `entityBrief()`, `watchBrief()`, `BriefInput`, Kurzbericht-Knopf
+im Inspektor (mit Entitätsnamen für Screenreader), Sammelbericht-Knopf im
+Beobachtungs-Panel, 4 neue DE/EN-Schlüssel, 2 neue Datenlagen-Tests (dashboard 63) +
+1 neuer Release-Pin (release 36) — `ci:pages` grün, 0 zusätzliche Actions-Minuten.
+
 ## 4. Budget-Zusammenfassung
 
 | Welle | Ort | Zusätzliche Actions-Minuten | Status |
@@ -736,6 +762,7 @@ token-only CSS, 2 neue Datenlagen-Tests (dashboard 61) + 1 neuer Release-Pin (re
 | 26 Build-Gate ortsunabhängig | Build/CI | **0** | ✅ umgesetzt |
 | 27 Beobachtungsliste | Browser (lokal) | **0** | ✅ umgesetzt |
 | 28 Beobachtungs-Abgleich | Browser | **0** | ✅ umgesetzt |
+| 29 Fallkurzbericht | Browser | **0** | ✅ umgesetzt |
 
 Kein Schritt erzeugt neue Workflows, neue Cron-Jobs, längere Jobs oder bezahlte
 Dienste. Die einzigen verbrauchsrelevanten Grenzen sind die bestehenden: 3
@@ -1414,6 +1441,31 @@ chips, CSV, truncation hint, honest "nothing changed" state), 10 new DE/EN keys,
 token-only CSS, 2 new data-layer tests (dashboard 61) + 1 new release pin (release 35) —
 `ci:pages` green, 0 extra Actions minutes.
 
+### Wave 29 — entity brief — ✅ implemented (2026-10-21)
+
+- **The hand-over artefact**: a Markdown document about **one entity** — identity, type,
+  confidence, watch status, evidence (documents, **independent** sources, newest
+  document), sturdiness, every relationship with direction/type/confidence/documented
+  window and single-source note, all contradictions with their claims, the note and — if
+  a comparison is loaded — the wave-28 changes. Plus the **watchlist brief** covering the
+  whole list in one document.
+- **Cannot disagree with the panels**: every number comes from the same functions
+  (`nodeBacking`, `evidenceRisk`, `pairConflicts`, `edgeSourceStatus`). A brief that shows
+  other values than the screen would be worse than none.
+- **Gaps are named, not rounded**: "no finding in the follow-up list (which is not the
+  same as solid)", "undated", "single source", and an honest sentence for an unknown id
+  instead of an empty document. The "hints, not proof" disclaimer survives every path.
+- **The watchlist brief has a true outline**: exactly one document title, one `##` section
+  per entity, inner sections demoted to `###`, the generation time printed once; when the
+  limit (50) truncates the document it says **how many** are missing.
+- Fully **bilingual** (DE/EN, including the change kinds), pure functions, deterministic,
+  0 extra Actions minutes.
+
+**Delivered (Wave 29)**: `entityBrief()`, `watchBrief()`, `BriefInput`, brief button in
+the inspector (naming its entity for screen readers), watchlist brief button in the watch
+panel, 4 new DE/EN keys, 2 new data-layer tests (dashboard 63) + 1 new release pin
+(release 36) — `ci:pages` green, 0 extra Actions minutes.
+
 ## 4. Budget summary
 
 | Wave | Location | Additional Actions minutes | Status |
@@ -1446,6 +1498,7 @@ token-only CSS, 2 new data-layer tests (dashboard 61) + 1 new release pin (relea
 | 26 location-independent build gate | build/CI | **0** | ✅ implemented |
 | 27 watchlist | browser (local) | **0** | ✅ implemented |
 | 28 watch digest | browser | **0** | ✅ implemented |
+| 29 entity brief | browser | **0** | ✅ implemented |
 
 No step creates new workflows, new cron jobs, longer jobs or paid services. The only
 consumption-relevant limits remain the existing ones: 3 reservations/UTC day, 5-minute

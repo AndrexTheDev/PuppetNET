@@ -515,3 +515,19 @@ test('wave 28: the watch digest needs no baseline and hides nothing', () => {
   assert.ok(dashboard.includes('watchChangesToCSV(watchDigest)'), 'the digest is exportable');
   assert.ok(dashboard.includes('watchChanges(watch, diff, view.nodes)'), 'the digest is recomputed when the watchlist changes');
 });
+
+test('wave 29: the briefs are documents, not screenshots of the UI', () => {
+  const data = read('apps/web/app/dashboard/graph-data.ts');
+  assert.match(data, /export function entityBrief\(input: BriefInput, generated: string, lang: 'de' \| 'en' = 'de'\): string/, 'the brief is pure and takes its language explicitly');
+  assert.match(data, /export function watchBrief\(list: string\[\], context: Omit<BriefInput, 'id'>, generated: string, lang: 'de' \| 'en' = 'de', limit = 50\): string/, 'the watchlist brief is bounded');
+  assert.match(data, /const backing = nodeBacking\(\[node\], input\.edges, input\.evidence\)/, 'the brief reuses the panels definition of backing');
+  assert.match(data, /const finding = \(input\.risk\?\.entries \?\? \[\]\)\.find/, 'the sturdiness state is looked up, not guessed');
+  assert.match(data, /noFinding: 'kein Befund in der Auffälligkeitsliste \(das ist nicht dasselbe wie „solide"\)'/, 'a missing finding is named as missing');
+  assert.match(data, /\.map\(line => \(line\.startsWith\('## '\) \? `### \$\{line\.slice\(3\)\}` : line\)\)/, 'nested sections are demoted so the heading hierarchy stays true');
+  const dashboard = read('apps/web/app/dashboard/Dashboard.tsx');
+  assert.ok(dashboard.includes('entityBrief({ ...context, id: node'), 'the inspector brief uses the selected entity');
+  assert.ok(dashboard.includes('watchBrief(watch, briefContext()'), 'the watchlist brief covers the whole list');
+  assert.ok(dashboard.includes("'text/markdown;charset=utf-8'"), 'the documents download as Markdown, not as HTML');
+  const panel = read('apps/web/app/dashboard/SidePanel.tsx');
+  assert.ok(panel.includes("t('inspector.briefAria', { label: node.label })"), 'the brief button names its entity for assistive tech');
+});

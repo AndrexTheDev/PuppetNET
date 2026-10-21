@@ -2,7 +2,7 @@
 import dynamic from 'next/dynamic';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import EntityTable, { type TableRow } from './EntityTable';
-import { COLORS, TYPES, LIMITS, NOTE_STORAGE_KEY, WATCH_STORAGE_KEY, FRESH_WINDOWS, DEFAULT_FRESH_MONTHS, riskToCSV, watchToCSV, watchReport, watchChanges, watchChangesToCSV, readWatchlist, toggleWatch, diffToCSV, searchCase, caseReport, decodeViewState, edgesToCSV, encodeViewState, monthWindow, nextPlaybackMonth, nodesToCSV, caseBundle, compareDuplicates, mergeNotes, parseCaseNotes, provenanceGaps, readCaseBundle, searchNoteIndex, removeSavedView, upsertSavedView, readSavedViews, SAVED_VIEW_STORAGE_KEY, normalizeNote, rankSearch, readNotes, resolveNodeRef, viewToJSON, type Evidence, type Filters, type GraphEdge, type GraphNode, type PathTimeline, type View, type ViewUrlState, type DatasetDiff, type CaseHit } from './graph-data';
+import { COLORS, TYPES, LIMITS, NOTE_STORAGE_KEY, WATCH_STORAGE_KEY, FRESH_WINDOWS, DEFAULT_FRESH_MONTHS, riskToCSV, watchToCSV, watchReport, watchChanges, watchChangesToCSV, entityBrief, watchBrief, readWatchlist, toggleWatch, diffToCSV, searchCase, caseReport, decodeViewState, edgesToCSV, encodeViewState, monthWindow, nextPlaybackMonth, nodesToCSV, caseBundle, compareDuplicates, mergeNotes, parseCaseNotes, provenanceGaps, readCaseBundle, searchNoteIndex, removeSavedView, upsertSavedView, readSavedViews, SAVED_VIEW_STORAGE_KEY, normalizeNote, rankSearch, readNotes, resolveNodeRef, viewToJSON, type Evidence, type Filters, type GraphEdge, type GraphNode, type PathTimeline, type View, type ViewUrlState, type DatasetDiff, type CaseHit } from './graph-data';
 import type { NetworkHandle, PathHighlight } from './NetworkGraph';
 import type { WorkerRequest, WorkerResponse } from './protocol';
 import { loadStaticGraph, requestResearch, type Standby } from '../../src/lib/dataFetcher';
@@ -322,6 +322,23 @@ export default function Dashboard() {
     return [...set].sort();
   }, [view]);
   const pathHighlight = useMemo<PathHighlight | null>(() => pathResult && view && !view.stats.grouped ? { nodes: pathResult.ids, edges: pathResult.edgeIds } : null, [pathResult, view]);
+  // Wave 29: the hand-over documents. They are built from the same view data the
+  // panels read, so a brief cannot disagree with what is on screen.
+  const briefContext = useCallback(() => ({
+    nodes: viewLatest.current?.nodes ?? [], edges: viewLatest.current?.edges ?? [], evidence,
+    risk: viewLatest.current?.risk, conflicts: viewLatest.current?.conflicts, notes,
+  }), [evidence, notes]);
+  const exportEntityBrief = useCallback(() => {
+    const node = selectedId.current; if (!node) return;
+    const context = briefContext();
+    const changes = watchDigest.filter(change => change.id === node);
+    downloadText(`puppetnet-kurzbericht-${node.replace(/[^\w.-]+/g, '_').slice(0, 60)}.md`,
+      entityBrief({ ...context, id: node, watched: watch.includes(node), changes }, new Date().toISOString(), lang), 'text/markdown;charset=utf-8');
+  }, [briefContext, watch, watchDigest, lang]);
+  const exportWatchBrief = useCallback(() => {
+    downloadText('puppetnet-beobachtungen-kurzberichte.md',
+      watchBrief(watch, briefContext(), new Date().toISOString(), lang), 'text/markdown;charset=utf-8');
+  }, [briefContext, watch, lang]);
   const requestPath = useCallback(() => {
     setPathError(''); setPathResult(null);
     const nodes = viewLatest.current?.nodes ?? [];
@@ -621,6 +638,7 @@ export default function Dashboard() {
               <button type="button" className="text-button" aria-label={t('dash.watchRemoveAria', { label: entry.label })} onClick={() => setWatch(current => toggleWatch(current, entry.id))}>×</button>
             </li>)}</ul>
             <button type="button" className="text-button" onClick={() => downloadText('puppetnet-beobachtung.csv', watchToCSV(watched), 'text/csv;charset=utf-8')}>{t('dash.watchCsv')}</button>
+            <button type="button" className="text-button" aria-label={t('dash.watchBriefAria')} onClick={exportWatchBrief}>{t('dash.watchBrief')}</button>
             {diff && <div className="watch-changes">
               <h5 className="gaps-heading">{t('dash.watchChangesTitle')}</h5>
               {watchDigest.length === 0
@@ -807,7 +825,7 @@ export default function Dashboard() {
         source: selectedEdge ? view?.nodes.find(n => n.id === selectedEdge.source)?.label ?? selectedEdge.source : '',
         target: selectedEdge ? view?.nodes.find(n => n.id === selectedEdge.target)?.label ?? selectedEdge.target : '',
       }} detailError={detailError} note={selected && !selected.group ? notes[selected.id] ?? '' : ''} onEgo={id => requestEgo(id)}
-      watched={Boolean(selected && watch.includes(selected.id))} onWatch={() => { if (!selected || selected.group) return; setWatch(current => toggleWatch(current, selected.id)); }} onNote={text => { if (!selected || selected.group) return; const clean = normalizeNote(text); setNotes(current => { const next = { ...current }; if (clean) next[selected.id] = clean; else delete next[selected.id]; return next; }); }} onClose={() => { clearSelected(); setAnnouncement(t('dash.detailsClosed')); }} onDrill={group => { clearSelected(); setBusy(true); send({ kind: 'drill', group, version: ++version.current, filters: filtersRef.current }); }} />
+      watched={Boolean(selected && watch.includes(selected.id))} onWatch={() => { if (!selected || selected.group) return; setWatch(current => toggleWatch(current, selected.id)); }} onBrief={selected && !selected.group ? exportEntityBrief : undefined} onNote={text => { if (!selected || selected.group) return; const clean = normalizeNote(text); setNotes(current => { const next = { ...current }; if (clean) next[selected.id] = clean; else delete next[selected.id]; return next; }); }} onClose={() => { clearSelected(); setAnnouncement(t('dash.detailsClosed')); }} onDrill={group => { clearSelected(); setBusy(true); send({ kind: 'drill', group, version: ++version.current, filters: filtersRef.current }); }} />
     </div>}
     <footer className="dashboard-footer"><span>PUPPETNET / OPEN-SOURCE INTELLIGENCE</span><span>Sigma.js 4 · Graphology · Leaflet · OpenStreetMap</span><a className="footer-legal" href="/legal/">{t('dash.legalLink')}</a></footer>
   </main>;
