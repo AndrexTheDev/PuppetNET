@@ -1,36 +1,29 @@
 {
-  "generated_at": "2026-10-21T06:01:08+00:00",
+  "generated_at": "2026-10-21T15:00:10+00:00",
   "github_ref": "arena/888ab36c-puppetnet",
-  "github_run_id": "39552830788",
+  "github_run_id": "39621624170",
   "stages": {
     "export": {
       "detail": "graph_latest.json + manifest + 2 slices generated",
       "edges": 1,
       "nodes": 2,
-      "revision": "68070b5a2f73",
+      "revision": "9e7b8a64c90a",
       "status": "ok"
     },
     "gemini": {
-      "answer": "1",
       "attempts": [
         {
+          "detail": "generateContent (gemini-flash-lite-latest): ReadTimeout: HTTPSConnectionPool(host='generativelanguage.googleapis.com', port=443): Read timed out. (read timeout=60)",
           "http_status": null,
-          "kind": "ok",
+          "kind": "network",
           "model": "gemini-flash-lite-latest",
-          "ok": true
+          "ok": false
         }
       ],
-      "detail": "'gemini-flash-lite-latest' answered with 110 total tokens",
-      "model_answered": "gemini-flash-lite-latest",
-      "model_configured": "gemini-flash-lite-latest",
-      "over_production_budget": false,
+      "detail": "generateContent (gemini-flash-lite-latest): ReadTimeout: HTTPSConnectionPool(host='generativelanguage.googleapis.com', port=443): Read timed out. (read timeout=60)",
+      "model": "gemini-flash-lite-latest",
       "served_models": [],
-      "status": "ok",
-      "usage": {
-        "candidates": 1,
-        "prompt": 109,
-        "total": 110
-      }
+      "status": "fail"
     },
     "neo4j": {
       "detail": "authentication rejected (NEO4J_USER/NEO4J_PASSWORD invalid): {neo4j_code: Neo.ClientError.Security.Unauthorized} {message: The client is unauthorized due to authentication failure.} {gql_status: 42NFF} {gql_status_description: error: syntax error or access rule violation - permission/access denied. Access denied, see the security logs for details.}",
@@ -63,7 +56,7 @@
   },
   "summary": {
     "status_export": "OK",
-    "status_gemini_api": "OK",
+    "status_gemini_api": "FAIL",
     "status_neo4j": "FAIL",
     "status_secrets": "OK",
     "status_spacy": "OK"
