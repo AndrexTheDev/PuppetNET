@@ -730,6 +730,34 @@ im Inspektor (mit Entitätsnamen für Screenreader), Sammelbericht-Knopf im
 Beobachtungs-Panel, 4 neue DE/EN-Schlüssel, 2 neue Datenlagen-Tests (dashboard 63) +
 1 neuer Release-Pin (release 36) — `ci:pages` grün, 0 zusätzliche Actions-Minuten.
 
+### Welle 30 — Fallakte als ZIP — ✅ umgesetzt (2026-10-21)
+
+- **Ein Archiv, das jeder öffnen kann**: `Fallakte (ZIP)` bündelt Fallbericht (Markdown),
+  Sammelbericht der Beobachtungen, Knoten-/Kanten-/Beleg-CSV, Beobachtungsliste und
+  Änderungsliste — plus eine `liesmich.txt` mit Herkunftshinweis („in diesem Browser
+  erzeugt, nichts hochgeladen") und Haftungshinweis.
+- **Ohne Abhängigkeit**: ein eigener **STORE-ZIP-Writer** (~60 Zeilen) mit CRC-32 nach
+  IEEE 802.3. Bewusst unkomprimiert — der Inhalt ist kleiner Text, und ein unkomprimiertes
+  Archiv lässt sich mit jedem Werkzeug prüfen, ohne Decoder. Validiert mit `unzip -t`
+  („No errors detected") **und** mit einem eigenen Reader im Test, der zentrale Verzeichnis-,
+  Lokalheader-, CRC- und Namensfelder Byte für Byte nachrechnet.
+- **Reproduzierbar**: der DOS-Zeitstempel ist fest (1980-01-01, die ZIP-Epoche), deshalb
+  erzeugt gleicher Inhalt **identische Bytes** — wichtig, wenn man zwei Fallakten
+  vergleichen will, statt sie nur zu lesen.
+- **Keine Fallen**: doppelte Dateinamen werden **abgelehnt** (statt still eine Datei zu
+  verlieren), Pfadangaben werden flachgelegt (`../../etc/passwd` → `_etc_passwd`, keine
+  Traversal-Sequenz im Archiv), UTF-8-Namen sind geflaggt, leere Archive sind gültige
+  Archive.
+- **Kann nicht vom Bildschirm abweichen**: das Archiv ruft dieselben Funktionen auf wie
+  die Einzelknöpfe (`caseReport`, `watchBrief`, `nodesToCSV`, `edgesToCSV`,
+  `evidenceToCSV`, `watchToCSV`, `watchChangesToCSV`) — was im ZIP liegt, ist exakt das,
+  was die App zeigt. 0 zusätzliche Actions-Minuten.
+
+**Geliefert (Welle 30)**: `zipStore()`, `crc32()`, `caseArchive()`, `ArchiveFile`,
+`downloadBinary()`, Archiv-Knopf in der Fußzeile, 2 neue DE/EN-Schlüssel,
+2 neue Datenlagen-Tests (dashboard 65) + 1 neuer Release-Pin (release 37) —
+`ci:pages` grün, 0 zusätzliche Actions-Minuten.
+
 ## 4. Budget-Zusammenfassung
 
 | Welle | Ort | Zusätzliche Actions-Minuten | Status |
@@ -763,6 +791,7 @@ Beobachtungs-Panel, 4 neue DE/EN-Schlüssel, 2 neue Datenlagen-Tests (dashboard 
 | 27 Beobachtungsliste | Browser (lokal) | **0** | ✅ umgesetzt |
 | 28 Beobachtungs-Abgleich | Browser | **0** | ✅ umgesetzt |
 | 29 Fallkurzbericht | Browser | **0** | ✅ umgesetzt |
+| 30 Fallakte als ZIP | Browser | **0** | ✅ umgesetzt |
 
 Kein Schritt erzeugt neue Workflows, neue Cron-Jobs, längere Jobs oder bezahlte
 Dienste. Die einzigen verbrauchsrelevanten Grenzen sind die bestehenden: 3
@@ -1466,6 +1495,33 @@ the inspector (naming its entity for screen readers), watchlist brief button in 
 panel, 4 new DE/EN keys, 2 new data-layer tests (dashboard 63) + 1 new release pin
 (release 36) — `ci:pages` green, 0 extra Actions minutes.
 
+### Wave 30 — case archive as ZIP — ✅ implemented (2026-10-21)
+
+- **One archive anybody can open**: `Case archive (ZIP)` bundles the case report
+  (Markdown), the watchlist brief, node/edge/evidence CSVs, the watchlist and the change
+  list — plus a `liesmich.txt` carrying the provenance note ("produced in this browser,
+  nothing uploaded") and the disclaimer.
+- **Dependency-free**: a purpose-written **STORE ZIP writer** (~60 lines) with IEEE 802.3
+  CRC-32. Deliberately uncompressed — the payload is small text, and an uncompressed
+  archive can be inspected with any tool without a decoder. Validated with `unzip -t`
+  ("No errors detected") **and** with a reader in the test that recomputes central
+  directory, local header, CRC and name fields byte for byte.
+- **Reproducible**: the DOS timestamp is fixed (1980-01-01, the ZIP epoch), so the same
+  content produces **identical bytes** — which matters when two case archives are to be
+  compared rather than merely read.
+- **No traps**: duplicate file names are **rejected** (instead of silently losing a
+  file), paths are flattened (`../../etc/passwd` → `_etc_passwd`, no traversal sequence
+  reaches the archive), UTF-8 names are flagged, and an empty archive is a valid empty
+  archive.
+- **Cannot disagree with the screen**: the archive calls the very functions the single
+  buttons use (`caseReport`, `watchBrief`, `nodesToCSV`, `edgesToCSV`, `evidenceToCSV`,
+  `watchToCSV`, `watchChangesToCSV`). 0 extra Actions minutes.
+
+**Delivered (Wave 30)**: `zipStore()`, `crc32()`, `caseArchive()`, `ArchiveFile`,
+`downloadBinary()`, archive button in the footer, 2 new DE/EN keys, 2 new data-layer tests
+(dashboard 65) + 1 new release pin (release 37) — `ci:pages` green, 0 extra Actions
+minutes.
+
 ## 4. Budget summary
 
 | Wave | Location | Additional Actions minutes | Status |
@@ -1499,6 +1555,7 @@ panel, 4 new DE/EN keys, 2 new data-layer tests (dashboard 63) + 1 new release p
 | 27 watchlist | browser (local) | **0** | ✅ implemented |
 | 28 watch digest | browser | **0** | ✅ implemented |
 | 29 entity brief | browser | **0** | ✅ implemented |
+| 30 case archive (ZIP) | browser | **0** | ✅ implemented |
 
 No step creates new workflows, new cron jobs, longer jobs or paid services. The only
 consumption-relevant limits remain the existing ones: 3 reservations/UTC day, 5-minute

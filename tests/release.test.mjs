@@ -531,3 +531,19 @@ test('wave 29: the briefs are documents, not screenshots of the UI', () => {
   const panel = read('apps/web/app/dashboard/SidePanel.tsx');
   assert.ok(panel.includes("t('inspector.briefAria', { label: node.label })"), 'the brief button names its entity for assistive tech');
 });
+
+test('wave 30: the case archive is built in the browser, dependency-free', () => {
+  const data = read('apps/web/app/dashboard/graph-data.ts');
+  assert.match(data, /export function zipStore\(files: ArchiveFile\[\]\): Uint8Array/, 'the writer is pure and takes plain files');
+  assert.match(data, /const DOS_DATE = 0x0021;/, 'the timestamp is fixed so archives are reproducible');
+  assert.match(data, /if \(seen\.has\(name\)\) throw new Error/, 'duplicate names are rejected, never silently merged');
+  assert.match(data, /export function caseArchive\(input: CaseArchiveInput\): ArchiveFile\[\]/, 'the archive content is a pure function');
+  assert.ok(!/from 'jszip'|from 'adm-zip'|require\('zlib'\)/.test(data), 'no zip dependency is pulled into the bundle');
+  const download = read('apps/web/app/dashboard/download.ts');
+  assert.match(download, /export function downloadBinary\(name: string, bytes: Uint8Array, type: string\): void/, 'binary downloads stay Blob-only');
+  assert.ok(download.includes('URL.createObjectURL'), 'nothing is uploaded to produce a download');
+  const dashboard = read('apps/web/app/dashboard/Dashboard.tsx');
+  assert.ok(dashboard.includes('zipStore(files)'), 'the button writes the archive');
+  assert.ok(dashboard.includes("'application/zip'"), 'the download declares its type');
+  assert.ok(dashboard.includes("t('dash.archiveAria')"), 'the button explains itself to assistive tech');
+});

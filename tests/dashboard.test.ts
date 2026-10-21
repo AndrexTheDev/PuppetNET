@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
-import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, monthWindow, bundleEdges, structuralVulnerability, pathTimeline, normalizeNote, readNotes, caseReport, nextPlaybackMonth, evidenceWindow, compareDuplicates, multiFailureImpact, normalizeSavedName, readSavedViews, upsertSavedView, removeSavedView, evidenceToCSV, parseCaseNotes, mergeNotes, searchNoteIndex, caseBundle, readCaseBundle, provenanceGaps, edgeSources, sharedSourceGroups, normalizeEvidence, edgeSourceStatus, sourceRegistry, pairConflicts, evidenceFreshness, monthsBefore, FRESH_WINDOWS, DEFAULT_FRESH_MONTHS, isFreshWindow, filterDataset, nodeBacking, evidenceRisk, riskToCSV, diffDatasets, diffToCSV, searchCase, noteSnippet, WATCH_LIMIT, readWatchlist, toggleWatch, watchReport, watchToCSV, watchChanges, watchChangesToCSV, entityBrief, watchBrief, TYPES, SAVED_VIEW_LIMIT, NOTE_LIMIT, EGO_DEPTH_LIMIT, VULNERABILITY_NODE_LIMIT, normalizeInsights, ANALYSIS_LIMITS, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
+import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, monthWindow, bundleEdges, structuralVulnerability, pathTimeline, normalizeNote, readNotes, caseReport, nextPlaybackMonth, evidenceWindow, compareDuplicates, multiFailureImpact, normalizeSavedName, readSavedViews, upsertSavedView, removeSavedView, evidenceToCSV, parseCaseNotes, mergeNotes, searchNoteIndex, caseBundle, readCaseBundle, provenanceGaps, edgeSources, sharedSourceGroups, normalizeEvidence, edgeSourceStatus, sourceRegistry, pairConflicts, evidenceFreshness, monthsBefore, FRESH_WINDOWS, DEFAULT_FRESH_MONTHS, isFreshWindow, filterDataset, nodeBacking, evidenceRisk, riskToCSV, diffDatasets, diffToCSV, searchCase, noteSnippet, WATCH_LIMIT, readWatchlist, toggleWatch, watchReport, watchToCSV, watchChanges, watchChangesToCSV, entityBrief, watchBrief, caseArchive, zipStore, crc32, TYPES, SAVED_VIEW_LIMIT, NOTE_LIMIT, EGO_DEPTH_LIMIT, VULNERABILITY_NODE_LIMIT, normalizeInsights, ANALYSIS_LIMITS, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
 import { apiBase, readResponse } from '../apps/web/app/dashboard/api';
 const filters: Filters = { confidence: 0, weight: 0, types: [...TYPES], lod: true, ratio: 1 };
 test('normalizes Worker and Graphology nodes without inventing coordinates', () => {
@@ -1445,4 +1445,64 @@ test('wave 29 the watchlist brief is one document with honest sections', () => {
   const limited = watchBrief(['a', 'b'], context, '2026-10-21', 'en', 1);
   assert.ok(limited.includes('1 more watched entit(ies) are not in this document'), 'a truncated document says what is missing');
   assert.ok(watchBrief([], context, '2026-10-21', 'de').startsWith('# PuppetNET — Kurzbericht — Beobachtet (0)'), 'an empty list is an honest empty document');
+});
+
+test('wave 30 zipStore writes archives other tools can open', () => {
+  assert.equal(crc32(new TextEncoder().encode('The quick brown fox jumps over the lazy dog')), 0x414fa339, 'the checksum matches the published test vector');
+  assert.equal(crc32(new Uint8Array(0)), 0, 'an empty payload has CRC 0');
+  const files = caseArchive({ report: '# Bericht\n', nodesCsv: 'id,label\na,Alpha\n', edgesCsv: 'id\n', evidenceCsv: 'id\n', generated: '2026-10-21' });
+  assert.deepEqual(files.map(file => file.name), ['fallbericht.md', 'knoten.csv', 'kanten.csv', 'belege.csv', 'liesmich.txt'],
+    'the archive always carries the report, the tables and its own disclaimer');
+  const bytes = zipStore(files);
+  // A minimal reader: enough to prove the structure, without trusting a library.
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const eocd = bytes.length - 22;
+  assert.equal(view.getUint32(eocd, true), 0x06054b50, 'the end-of-central-directory record is where a reader looks for it');
+  const count = view.getUint16(eocd + 10, true);
+  assert.equal(count, files.length, 'every file is registered exactly once');
+  const centralSize = view.getUint32(eocd + 12, true), centralOffset = view.getUint32(eocd + 16, true);
+  assert.equal(eocd - centralOffset, centralSize, 'the central directory size is honest');
+  const decoder = new TextDecoder();
+  const seen: string[] = [];
+  let cursor = centralOffset;
+  for (let index = 0; index < count; index++) {
+    assert.equal(view.getUint32(cursor, true), 0x02014b50, 'central header signature');
+    assert.equal(view.getUint16(cursor + 10, true), 0, 'stored, not compressed');
+    assert.equal(view.getUint16(cursor + 8, true), 0x0800, 'names are flagged UTF-8');
+    const crc = view.getUint32(cursor + 16, true), size = view.getUint32(cursor + 24, true);
+    const nameLength = view.getUint16(cursor + 28, true), localOffset = view.getUint32(cursor + 42, true);
+    const name = decoder.decode(bytes.subarray(cursor + 46, cursor + 46 + nameLength));
+    assert.equal(view.getUint32(localOffset, true), 0x04034b50, 'the local header exists at the recorded offset');
+    const localNameLength = view.getUint16(localOffset + 26, true), localExtra = view.getUint16(localOffset + 28, true);
+    const dataStart = localOffset + 30 + localNameLength + localExtra;
+    const data = bytes.subarray(dataStart, dataStart + size);
+    assert.equal(crc32(data), crc, `the checksum of ${name} covers its own bytes`);
+    assert.equal(decoder.decode(bytes.subarray(localOffset + 30, localOffset + 30 + localNameLength)), name, 'central and local names agree');
+    assert.equal(decoder.decode(data), files[index].text, `${name} round-trips byte for byte`);
+    seen.push(name);
+    cursor += 46 + nameLength + view.getUint16(cursor + 30, true) + view.getUint16(cursor + 32, true);
+  }
+  assert.deepEqual(seen, files.map(file => file.name), 'the order is the order we asked for');
+  assert.deepEqual(zipStore(files), bytes, 'reproducible: same input, same archive');
+  assert.notDeepEqual(zipStore([...files].reverse()), bytes, 'a different order is a different archive');
+});
+
+test('wave 30 the archive refuses to hide files or escape its folder', () => {
+  assert.throws(() => zipStore([{ name: 'a.txt', text: '' }, { name: 'a.txt', text: '' }]), /Doppelter Dateiname/,
+    'two entries with the same name would silently lose one');
+  const flattened = zipStore([{ name: '../../etc/passwd', text: 'x' }, { name: 'unter/ordner.txt', text: 'y' }]);
+  const reader = new TextDecoder();
+  const text = reader.decode(flattened);
+  assert.ok(!text.includes('../'), 'traversal sequences never reach the archive');
+  assert.ok(text.includes('_etc_passwd'), 'a hostile name is flattened, not trusted');
+  assert.ok(text.includes('unter_ordner.txt'), 'slashes become underscores so an archive stays flat');
+  assert.ok(zipStore([{ name: '', text: 'leer' }]).length > 0, 'an empty name still produces a usable entry');
+  const empty = zipStore([]);
+  assert.equal(new DataView(empty.buffer).getUint16(empty.length - 12, true), 0, 'an empty archive is a valid empty archive');
+  const utf8 = zipStore([{ name: 'belege_übersicht.md', text: 'Prüfung' }]);
+  assert.ok(new TextDecoder().decode(utf8).includes('belege_übersicht.md'), 'non-ASCII names survive');
+  const archive = caseArchive({ report: 'r', watchBrief: 'w', nodesCsv: 'n', edgesCsv: 'e', watchCsv: 'wc', changesCsv: 'cc', generated: '2026-10-21' });
+  assert.deepEqual(archive.map(file => file.name), ['fallbericht.md', 'beobachtungen.md', 'knoten.csv', 'kanten.csv', 'beobachtung.csv', 'aenderungen.csv', 'liesmich.txt'],
+    'optional documents appear only when they exist');
+  assert.ok(archive[archive.length - 1].text.includes('nichts hochgeladen'), 'the archive carries its own provenance note');
 });

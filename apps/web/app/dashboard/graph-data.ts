@@ -1611,6 +1611,130 @@ export function watchChangesToCSV(changes: WatchChange[]): string {
   return [header, ...rows].join('\n') + '\n';
 }
 
+/** Wave 30: a real ZIP (STORE, no compression) built in the browser — no
+ * dependency, no server, and byte-for-byte reproducible for the same input.
+ * Stored entries are deliberate: the payload is mostly small text, and an
+ * uncompressed archive can be inspected with any tool without a decoder. */
+export interface ArchiveFile { name: string; text: string }
+
+/** CRC-32 (IEEE 802.3), the checksum the ZIP format requires. */
+const CRC_TABLE = (() => {
+  const table = new Uint32Array(256);
+  for (let index = 0; index < 256; index++) {
+    let value = index;
+    for (let bit = 0; bit < 8; bit++) value = value & 1 ? 0xEDB88320 ^ (value >>> 1) : value >>> 1;
+    table[index] = value >>> 0;
+  }
+  return table;
+})();
+export function crc32(bytes: Uint8Array): number {
+  let crc = 0xFFFFFFFF;
+  for (const byte of bytes) crc = CRC_TABLE[(crc ^ byte) & 0xFF] ^ (crc >>> 8);
+  return (crc ^ 0xFFFFFFFF) >>> 0;
+}
+
+const DOS_DATE = 0x0021; // 1980-01-01, the ZIP epoch: fixed so archives are reproducible
+const DOS_TIME = 0x0000;
+
+/**
+ * Wave 30: STORE-only ZIP writer. Every field is written explicitly, names are
+ * UTF-8 flagged, paths are flattened (no directory traversal can be created by a
+ * supplied name) and duplicate names are rejected — an archive that silently
+ * contains the same document twice is a trap for the reader.
+ */
+export function zipStore(files: ArchiveFile[]): Uint8Array {
+  const encoder = new TextEncoder();
+  const seen = new Set<string>();
+  const entries = files.map(file => {
+    const name = file.name.replace(/[\\/]/g, '_').replace(/\.\./g, '_').slice(0, 120) || 'datei.txt';
+    if (seen.has(name)) throw new Error(`Doppelter Dateiname im Archiv: ${name}`);
+    seen.add(name);
+    const data = encoder.encode(file.text);
+    return { name: encoder.encode(name), data, crc: crc32(data) };
+  });
+  const locals: Uint8Array[] = [], centrals: Uint8Array[] = [];
+  let offset = 0;
+  for (const entry of entries) {
+    const local = new Uint8Array(30 + entry.name.length);
+    const view = new DataView(local.buffer);
+    view.setUint32(0, 0x04034b50, true);      // local file header
+    view.setUint16(4, 20, true);              // version needed
+    view.setUint16(6, 0x0800, true);          // UTF-8 names
+    view.setUint16(8, 0, true);               // method: store
+    view.setUint16(10, DOS_TIME, true);
+    view.setUint16(12, DOS_DATE, true);
+    view.setUint32(14, entry.crc, true);
+    view.setUint32(18, entry.data.length, true);
+    view.setUint32(22, entry.data.length, true);
+    view.setUint16(26, entry.name.length, true);
+    view.setUint16(28, 0, true);              // no extra field
+    local.set(entry.name, 30);
+    locals.push(local, entry.data);
+    const central = new Uint8Array(46 + entry.name.length);
+    const cview = new DataView(central.buffer);
+    cview.setUint32(0, 0x02014b50, true);     // central directory header
+    cview.setUint16(4, 20, true);             // version made by
+    cview.setUint16(6, 20, true);             // version needed
+    cview.setUint16(8, 0x0800, true);
+    cview.setUint16(10, 0, true);
+    cview.setUint16(12, DOS_TIME, true);
+    cview.setUint16(14, DOS_DATE, true);
+    cview.setUint32(16, entry.crc, true);
+    cview.setUint32(20, entry.data.length, true);
+    cview.setUint32(24, entry.data.length, true);
+    cview.setUint16(28, entry.name.length, true);
+    cview.setUint16(30, 0, true);             // extra
+    cview.setUint16(32, 0, true);             // comment
+    cview.setUint16(34, 0, true);             // disk
+    cview.setUint16(36, 0, true);             // internal attrs
+    cview.setUint32(38, 0, true);             // external attrs
+    cview.setUint32(42, offset, true);        // offset of local header
+    central.set(entry.name, 46);
+    centrals.push(central);
+    offset += local.length + entry.data.length;
+  }
+  const centralSize = centrals.reduce((sum, part) => sum + part.length, 0);
+  const end = new Uint8Array(22);
+  const eview = new DataView(end.buffer);
+  eview.setUint32(0, 0x06054b50, true);       // end of central directory
+  eview.setUint16(8, entries.length, true);
+  eview.setUint16(10, entries.length, true);
+  eview.setUint32(12, centralSize, true);
+  eview.setUint32(16, offset, true);
+  const parts = [...locals, ...centrals, end];
+  const total = parts.reduce((sum, part) => sum + part.length, 0);
+  const out = new Uint8Array(total);
+  let cursor = 0;
+  for (const part of parts) { out.set(part, cursor); cursor += part.length; }
+  return out;
+}
+
+/** Wave 30: one case archive — report, briefs, tables and change lists in a
+ * single file a third party can open. Every document is produced by the same
+ * function the individual buttons use, so the archive can never disagree with
+ * them. */
+export interface CaseArchiveInput {
+  report: string;
+  watchBrief?: string;
+  nodesCsv: string;
+  edgesCsv: string;
+  evidenceCsv?: string;
+  watchCsv?: string;
+  changesCsv?: string;
+  readme?: string;
+  generated: string;
+}
+export function caseArchive(input: CaseArchiveInput): ArchiveFile[] {
+  const files: ArchiveFile[] = [{ name: 'fallbericht.md', text: input.report }];
+  if (input.watchBrief) files.push({ name: 'beobachtungen.md', text: input.watchBrief });
+  files.push({ name: 'knoten.csv', text: input.nodesCsv }, { name: 'kanten.csv', text: input.edgesCsv });
+  if (input.evidenceCsv) files.push({ name: 'belege.csv', text: input.evidenceCsv });
+  if (input.watchCsv) files.push({ name: 'beobachtung.csv', text: input.watchCsv });
+  if (input.changesCsv) files.push({ name: 'aenderungen.csv', text: input.changesCsv });
+  files.push({ name: 'liesmich.txt', text: input.readme ?? `PuppetNET Fallakte · erzeugt ${input.generated}\nAlle Dateien wurden in diesem Browser erzeugt; es wurde nichts hochgeladen.\nHinweise, keine Beweise: Quellen prüfen; personenbezogene Daten nur mit Rechtsgrundlage verarbeiten.\n` });
+  return files;
+}
+
 /** Wave 29: a hand-over brief for one entity — everything the case knows about it
  * in one document, with the honest gaps named instead of rounded up. */
 export interface BriefInput {
