@@ -6,7 +6,8 @@
   "scripts": {
     "check": "tsc --noEmit -p tsconfig.json",
     "deploy": "wrangler deploy",
-    "dev": "wrangler dev --ip 0.0.0.0"
+    "dev": "wrangler dev --ip 0.0.0.0",
+    "ci:worker": "cd ../.. && npm run ci:worker"
   },
   "devDependencies": {
     "typescript": "^5.9.3",

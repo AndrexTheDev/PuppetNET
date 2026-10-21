@@ -449,3 +449,21 @@ test('wave 25: the case search is one ranked index, not a second search box', ()
   assert.ok(dashboard.includes('searchCase(caseQuery, { nodes: view.nodes, conflicts: view.conflicts, risk: view.risk, sourceRegistry: view.sourceRegistry, notes })'),
     'the index is built from the same view data the panels use');
 });
+
+test('wave 26: the build gate runs from the root or from a workspace root', () => {
+  for (const [file, script] of [['apps/web/package.json', 'ci:pages'], ['apps/worker/package.json', 'ci:worker']]) {
+    const pkg = JSON.parse(read(file));
+    assert.equal(pkg.scripts[script], `cd ../.. && npm run ${script}`,
+      `${file} delegates the gate to the repository root, so a build started in the workspace root works`);
+  }
+  for (const [file, marker] of [['scripts/pages-build.mjs', 'dir'], ['scripts/worker-build.mjs', 'dir']]) {
+    const source = read(file);
+    assert.match(source, /const repoRoot = resolve\(dirname\(fileURLToPath\(import\.meta\.url\)\), '\.\.'\)/, `${file} derives its repository root`);
+    assert.match(source, /process\.chdir\(repoRoot\)/, `${file} switches to that root before touching files`);
+  }
+  const settings = JSON.parse(read('cloudflare-builds.json'));
+  assert.equal(settings.pages.rootDirectory, 'apps/web');
+  assert.equal(settings.pages.buildCommand, 'npm run ci:pages', 'the documented command is the workspace-safe form');
+  assert.equal(settings.worker.buildCommand, 'npm run ci:worker');
+  assert.ok(read('docs/operations.md').includes('Missing script: "ci:pages"'), 'the operations note names the failure signature');
+});

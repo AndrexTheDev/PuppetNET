@@ -750,3 +750,19 @@ There is no analytics, no CDN, no third-party API key required, and no host on t
 blocklist is reachable by default: `[cost] paidSourceDefault` fails the build if a paid source
 ever becomes enabled without the operator setting a key. The audit's `cost/external-host`
 inventory lists every host the code touches, with the budget it lives in.
+
+## Cloudflare Pages / Workers build location
+
+Cloudflare may start a build from the repository root **or** from the configured
+root directory (`apps/web`, `apps/worker`). Both entry points are supported and
+must stay supported:
+
+- `npm run ci:pages` — from the repository root (full gate: assets, tests, `next build`, export verification).
+- `npm run ci:pages` — from `apps/web`; the workspace script delegates to the root gate.
+- `npm run ci:worker` — from the repository root or from `apps/worker`, same rule.
+
+`scripts/pages-build.mjs` and `scripts/worker-build.mjs` additionally anchor
+themselves to the repository they live in (`import.meta.url` + `process.chdir`),
+so a caller's working directory can never point the gate at the wrong files.
+Regression tests in `tests/release.test.mjs` pin both properties; a build log that
+says `Missing script: "ci:pages"` means the workspace delegation was removed.

@@ -621,6 +621,34 @@ Leer-/Kein-Treffer-Text, 14 neue DE/EN-Schlüssel, token-only CSS,
 2 neue Datenlagen-Tests (dashboard 57) + 1 neuer Release-Pin (release 31) —
 `ci:pages` grün, 0 zusätzliche Actions-Minuten.
 
+### Welle 26 — Build-Gate ortsunabhängig (Go-live-Blocker) — ✅ umgesetzt (2026-10-21)
+
+- **Befund**: Der Cloudflare-Pages-Check schlägt bei **jedem** Branch-Commit fehl —
+  seit mindestens Welle 16, also lange vor dieser Arbeit. Reproduktion in einer
+  sauberen Kopie: der dokumentierte Befehl `cd ../.. && npm ci && npm run ci:pages`
+  **funktioniert** (EXIT 0), aber `npm run ci:pages` **aus `apps/web` heraus** bricht mit
+  `Missing script: "ci:pages"` ab. Genau das passiert, wenn Cloudflare den Build aus dem
+  konfigurierten Wurzelverzeichnis (`apps/web`) startet — der wahrscheinlichste Grund
+  für den jahrelangen „Build failed"-Status.
+- **Fix an zwei Stellen, damit keine Konfiguration mehr falsch sein kann**:
+  1. `apps/web` und `apps/worker` bekommen einen delegierenden Gleichnamigkeits-Skript
+     (`ci:pages` bzw. `ci:worker`), das zur Repo-Wurzel wechselt — der Build läuft damit
+     aus **beiden** Startpunkten identisch.
+  2. `scripts/pages-build.mjs` und `scripts/worker-build.mjs` verankern sich selbst am
+     Repository (`import.meta.url` → `process.chdir`), statt dem Arbeitsverzeichnis des
+     Aufrufers zu vertrauen. Relative Pfade können so nie auf die falschen Dateien zeigen.
+- **Verifiziert in beide Richtungen**: `npm run ci:pages` von der Wurzel **und** aus
+  `apps/web` → EXIT 0 (87 Dateien, 6.58 MiB); `npm run ci:worker` von der Wurzel **und**
+  aus `apps/worker` → EXIT 0.
+- Dokumentiert in `cloudflare-builds.json` und `docs/operations.md` (inklusive der
+  Fehlersignatur `Missing script: "ci:pages"`), damit der Befund nicht wieder verloren geht.
+- **0 zusätzliche Actions-Minuten**, und der Go-live-Pfad ist nicht mehr durch eine
+  Konfigurationsfalle blockiert.
+
+**Geliefert (Welle 26)**: Workspace-Delegation in beiden Workspaces, selbstverankerte
+Build-Gates, dokumentierte Startpunkte, 1 neuer Release-Pin (release 32), `ci:pages`
+grün aus Root und aus `apps/web`.
+
 ## 4. Budget-Zusammenfassung
 
 | Welle | Ort | Zusätzliche Actions-Minuten | Status |
@@ -650,6 +678,7 @@ Leer-/Kein-Treffer-Text, 14 neue DE/EN-Schlüssel, token-only CSS,
 | 23 Belastbarkeit der Akte | Browser/Worker | **0** | ✅ umgesetzt |
 | 24 Änderungs-Vergleich | Browser/Worker | **0** | ✅ umgesetzt |
 | 25 Akten-Suche | Browser | **0** | ✅ umgesetzt |
+| 26 Build-Gate ortsunabhängig | Build/CI | **0** | ✅ umgesetzt |
 
 Kein Schritt erzeugt neue Workflows, neue Cron-Jobs, längere Jobs oder bezahlte
 Dienste. Die einzigen verbrauchsrelevanten Grenzen sind die bestehenden: 3
@@ -1251,6 +1280,33 @@ empty/no-hit text, 14 new DE/EN keys, token-only CSS, 2 new data-layer tests
 (dashboard 57) + 1 new release pin (release 31) — `ci:pages` green, 0 extra Actions
 minutes.
 
+### Wave 26 — build gate location-independent (go-live blocker) — ✅ implemented (2026-10-21)
+
+- **Finding**: the Cloudflare Pages check fails on **every** branch commit — since at
+  least wave 16, long before this work. Reproduced in a clean copy: the documented
+  command `cd ../.. && npm ci && npm run ci:pages` **works** (exit 0), but
+  `npm run ci:pages` **from `apps/web`** dies with `Missing script: "ci:pages"`. That is
+  exactly what happens when Cloudflare starts the build from the configured root
+  directory (`apps/web`) — the most likely cause of the long-standing "Build failed".
+- **Fixed in two places so no configuration can be wrong**:
+  1. `apps/web` and `apps/worker` get a delegating same-name script (`ci:pages` /
+     `ci:worker`) that switches to the repository root — the build is identical from
+     **both** entry points.
+  2. `scripts/pages-build.mjs` and `scripts/worker-build.mjs` anchor themselves to the
+     repository (`import.meta.url` → `process.chdir`) instead of trusting the caller's
+     working directory, so relative paths can never point at the wrong files.
+- **Verified both ways**: `npm run ci:pages` from the root **and** from `apps/web` →
+  exit 0 (87 files, 6.58 MiB); `npm run ci:worker` from the root **and** from
+  `apps/worker` → exit 0.
+- Documented in `cloudflare-builds.json` and `docs/operations.md` (including the failure
+  signature `Missing script: "ci:pages"`) so the finding cannot get lost again.
+- **0 extra Actions minutes**, and the go-live path is no longer blocked by a
+  configuration trap.
+
+**Delivered (Wave 26)**: workspace delegation in both workspaces, self-anchoring build
+gates, documented entry points, 1 new release pin (release 32), `ci:pages` green from
+the root and from `apps/web`.
+
 ## 4. Budget summary
 
 | Wave | Location | Additional Actions minutes | Status |
@@ -1280,6 +1336,7 @@ minutes.
 | 23 how much the file can carry | browser/worker | **0** | ✅ implemented |
 | 24 change comparison | browser/worker | **0** | ✅ implemented |
 | 25 case search | browser | **0** | ✅ implemented |
+| 26 location-independent build gate | build/CI | **0** | ✅ implemented |
 
 No step creates new workflows, new cron jobs, longer jobs or paid services. The only
 consumption-relevant limits remain the existing ones: 3 reservations/UTC day, 5-minute
