@@ -811,3 +811,37 @@ def test_neo4j_release_uses_stored_document_provenance(monkeypatch):
     assert len(output["nodes"]) == 2 and len(output["edges"]) == 1
     assert output["nodes"][0]["public_released"] is True
     assert output["evidence"][0]["id"] == "d"
+
+
+def test_misc_company_spans_are_promoted_and_sentence_dots_dropped():
+    """Live probe 2026-10-21: de_core_news_sm returned 'Acme GmbH.' as MISC."""
+    import spacy
+    from spacy.tokens import Doc, Span
+
+    from puppetnet.models import Document, EntityType
+    words = ["Olaf", "Scholz", "besucht", "Acme", "GmbH.", "und", "die", "Bundesliga", "."]
+    doc = Doc(spacy.blank("de").vocab, words=words, sent_starts=[True] + [False] * (len(words) - 1))
+    doc.ents = [Span(doc, 0, 2, label="PER"), Span(doc, 3, 5, label="MISC"), Span(doc, 7, 8, label="MISC")]
+
+    class LocalNLP:
+        def has_pipe(self, name):
+            return True
+
+        def __call__(self, text):
+            return doc
+
+    result = TokenSaverEngine(nlp=LocalNLP()).parse_document(
+        Document(doc_id="d1", source_id="s", url="", text=" ".join(words)))
+    found = {(e.name, e.entity_type) for e in result.entities}
+    assert found == {("Olaf Scholz", EntityType.PERSON), ("Acme GmbH", EntityType.ORGANIZATION)}
+
+
+def test_entity_name_cleanup_keeps_abbreviation_dots():
+    from src.token_saver_nlp import clean_entity_name, entity_kind
+
+    from puppetnet.models import EntityType
+    assert clean_entity_name("Atlantis Shipping Ltd.") == "Atlantis Shipping Ltd."
+    assert clean_entity_name("Kunstverein e.V.") == "Kunstverein e.V."
+    assert clean_entity_name("Berlin,") == "Berlin"
+    assert entity_kind("MISC", "Wagner-Gruppe") is EntityType.ORGANIZATION
+    assert entity_kind("MISC", "iPhone") is None

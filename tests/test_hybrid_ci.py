@@ -49,3 +49,31 @@ def test_pages_and_worker_have_independent_build_paths():
     assert 'versions upload' in data['worker']['previewCommand']
     assert 'pages_build_output_dir' in (ROOT / 'apps/web/wrangler.toml').read_text()
     assert 'main = "src/index.ts"' in (ROOT / 'apps/worker/wrangler.toml').read_text()
+
+
+def test_connection_check_is_manual_read_only_and_cannot_block_production():
+    text = (ROOT / '.github/workflows/daily_ingestion.yml').read_text()
+    data = yaml.safe_load(text)
+    triggers = data.get('on', data.get(True))
+    # Branch pushes share the production concurrency group: they must not start
+    # runs that could replace a pending scheduled run.
+    assert 'push' not in triggers
+    task = triggers['workflow_dispatch']['inputs']['task']
+    assert task['options'] == ['ingest', 'connection-check'] and task['default'] == 'ingest'
+    check = data['jobs']['verify-connections']
+    assert check['if'] == "github.event_name == 'workflow_dispatch' && inputs.task == 'connection-check'"
+    assert check['permissions'] == {'contents': 'read'}
+    runs = '\n'.join(step.get('run', '') for step in check['steps'])
+    assert 'git push' not in runs and 'git commit' not in runs
+    assert any(step.get('uses', '').startswith('actions/upload-artifact@') for step in check['steps'])
+    assert "inputs.task != 'connection-check'" in data['jobs']['publish']['if']
+
+
+def test_every_production_push_rebases_once_and_never_forces():
+    text = (ROOT / '.github/workflows/daily_ingestion.yml').read_text()
+    pushes = [line.strip() for line in text.splitlines() if 'git push' in line]
+    assert len(pushes) == 3
+    retry = ('git push origin "HEAD:$PUBLISH_BRANCH" || { git pull --rebase origin "$PUBLISH_BRANCH" && '
+             'git push origin "HEAD:$PUBLISH_BRANCH"; }')
+    assert all(line == retry for line in pushes), pushes
+    assert '--force' not in text and 'push -f' not in text

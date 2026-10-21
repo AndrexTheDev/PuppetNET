@@ -15,12 +15,12 @@ on:
   repository_dispatch:
     types: [puppetnet-refresh]
   workflow_dispatch:
-  # TEMPORARY (QA dry run, 2026-10-20): branch pushes run the verify-connections
-  # job below (the production publish job stays gated to main + ENABLE_DAILY_STATIC
-  # and never runs from branch pushes). Remove this trigger together with the QA
-  # job once the dry run is green.
-  push:
-    branches-ignore: [main]
+    inputs:
+      task:
+        description: 'ingest = bounded run (uses a manual slot); connection-check = read-only probe of Neo4j, spaCy, Gemini and export'
+        type: choice
+        options: [ingest, connection-check]
+        default: ingest
 
 permissions:
   contents: read
@@ -62,6 +62,7 @@ jobs:
     # public-only cron slot never runs without a verified public repository.
     if: >-
       !cancelled() && vars.ENABLE_DAILY_STATIC == 'true' && github.ref == 'refs/heads/main' &&
+      inputs.task != 'connection-check' &&
       (github.event.schedule != '30 0,6,9,12,18,21 * * *' || needs.profile.outputs.public == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: ${{ needs.profile.outputs.public == 'true' && 20 || 5 }}
@@ -147,7 +148,8 @@ jobs:
           if ! git diff --quiet -- .pipeline-state/daily-budget.json || test -n "$(git ls-files --others --exclude-standard .pipeline-state/daily-budget.json)"; then
             git add -- .pipeline-state/daily-budget.json
             git commit -m "chore: reserve daily ingestion budget [skip ci]"
-            git push origin "HEAD:$PUBLISH_BRANCH"
+            # main may have moved during the run: rebase once, never force.
+            git push origin "HEAD:$PUBLISH_BRANCH" || { git pull --rebase origin "$PUBLISH_BRANCH" && git push origin "HEAD:$PUBLISH_BRANCH"; }
           fi
       - name: Install small local NLP backend
         if: steps.quota.outputs.allowed == 'true'
@@ -188,7 +190,8 @@ jobs:
           done
           if ! git diff --cached --quiet; then
             git commit -m "chore: persist bounded NLP reservations [skip ci]"
-            git push origin "HEAD:$PUBLISH_BRANCH"
+            # main may have moved during the run: rebase once, never force.
+            git push origin "HEAD:$PUBLISH_BRANCH" || { git pull --rebase origin "$PUBLISH_BRANCH" && git push origin "HEAD:$PUBLISH_BRANCH"; }
           fi
       - name: Publish changed static data only
         if: success() && steps.quota.outputs.allowed == 'true'
@@ -199,7 +202,8 @@ jobs:
           fi
           if ! git diff --cached --quiet; then
             git commit -m "data: publish auto-released static graph"
-            git push origin "HEAD:$PUBLISH_BRANCH"
+            # main may have moved during the run: rebase once, never force.
+            git push origin "HEAD:$PUBLISH_BRANCH" || { git pull --rebase origin "$PUBLISH_BRANCH" && git push origin "HEAD:$PUBLISH_BRANCH"; }
           fi
       - uses: actions/cache/save@v4
         if: always() && steps.quota.outputs.allowed == 'true'
@@ -207,21 +211,20 @@ jobs:
           path: .state/content_hashes.json
           key: daily-dedupe-${{ github.run_id }}
 
-  # TEMPORARY QA job (pre-cron dry run, 2026-10-20). Runs only on manual
-  # workflow_dispatch, never on schedule/repository_dispatch, never writes to
-  # main and never touches the production quota ledger: it probes Neo4j,
-  # spaCy, the Gemini API and the export path with packages/pipeline/tests/
-  # test_api_connections.py, then pushes a JSON report to the dispatched
-  # branch. Remove together with the test script after a fully green run.
+  # Operator connection check (Actions → Run workflow → task: connection-check).
+  # Read-only: probes Neo4j (RETURN 1), spaCy, one tiny Gemini request (<=50
+  # output tokens) and the offline export path with packages/pipeline/tests/
+  # test_api_connections.py. Never runs on schedule/repository_dispatch/push,
+  # never writes to any branch and never touches the production quota ledgers;
+  # the report is the job summary plus a 14-day artifact. Use it after
+  # rotating secrets (e.g. NEO4J_PASSWORD) before enabling ENABLE_DAILY_STATIC.
   verify-connections:
-    name: QA verify connections (temporary)
-    # workflow_dispatch (manual dry run) or the temporary branches-ignore push
-    # trigger above. Never runs on schedule/repository_dispatch, never on main.
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'push'
+    name: Connection check (manual, read-only)
+    if: github.event_name == 'workflow_dispatch' && inputs.task == 'connection-check'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
-      contents: write
+      contents: read
     env:
       NEO4J_URI: ${{ secrets.NEO4J_URI }}
       NEO4J_USER: ${{ secrets.NEO4J_USER }}
@@ -231,6 +234,8 @@ jobs:
       GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-flash-lite-latest' }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -257,7 +262,7 @@ jobs:
       - name: QA 4 - graph_latest.json export smoke (offline)
         if: ${{ !cancelled() }}
         run: python packages/pipeline/tests/test_api_connections.py --stage export --json-out "$RUNNER_TEMP/qa-export.json"
-      - name: Publish QA report to the dispatched branch
+      - name: Summarise the connection report
         if: ${{ always() }}
         run: |
           python - <<'PYCODE'
@@ -279,21 +284,24 @@ jobs:
           merged = {"generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                     "github_run_id": os.environ.get("GITHUB_RUN_ID"),
                     "github_ref": os.environ.get("GITHUB_REF_NAME"),
-                    "workflow": "daily_ingestion.yml / verify-connections (temporary QA dry run)",
+                    "workflow": "daily_ingestion.yml / verify-connections (manual connection check)",
                     "stages": stages, "summary": summary}
           Path("qa-report-api-connections.json").write_text(
               json.dumps(merged, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
           step_summary = os.environ.get("GITHUB_STEP_SUMMARY")
           if step_summary:
               with open(step_summary, "a", encoding="utf-8") as handle:
-                  handle.write("## QA connection probe (temporary dry run)\n\n")
+                  handle.write("## Connection check\n\n")
                   for name, result in stages.items():
                       detail = result.get("detail", "")
                       handle.write(f"- **{keys[name]}**: {verdict[name]}" + (f" — {detail}\n" if detail else "\n"))
           print("QA SUMMARY:", json.dumps(summary, sort_keys=True))
           PYCODE
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -- qa-report-api-connections.json
-          git commit -m "qa: api connection dry-run report (run $GITHUB_RUN_ID) [skip ci]"
-          git push origin "HEAD:$GITHUB_REF_NAME"
+      - name: Keep the report as an artifact (no commit)
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: connection-check-${{ github.run_id }}
+          path: qa-report-api-connections.json
+          retention-days: 14
+          if-no-files-found: warn

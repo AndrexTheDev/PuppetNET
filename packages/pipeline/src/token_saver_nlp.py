@@ -120,6 +120,33 @@ KINSHIP_OR_CORPORATE = {"mutter": ("FAMILY_OF", "PARENT_OF"), "tochter": ("FAMIL
 # "nicht", prepositions or auxiliaries would corrupt negation/dependency direction.
 FILLER_LINE = re.compile(r"(?:jetzt (?:kostenlos )?(?:abonnieren|registrieren)|"
                          r"(?:hier )?klicken sie hier|mehr erfahren|alle rechte vorbehalten)[.! ]*", re.I)
+#: de_core_news_sm often labels companies MISC ("Acme GmbH." in the 2026-10-21
+#: live probe). A MISC span ending in a legal form or an unambiguous
+#: organisation head is promoted to ORG; any other MISC span stays out.
+ORG_TAIL = re.compile(
+    r"(?:\b(?:GmbH|AG|SE|KGaA|KG|OHG|UG|mbH|Ltd|Limited|Inc|Corp|Corporation|LLC|PLC|plc|S\.A|SA|S\.p\.A|SpA|"
+    r"N\.V|NV|B\.V|BV|A/S|Oyj|SARL|e\.\s?V)\.?|(?:Holding|Stiftung|Bank|Konzern|Gruppe|Group))$")
+#: Trailing dots that belong to the name and must survive clean-up.
+_KEEP_DOT = re.compile(r"(?:\b(?:Ltd|Inc|Corp|Co|Jr|Sr|St|S\.A|S\.p\.A|N\.V|B\.V|e\.\s?V)|\b[A-Z])\.$")
+
+
+def entity_kind(label: str, text: str) -> EntityType | None:
+    """Map a spaCy NER label to an entity type (None = ignore)."""
+    kind = {"PER": EntityType.PERSON, "PERSON": EntityType.PERSON,
+            "ORG": EntityType.ORGANIZATION, "LOC": EntityType.LOCATION, "GPE": EntityType.LOCATION}.get(label)
+    if kind is None and label == "MISC" and ORG_TAIL.search(clean_entity_name(text)):
+        return EntityType.ORGANIZATION
+    return kind
+
+
+def clean_entity_name(text: str) -> str:
+    """Drop sentence punctuation glued to a span ("Acme GmbH." -> "Acme GmbH"), keep "Ltd."."""
+    name = re.sub(r"\s+", " ", text).strip().rstrip(",;:!?")
+    while name.endswith(".") and not _KEEP_DOT.search(name):
+        name = name[:-1].rstrip()
+    return name
+
+
 #: Negation, denial, allegation/suspicion and speculation (German + English).
 #: Shared by the local sentence filter and the Gemini quote validator
 #: (gemini_tasks.NEGATION_OR_HEDGE). Beta test 2026-10-21 added the denial and
@@ -304,11 +331,11 @@ class TokenSaverEngine:
         result = ParseResult(doc_id=document.doc_id, characters=len(text), backend=self.backend)
         entity_by_span = {}
         for span in doc.ents:
-            kind = {"PER": EntityType.PERSON, "PERSON": EntityType.PERSON,
-                    "ORG": EntityType.ORGANIZATION, "LOC": EntityType.LOCATION}.get(span.label_)
-            if kind is None:
+            kind = entity_kind(span.label_, span.text)
+            name = clean_entity_name(span.text)
+            if kind is None or len(name) < 2:
                 continue
-            entity = Entity(name=span.text, entity_type=kind, confidence=.75,
+            entity = Entity(name=name, entity_type=kind, confidence=.75,
                             source_ids={document.source_id}, doc_ids={document.doc_id})
             entity_by_span[(span.start, span.end)] = entity
         unique = {entity.canonical_key: entity for entity in entity_by_span.values()}
