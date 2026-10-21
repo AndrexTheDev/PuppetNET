@@ -414,3 +414,20 @@ test('wave 23: backing is one definition, and the panel outlives its own filter'
   assert.ok(dashboard.includes('riskToCSV(view.risk!)'), 'the CSV button is wired');
   assert.ok(dashboard.includes('aria-pressed') || dashboard.includes("t('dash.riskOnlyWeakAria')"), 'the toggle is announced');
 });
+
+test('wave 24: the comparison is strict about identity and parsed off the UI thread', () => {
+  const data = read('apps/web/app/dashboard/graph-data.ts');
+  assert.match(data, /export function diffDatasets\(previous: Dataset, current: Dataset, limit = 6\): DatasetDiff/, 'the diff is pure and bounded');
+  assert.match(data, /const relationKey = \(edge: GraphEdge\) => `\$\{edge\.source\}\|\$\{edge\.type\}\|\$\{edge\.target\}`/, 'relationships are identified by the directed triple');
+  assert.match(data, /export function diffToCSV\(diff: DatasetDiff\): string/, 'the change list is exportable');
+  assert.doesNotMatch(data.match(/export function diffDatasets[\s\S]*?\n}/)?.[0] ?? '', /new Date\(\)/, 'no hidden clock in a comparison');
+  const worker = read('apps/web/app/dashboard/graph.worker.ts');
+  assert.match(worker, /if \(data\.kind === 'diff'\) \{[\s\S]{0,900}const baseline = normalizeDataset/, 'the baseline is parsed in the worker, like every other import');
+  assert.match(worker, /diffDatasets\(baseline, dataset\)/, 'the diff is computed against the dataset on screen');
+  const dashboard = read('apps/web/app/dashboard/Dashboard.tsx');
+  assert.ok(dashboard.includes("t('dash.diffLoad')"), 'the comparison state is loadable');
+  assert.ok(dashboard.includes("t('dash.diffNone')"), 'an identical state is stated honestly');
+  assert.ok(dashboard.includes('diffToCSV(diff)'), 'the CSV button is wired');
+  assert.ok(dashboard.includes("t('dash.diffText')"), 'the panel explains the identity rules');
+  assert.ok(dashboard.includes('setDiff(null)'), 'the comparison can be removed');
+});

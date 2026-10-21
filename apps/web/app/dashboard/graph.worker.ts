@@ -3,7 +3,7 @@ import { MultiDirectedGraph, UndirectedGraph } from 'graphology';
 import forceAtlas2 from 'graphology-layout-forceatlas2';
 import betweenness from 'graphology-metrics/centrality/betweenness';
 import louvain from 'graphology-communities-louvain';
-import { demoDataset, normalizeDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, levelFor, shortestPath, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, bundleEdges, structuralVulnerability, pathTimeline, multiFailureImpact, provenanceGaps, sharedSourceGroups, sourceRegistry, pairConflicts, evidenceFreshness, isFreshWindow, DEFAULT_FRESH_MONTHS, evidenceRisk, evidenceToCSV, EGO_DEPTH_LIMIT, ANALYSIS_LIMITS, LIMITS, TYPES, type Dataset, type Filters, type View } from './graph-data';
+import { demoDataset, normalizeDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, levelFor, shortestPath, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, bundleEdges, structuralVulnerability, pathTimeline, multiFailureImpact, provenanceGaps, sharedSourceGroups, sourceRegistry, pairConflicts, evidenceFreshness, isFreshWindow, DEFAULT_FRESH_MONTHS, evidenceRisk, evidenceToCSV, diffDatasets, EGO_DEPTH_LIMIT, ANALYSIS_LIMITS, LIMITS, TYPES, type Dataset, type Filters, type View } from './graph-data';
 import type { WorkerRequest, WorkerResponse } from './protocol';
 const scope = self as unknown as { onmessage: ((event: MessageEvent<WorkerRequest>) => void) | null; postMessage: (value: WorkerResponse, transfer?: Transferable[]) => void };
 let dataset: Dataset = { nodes: [], edges: [], evidence: [] };
@@ -188,6 +188,17 @@ scope.onmessage = async ({ data }) => {
       return;
     }
     if (data.kind === 'demo') { dataset = demoDataset(data.count); focus = null; louvainPartition = null; }
+    if (data.kind === 'diff') {
+      // Wave 24: the comparison state is parsed in the worker like every other
+      // import, so a large baseline never blocks the UI; the current dataset is
+      // the one on screen, and the diff is a pure function of the two.
+      if (data.file && data.file.size > LIMITS.bytes) throw new Error('JSON ist größer als 64 MiB.');
+      const text = data.file ? await data.file.text() : data.text ?? '';
+      if (text.length > LIMITS.bytes) throw new Error('JSON ist größer als das Importlimit.');
+      const baseline = normalizeDataset(JSON.parse(text));
+      send({ kind: 'diff', version: data.version, diff: diffDatasets(baseline, dataset) });
+      return;
+    }
     if (data.kind === 'import') {
       if (data.file && data.file.size > LIMITS.bytes) throw new Error('JSON ist größer als 64 MiB.');
       const text = data.file ? await data.file.text() : data.text ?? '';

@@ -2,7 +2,7 @@
 import dynamic from 'next/dynamic';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import EntityTable, { type TableRow } from './EntityTable';
-import { COLORS, TYPES, LIMITS, NOTE_STORAGE_KEY, FRESH_WINDOWS, DEFAULT_FRESH_MONTHS, riskToCSV, caseReport, decodeViewState, edgesToCSV, encodeViewState, monthWindow, nextPlaybackMonth, nodesToCSV, caseBundle, compareDuplicates, mergeNotes, parseCaseNotes, provenanceGaps, readCaseBundle, searchNoteIndex, removeSavedView, upsertSavedView, readSavedViews, SAVED_VIEW_STORAGE_KEY, normalizeNote, rankSearch, readNotes, resolveNodeRef, viewToJSON, type Evidence, type Filters, type GraphEdge, type GraphNode, type PathTimeline, type View, type ViewUrlState } from './graph-data';
+import { COLORS, TYPES, LIMITS, NOTE_STORAGE_KEY, FRESH_WINDOWS, DEFAULT_FRESH_MONTHS, riskToCSV, diffToCSV, caseReport, decodeViewState, edgesToCSV, encodeViewState, monthWindow, nextPlaybackMonth, nodesToCSV, caseBundle, compareDuplicates, mergeNotes, parseCaseNotes, provenanceGaps, readCaseBundle, searchNoteIndex, removeSavedView, upsertSavedView, readSavedViews, SAVED_VIEW_STORAGE_KEY, normalizeNote, rankSearch, readNotes, resolveNodeRef, viewToJSON, type Evidence, type Filters, type GraphEdge, type GraphNode, type PathTimeline, type View, type ViewUrlState, type DatasetDiff } from './graph-data';
 import type { NetworkHandle, PathHighlight } from './NetworkGraph';
 import type { WorkerRequest, WorkerResponse } from './protocol';
 import { loadStaticGraph, requestResearch, type Standby } from '../../src/lib/dataFetcher';
@@ -38,6 +38,7 @@ export default function Dashboard() {
   const [pathResult, setPathResult] = useState<PathResult | null>(null), [pathError, setPathError] = useState('');
   const [egoQuery, setEgoQuery] = useState(''), [egoDepth, setEgoDepth] = useState(2), [egoStatus, setEgoStatus] = useState('');
   const [brokers, setBrokers] = useState<{ id: string; label: string; share: number }[] | null>(null);
+  const [diff, setDiff] = useState<DatasetDiff | null>(null), [baselineName, setBaselineName] = useState('');
   const [analysisNotice, setAnalysisNotice] = useState('');
   // Wave 13: entity resolution and failure simulation are case actions, not
   // background analytics - both work on the slice the investigator sees.
@@ -105,6 +106,11 @@ export default function Dashboard() {
         setPathResult({ ids: data.nodes, labels: data.nodes.map(labelOf), types: data.edges.map(e => e.type), edgeIds: data.edges.map(e => e.id), hops: data.hops, timeline: data.timeline ?? null });
         setPathError('');
         setAnnouncement(tRef.current('dash.annPathFound', { hops: data.hops, from: labelOf(data.nodes[0]), to: labelOf(data.nodes[data.nodes.length - 1]) }));
+        return;
+      }
+      if (data.kind === 'diff') {
+        if (data.version !== version.current) return; // stale answer for an older comparison
+        setDiff(data.diff); setBusy(false);
         return;
       }
       if (data.kind === 'evidenceCsv') {
@@ -270,6 +276,11 @@ export default function Dashboard() {
     staticRequest.current?.abort(); pendingSource.current = file.name; setBusy(true); setError(''); clearSelected(); setPathResult(null); setPathError(''); setBrokers(null); setAnalysisNotice(''); setLouvainActive(false); setLouvainCount(0);
     send({ kind: 'import', file, version: ++version.current, filters: filtersRef.current });
   }
+  function loadBaseline(file: File) {
+    if (file.size > LIMITS.bytes) { setError(t('dash.errImportSize')); return; }
+    setBusy(true); setError(''); setBaselineName(file.name);
+    send({ kind: 'diff', version: ++version.current, file });
+  }
   async function startResearch() {
     if (researchBusy) return;
     setError(''); loadingApi.current?.abort(); const controller = new AbortController(); loadingApi.current = controller;
@@ -409,7 +420,7 @@ export default function Dashboard() {
     <p className="visually-hidden" role="status" aria-live="polite" aria-atomic="true">{announcement}</p>
     <header className="dashboard-header"><a className="brand" href="/"><img className="brand-art" src="/media/logo.webp" width="52" height="52" alt="" /><div>PUPPET<span>NET</span><small>INTELLIGENCE WORKSPACE</small></div></a><div className="header-path">Workspace <span>/</span> <strong>{t('dash.headerSection')}</strong></div><div className="header-status"><span className="status-dot" /> {t('dash.headerStatus')} <span className="version-tag">2.0</span></div></header>
     <section className="workspace-intro"><div><span className="eyebrow">{t('dash.introEyebrow')}</span><h1>{t('dash.introTitle')}</h1><p>{t('dash.introText')}</p></div><div className="intro-controls"><button type="button" className="outline-button lang-toggle" onClick={() => setLang(lang === 'de' ? 'en' : 'de')} aria-label={t('dash.langSwitchAria')}>{t('dash.langSwitch')}</button><button onClick={() => setSourceForm(s => !s)} className="outline-button">{t('boot.researchButton')}</button></div></section>
-    <div className="source-strip"><span className="source-pill">{sourceLabel.includes('Fiktiv') ? t('dash.pillDemo') : t('dash.pillData')}</span><strong>{sourceLabel}</strong><span>{t('dash.stripNote')}</span><button onClick={() => demo(900)}>{t('dash.demoShort')}</button><button disabled={busy} onClick={() => demo(30_000)}>{t('dash.stressTest')}</button><label className="import-button">{t('dash.importJson')}<input type="file" accept="application/json,.json" onChange={e => { const file = e.target.files?.[0]; if (file) importFile(file); e.target.value = ''; }} /></label></div>
+    <div className="source-strip"><span className="source-pill">{sourceLabel.includes('Fiktiv') ? t('dash.pillDemo') : t('dash.pillData')}</span><strong>{sourceLabel}</strong><span>{t('dash.stripNote')}</span><button onClick={() => demo(900)}>{t('dash.demoShort')}</button><button disabled={busy} onClick={() => demo(30_000)}>{t('dash.stressTest')}</button><label className="import-button">{t('dash.importJson')}<input type="file" accept="application/json,.json" onChange={e => { const file = e.target.files?.[0]; if (file) importFile(file); e.target.value = ''; }} /></label><label className="import-button">{t('dash.diffLoad')}<input type="file" accept="application/json,.json" aria-label={t('dash.diffLoadAria')} onChange={e => { const file = e.target.files?.[0]; if (file) loadBaseline(file); e.target.value = ''; }} /></label></div>
     <p className="cdn-mode" role="note">{t('dash.cdnText')} <button type="button" disabled={busy} onClick={() => reloadStatic.current?.()}>{t('dash.cdnReload')}</button></p>
     {sourceForm && <form className="connection-form" onSubmit={e => { e.preventDefault(); startResearch(); }}>
       <p>{t('dash.formIntro')}</p>
@@ -537,6 +548,27 @@ export default function Dashboard() {
               <span className="shared-entities">{group.entities.map(entity => <button key={entity.id} type="button" className="text-button" aria-label={t('dash.sharedAria', { label: entity.label })} onClick={() => { if (mode !== 'network') changeMode('network'); select(entity.id); requestAnimationFrame(() => network.current?.focus(entity.id)); }}>{entity.label}</button>)}</span>
             </li>)}</ul>
             <p className="muted">{t('dash.sharedText')}</p>
+          </div>}
+          {diff && <div className="diff-panel">
+            <h4 className="hub-heading">{t('dash.diffTitle')}</h4>
+            <p className="muted small-text">{baselineName} → {sourceLabel}</p>
+            <p className="muted small-text">{t('dash.diffCounts', { entitiesAdded: number(diff.entities.added), entitiesRemoved: number(diff.entities.removed), relationsAdded: number(diff.relations.added), relationsRemoved: number(diff.relations.removed), documentsAdded: number(diff.documents.added) })}</p>
+            {diff.entities.added === 0 && diff.entities.removed === 0 && diff.relations.added === 0 && diff.relations.removed === 0 && diff.documents.added === 0
+              ? <p className="muted" role="status">{t('dash.diffNone')}</p>
+              : <>
+                {diff.newEntities.length > 0 && <><h5 className="gaps-heading">{t('dash.diffNewEntities')} ({number(diff.entities.added)})</h5>
+                  <ul className="hub-list">{diff.newEntities.map(entity => <li key={entity.id}><button type="button" className="text-button" aria-label={t('dash.diffAria', { label: entity.label })} onClick={() => { if (mode !== 'network') changeMode('network'); select(entity.id); requestAnimationFrame(() => network.current?.focus(entity.id)); }}>{entity.label}</button><span className="hub-rank">{entity.type}</span></li>)}</ul></>}
+                {diff.goneEntities.length > 0 && <><h5 className="gaps-heading">{t('dash.diffGoneEntities')} ({number(diff.entities.removed)})</h5>
+                  <ul className="hub-list">{diff.goneEntities.map(entity => <li key={entity.id}><span>{entity.label}</span><span className="hub-rank">{entity.type}</span></li>)}</ul></>}
+                {diff.corroborated.length > 0 && <><h5 className="gaps-heading">{t('dash.diffCorroborated')} ({number(diff.corroborated.length)})</h5>
+                  <ul className="hub-list">{diff.corroborated.map(entity => <li key={entity.id}><button type="button" className="text-button" onClick={() => { if (mode !== 'network') changeMode('network'); select(entity.id); requestAnimationFrame(() => network.current?.focus(entity.id)); }}>{entity.label}</button><span className="hub-rank">{number(entity.sources)}</span></li>)}</ul></>}
+                {diff.newConflicts.length > 0 && <><h5 className="gaps-heading">{t('dash.diffNewConflicts')} ({number(diff.newConflicts.length)})</h5>
+                  <ul className="conflict-claims">{diff.newConflicts.map(conflict => <li key={`${conflict.pair[0]}|${conflict.pair[1]}`}>{conflict.labels[0]} ↔ {conflict.labels[1]}</li>)}</ul></>}
+                {diff.resolvedConflicts > 0 && <p className="muted small-text" role="status">{t('dash.diffResolved', { count: number(diff.resolvedConflicts) })}</p>}
+                <button type="button" className="text-button" onClick={() => downloadText('puppetnet-aenderungen.csv', diffToCSV(diff), 'text/csv;charset=utf-8')}>{t('dash.diffCsv')}</button>
+              </>}
+            <p><button type="button" className="text-button" onClick={() => { setDiff(null); setBaselineName(''); }}>{t('dash.diffClear')}</button></p>
+            <p className="muted">{t('dash.diffText')}</p>
           </div>}
           {view.conflicts && <div className="conflict-panel">
             <h4 className="hub-heading">{t('dash.conflictTitle')}</h4>

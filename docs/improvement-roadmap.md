@@ -568,6 +568,34 @@ Alles-solide-Zustand, Berichtsabschnitt, 18 neue DE/EN-Schlüssel, token-only CS
 `ci:pages` grün, 0 zusätzliche Actions-Minuten. Der Welle-22-Pin wurde dabei erneut auf
 ein Verhaltensmuster umgestellt, statt eine Zeile festzunageln.
 
+### Welle 24 — Änderungs-Vergleich — ✅ umgesetzt (2026-10-21)
+
+- **Was ist neu?** Ein älterer Export lässt sich als **Vergleichsstand** laden; die App
+  zeigt gegen den aktuellen Stand: neue und verschwundene Entitäten, neue und
+  verschwundene Beziehungen, neue Dokumente, **neu widersprüchliche Paare**,
+  **aufgelöste Widersprüche** und Entitäten, die **neu durch zwei unabhängige Quellen**
+  gedeckt sind.
+- **Identität bewusst streng**: Entitäten über die ID, Beziehungen über das **gerichtete**
+  Tripel Quelle/Typ/Ziel, Dokumente über die ID. Eine umbenannte Entität ist weder neu
+  noch verschwunden, und ein zweiter Beleg zu einer bekannten Beziehung ist **keine**
+  neue Beziehung — genau die Verwechslung, die ein Monitoring unbrauchbar macht.
+- **Gleiche Regeln wie überall**: Widersprüche und Unabhängigkeit werden mit denselben
+  Funktionen bewertet wie die Panels (`pairConflicts`, `nodeBacking`), damit „neu
+  widersprüchlich" und „jetzt korroboriert" exakt dasselbe bedeuten wie anderswo.
+- **Worker statt UI-Thread**: der Vergleichsstand wird im Worker geparst und verglichen
+  (wie jeder Import), damit auch 64 MiB den Browser nicht blockieren. Der Vergleich ist
+  eine reine Funktion, ohne Uhr, deterministisch und in jeder Liste begrenzt (Zählungen
+  bleiben vollständig).
+- **Änderungsliste als CSV** (RFC-4180, wiederverwendete Quoting-Funktion) für die
+  Weitergabe; der Vergleich ist jederzeit mit einem Klick entfernbar.
+
+**Geliefert (Welle 24)**: `diffDatasets()`, `diffToCSV()`, `DatasetDiff`,
+`WorkerRequest`/`WorkerResponse` `diff`, Vergleichsdatei-Knopf in der Quellenleiste,
+Änderungs-Panel (Zählungen, neue/verschwundene Entitäten, Korroboration, neue
+Widersprüche, aufgelöste, CSV, Entfernen), 17 neue DE/EN-Schlüssel, token-only CSS,
+1 neuer Datenlagen-Test (dashboard 55) + 1 neuer Release-Pin (release 30) —
+`ci:pages` grün, 0 zusätzliche Actions-Minuten.
+
 ## 4. Budget-Zusammenfassung
 
 | Welle | Ort | Zusätzliche Actions-Minuten | Status |
@@ -595,6 +623,7 @@ ein Verhaltensmuster umgestellt, statt eine Zeile festzunageln.
 | 21 Widersprüche/Aktualität | Browser/Worker | **0** | ✅ umgesetzt |
 | 22 Widerspruchs-Ansicht/Zeitfenster | Browser/Worker | **0** | ✅ umgesetzt |
 | 23 Belastbarkeit der Akte | Browser/Worker | **0** | ✅ umgesetzt |
+| 24 Änderungs-Vergleich | Browser/Worker | **0** | ✅ umgesetzt |
 
 Kein Schritt erzeugt neue Workflows, neue Cron-Jobs, längere Jobs oder bezahlte
 Dienste. Die einzigen verbrauchsrelevanten Grenzen sind die bestehenden: 3
@@ -1145,6 +1174,32 @@ report section, 18 new DE/EN keys, token-only CSS, 3 new data-layer tests (dashb
 + 1 new release pin (release 29) — `ci:pages` green, 0 extra Actions minutes. The wave-22
 pin moved to a behaviour pattern instead of pinning a line.
 
+### Wave 24 — change comparison — ✅ implemented (2026-10-21)
+
+- **What is new?** An older export can be loaded as the **comparison state**; the app then
+  shows against the current state: new and vanished entities, new and vanished
+  relationships, new documents, **newly contradictory pairs**, **resolved
+  contradictions** and entities **now covered by two independent sources**.
+- **Identity deliberately strict**: entities by id, relationships by the **directed**
+  triple of source/type/target, documents by id. A renamed entity is neither new nor
+  gone, and a second document for a known relationship is **not** a new relationship —
+  exactly the confusion that makes monitoring useless.
+- **Same rules as everywhere**: contradictions and independence are judged with the same
+  functions the panels use (`pairConflicts`, `nodeBacking`), so "newly contradictory" and
+  "now corroborated" mean exactly what they mean elsewhere.
+- **Worker, not the UI thread**: the comparison state is parsed and diffed in the worker
+  (like every import), so even 64 MiB cannot block the browser. The diff is a pure
+  function, clock-free, deterministic, and bounded per list (counts stay complete).
+- **Change list as CSV** (RFC-4180, reused quoting helper) for hand-over; the comparison
+  can be removed at any time with one click.
+
+**Delivered (Wave 24)**: `diffDatasets()`, `diffToCSV()`, `DatasetDiff`,
+`WorkerRequest`/`WorkerResponse` `diff`, comparison-file button in the source strip,
+change panel (counts, new/vanished entities, corroboration, new contradictions, resolved
+ones, CSV, remove), 17 new DE/EN keys, token-only CSS, 1 new data-layer test
+(dashboard 55) + 1 new release pin (release 30) — `ci:pages` green, 0 extra Actions
+minutes.
+
 ## 4. Budget summary
 
 | Wave | Location | Additional Actions minutes | Status |
@@ -1172,6 +1227,7 @@ pin moved to a behaviour pattern instead of pinning a line.
 | 21 contradictions/currency | browser/worker | **0** | ✅ implemented |
 | 22 dispute view/time window | browser/worker | **0** | ✅ implemented |
 | 23 how much the file can carry | browser/worker | **0** | ✅ implemented |
+| 24 change comparison | browser/worker | **0** | ✅ implemented |
 
 No step creates new workflows, new cron jobs, longer jobs or paid services. The only
 consumption-relevant limits remain the existing ones: 3 reservations/UTC day, 5-minute

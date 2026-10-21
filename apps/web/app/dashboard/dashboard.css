@@ -233,3 +233,5 @@
 .risk-list li.risk-weak .risk-state{color:var(--color-danger)}
 .risk-list li.risk-unbacked .risk-state,.risk-list li.risk-stale .risk-state{color:var(--color-gold)}
 .risk-state{font-size:.8em;font-weight:600}
+.diff-panel{margin-top:var(--space-3,1rem);border-top:1px solid var(--line);padding-top:var(--space-2,0.5rem)}
+.diff-panel .conflict-claims{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:0.15rem;font-size:.85em}

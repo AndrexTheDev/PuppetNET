@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
-import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, monthWindow, bundleEdges, structuralVulnerability, pathTimeline, normalizeNote, readNotes, caseReport, nextPlaybackMonth, evidenceWindow, compareDuplicates, multiFailureImpact, normalizeSavedName, readSavedViews, upsertSavedView, removeSavedView, evidenceToCSV, parseCaseNotes, mergeNotes, searchNoteIndex, caseBundle, readCaseBundle, provenanceGaps, edgeSources, sharedSourceGroups, normalizeEvidence, edgeSourceStatus, sourceRegistry, pairConflicts, evidenceFreshness, monthsBefore, FRESH_WINDOWS, DEFAULT_FRESH_MONTHS, isFreshWindow, filterDataset, nodeBacking, evidenceRisk, riskToCSV, TYPES, SAVED_VIEW_LIMIT, NOTE_LIMIT, EGO_DEPTH_LIMIT, VULNERABILITY_NODE_LIMIT, normalizeInsights, ANALYSIS_LIMITS, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
+import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, monthWindow, bundleEdges, structuralVulnerability, pathTimeline, normalizeNote, readNotes, caseReport, nextPlaybackMonth, evidenceWindow, compareDuplicates, multiFailureImpact, normalizeSavedName, readSavedViews, upsertSavedView, removeSavedView, evidenceToCSV, parseCaseNotes, mergeNotes, searchNoteIndex, caseBundle, readCaseBundle, provenanceGaps, edgeSources, sharedSourceGroups, normalizeEvidence, edgeSourceStatus, sourceRegistry, pairConflicts, evidenceFreshness, monthsBefore, FRESH_WINDOWS, DEFAULT_FRESH_MONTHS, isFreshWindow, filterDataset, nodeBacking, evidenceRisk, riskToCSV, diffDatasets, diffToCSV, TYPES, SAVED_VIEW_LIMIT, NOTE_LIMIT, EGO_DEPTH_LIMIT, VULNERABILITY_NODE_LIMIT, normalizeInsights, ANALYSIS_LIMITS, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
 import { apiBase, readResponse } from '../apps/web/app/dashboard/api';
 const filters: Filters = { confidence: 0, weight: 0, types: [...TYPES], lod: true, ratio: 1 };
 test('normalizes Worker and Graphology nodes without inventing coordinates', () => {
@@ -1139,4 +1139,49 @@ test('wave 23 the thin-file view narrows without touching its own judgment', () 
   assert.equal(encodeViewState({ weak: true }), 'weak=1');
   assert.deepEqual(decodeViewState('?weak=1&dispute=1'), { dispute: true, weak: true });
   assert.deepEqual(decodeViewState('?weak=0'), {});
+});
+
+test('wave 24 the diff reports what changed, not what was merely retold', () => {
+  const before = normalizeDataset({
+    nodes: [{ key: 'a', name: 'Alpha' }, { key: 'b', name: 'Beta' }, { key: 'c', name: 'Gamma' }],
+    evidence: [{ id: 'd1', title: 'One', source: 'HR', date: '2025-01-01' }],
+    edges: [{ source: 'a', target: 'b', type: 'OWNS', evidenceIds: ['d1'] }],
+  });
+  const after = normalizeDataset({
+    nodes: [{ key: 'a', name: 'Alpha Holding' }, { key: 'b', name: 'Beta' }, { key: 'd', name: 'Delta' }],
+    evidence: [{ id: 'd1', title: 'One', source: 'HR', date: '2025-01-01' }, { id: 'd2', title: 'Two', source: 'Presse', date: '2026-02-01' }],
+    edges: [
+      { source: 'a', target: 'b', type: 'OWNS', evidenceIds: ['d1', 'd2'] },
+      { source: 'b', target: 'a', type: 'SOLD', evidenceIds: ['d2'] },
+    ],
+  });
+  const diff = diffDatasets(before, after);
+  assert.deepEqual(diff.entities, { added: 1, removed: 1, unchanged: 2 }, 'a renamed label is not a new entity and not a removed one');
+  assert.deepEqual(diff.relations, { added: 1, removed: 0, unchanged: 1 }, 'a second document on a known relationship is not a new relationship');
+  assert.deepEqual(diff.documents, { added: 1, removed: 0, unchanged: 1 });
+  assert.deepEqual(diff.newEntities.map(entry => entry.id), ['d']);
+  assert.deepEqual(diff.goneEntities.map(entry => entry.id), ['c']);
+  assert.deepEqual(diff.newRelations.map(entry => entry.key), ['b|SOLD|a'], 'direction matters: b sold to a is not a owns b');
+  assert.deepEqual(diff.newDocuments.map(entry => [entry.id, entry.source]), [['d2', 'Presse']]);
+  assert.deepEqual(diff.newConflicts.map(entry => entry.pair.join('|')), ['a|b'], 'the pair only became contradictory in the new state');
+  assert.equal(diff.resolvedConflicts, 0);
+  assert.deepEqual(diff.corroborated.map(entry => [entry.id, entry.sources]), [['a', 2], ['b', 2]], 'gaining a second independent source is news');
+  assert.deepEqual(diffDatasets(after, after).entities, { added: 0, removed: 0, unchanged: 3 }, 'a state is not different from itself');
+  assert.deepEqual(diffDatasets(after, after).newConflicts, []);
+  assert.deepEqual(diffDatasets(before, after), diff, 'deterministic');
+  const reversed = diffDatasets(after, before);
+  assert.deepEqual([reversed.entities.added, reversed.entities.removed], [1, 1], 'the diff is symmetric in its counts');
+  assert.equal(reversed.resolvedConflicts, 1, 'going back makes the contradiction disappear');
+  assert.deepEqual(diffToCSV(diff).split('\n')[0], 'kind,change,ref,label,detail');
+  const csv = diffToCSV(diff);
+  for (const line of ['entity,added,d,Delta,Other', 'entity,removed,c,Gamma,Other', 'relation,added,b|SOLD|a,,SOLD', 'document,added,d2,Two,Presse', 'conflict,added,a|b,Alpha Holding ↔ Beta,conflict']) {
+    assert.ok(csv.includes(line), `CSV carries ${line}`);
+  }
+  assert.equal(diffDatasets(before, after, 1).newEntities.length, 1, 'lists are bounded while the counts stay complete');
+  assert.equal(diffDatasets(before, after, 1).entities.added, 1, 'the count is not truncated');
+  const quoted = diffDatasets(
+    normalizeDataset({ nodes: [], evidence: [], edges: [] }),
+    normalizeDataset({ nodes: [{ key: 'x', name: 'X, "quoted"' }], evidence: [], edges: [] }),
+  );
+  assert.ok(diffToCSV(quoted).includes('entity,added,x,"X, ""quoted""",Other'), 'RFC-4180 quoting is reused for change rows');
 });

@@ -1422,6 +1422,94 @@ export function riskToCSV(report: RiskReport): string {
   return [header, ...rows].join('\n') + '\n';
 }
 
+/** Wave 24: what changed between an earlier export and the one on screen.
+ * Identity is deliberately conservative: entities by id, relationships by the
+ * directed triple `source|type|target`, documents by id — a renamed label or a
+ * new telling of the same story is *not* a new relationship. */
+export interface DatasetDiff {
+  entities: { added: number; removed: number; unchanged: number };
+  relations: { added: number; removed: number; unchanged: number };
+  documents: { added: number; removed: number; unchanged: number };
+  newEntities: { id: string; label: string; type: EntityType }[];
+  goneEntities: { id: string; label: string; type: EntityType }[];
+  newRelations: { key: string; source: string; target: string; type: string }[];
+  goneRelations: { key: string; source: string; target: string; type: string }[];
+  newDocuments: { id: string; title?: string; source?: string; date?: string }[];
+  /** Pairs that clash now but did not clash in the comparison state. */
+  newConflicts: PairConflict[];
+  /** Pairs that clashed before and no longer do — possibly resolved, possibly lost. */
+  resolvedConflicts: number;
+  /** Entities that gained their second independent source since the comparison. */
+  corroborated: { id: string; label: string; sources: number }[];
+}
+
+const relationKey = (edge: GraphEdge) => `${edge.source}|${edge.type}|${edge.target}`;
+
+/**
+ * Wave 24: the diff between a comparison state and the current dataset. Both
+ * sides are judged with the same rules the panels use (conflicts, independent
+ * sources), so "new contradiction" and "now corroborated" mean exactly what they
+ * mean elsewhere. Every list is bounded; the counts are complete.
+ */
+export function diffDatasets(previous: Dataset, current: Dataset, limit = 6): DatasetDiff {
+  const beforeNodes = new Map(previous.nodes.map(node => [node.id, node]));
+  const afterNodes = new Map(current.nodes.map(node => [node.id, node]));
+  const beforeEdges = new Map(previous.edges.map(edge => [relationKey(edge), edge]));
+  const afterEdges = new Map(current.edges.map(edge => [relationKey(edge), edge]));
+  const beforeDocs = new Map(previous.evidence.map(doc => [doc.id, doc]));
+  const afterDocs = new Map(current.evidence.map(doc => [doc.id, doc]));
+  const byId = (a: { id: string }, b: { id: string }) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  const byKey = (a: { key: string }, b: { key: string }) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
+
+  const newEntities = [...afterNodes.values()].filter(node => !beforeNodes.has(node.id))
+    .map(node => ({ id: node.id, label: node.label, type: node.type })).sort(byId);
+  const goneEntities = [...beforeNodes.values()].filter(node => !afterNodes.has(node.id))
+    .map(node => ({ id: node.id, label: node.label, type: node.type })).sort(byId);
+  const newRelations = [...afterEdges.entries()].filter(([key]) => !beforeEdges.has(key))
+    .map(([key, edge]) => ({ key, source: edge.source, target: edge.target, type: edge.type })).sort(byKey);
+  const goneRelations = [...beforeEdges.entries()].filter(([key]) => !afterEdges.has(key))
+    .map(([key, edge]) => ({ key, source: edge.source, target: edge.target, type: edge.type })).sort(byKey);
+  const newDocuments = [...afterDocs.values()].filter(doc => !beforeDocs.has(doc.id))
+    .map(doc => ({ id: doc.id, ...(doc.title ? { title: doc.title } : {}), ...(doc.source ? { source: doc.source } : {}), ...(doc.date ? { date: doc.date } : {}) })).sort(byId);
+
+  const clash = (data: Dataset) => new Map(pairConflicts(data.nodes, data.edges, data.evidence, Number.POSITIVE_INFINITY)
+    .filter(entry => entry.kind === 'conflict')
+    .map(entry => [entry.pair.join('|'), entry]));
+  const beforeClashes = clash(previous), afterClashes = clash(current);
+  const newConflicts = [...afterClashes.entries()].filter(([key]) => !beforeClashes.has(key)).sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)).map(([, entry]) => entry);
+  const resolvedConflicts = [...beforeClashes.keys()].filter(key => !afterClashes.has(key)).length;
+
+  const beforeSources = nodeBacking(previous.nodes, previous.edges, previous.evidence);
+  const afterSources = nodeBacking(current.nodes, current.edges, current.evidence);
+  const corroborated = current.nodes.filter(node => !node.group
+    && (beforeSources.get(node.id)?.sources ?? 0) <= 1
+    && (afterSources.get(node.id)?.sources ?? 0) >= 2)
+    .map(node => ({ id: node.id, label: node.label, sources: afterSources.get(node.id)!.sources })).sort(byId);
+
+  return {
+    entities: { added: newEntities.length, removed: goneEntities.length, unchanged: [...afterNodes.keys()].filter(id => beforeNodes.has(id)).length },
+    relations: { added: newRelations.length, removed: goneRelations.length, unchanged: [...afterEdges.keys()].filter(key => beforeEdges.has(key)).length },
+    documents: { added: newDocuments.length, removed: [...beforeDocs.keys()].filter(id => !afterDocs.has(id)).length, unchanged: [...afterDocs.keys()].filter(id => beforeDocs.has(id)).length },
+    newEntities: newEntities.slice(0, limit), goneEntities: goneEntities.slice(0, limit),
+    newRelations: newRelations.slice(0, limit), goneRelations: goneRelations.slice(0, limit),
+    newDocuments: newDocuments.slice(0, limit),
+    newConflicts: newConflicts.slice(0, limit), resolvedConflicts, corroborated: corroborated.slice(0, limit),
+  };
+}
+
+/** Wave 24: the change list as RFC-4180 CSV — one row per change, ready to mail. */
+export function diffToCSV(diff: DatasetDiff): string {
+  const rows: (string | number | undefined)[][] = [];
+  for (const entry of diff.newEntities) rows.push(['entity', 'added', entry.id, entry.label, entry.type]);
+  for (const entry of diff.goneEntities) rows.push(['entity', 'removed', entry.id, entry.label, entry.type]);
+  for (const entry of diff.newRelations) rows.push(['relation', 'added', entry.key, '', entry.type]);
+  for (const entry of diff.goneRelations) rows.push(['relation', 'removed', entry.key, '', entry.type]);
+  for (const entry of diff.newDocuments) rows.push(['document', 'added', entry.id, entry.title ?? '', entry.source ?? '']);
+  for (const entry of diff.corroborated) rows.push(['corroboration', 'added', entry.id, entry.label, `${entry.sources} sources`]);
+  for (const entry of diff.newConflicts) rows.push(['conflict', 'added', entry.pair.join('|'), entry.labels.join(' ↔ '), entry.kind]);
+  return [['kind', 'change', 'ref', 'label', 'detail'].map(csvCell).join(','), ...rows.map(row => row.map(csvCell).join(','))].join('\n') + '\n';
+}
+
 export const CONFIDENCE_THRESHOLD = 0.5;
 
 /**
