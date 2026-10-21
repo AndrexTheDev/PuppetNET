@@ -371,10 +371,26 @@ test('wave 21: contradictions and currency are judged, never guessed', () => {
   assert.match(data, /export function evidenceFreshness\(nodes: GraphNode\[\], evidence: Evidence\[\], reference: string, months = 12, limit = 8\): Freshness \| null/, 'freshness takes its reference date from outside');
   assert.doesNotMatch(data.match(/export function evidenceFreshness[\s\S]*?\n}/)?.[0] ?? '', /Date\.now/, 'no hidden clock in the analysis');
   const worker = read('apps/web/app/dashboard/graph.worker.ts');
-  assert.match(worker, /const conflicts = pairConflicts\(filtered\.nodes, filtered\.edges, dataset\.evidence\)/, 'conflicts run on the visible slice');
-  assert.match(worker, /evidenceFreshness\(filtered\.nodes, dataset\.evidence, new Date\(\)\.toISOString\(\)\.slice\(0, 10\)\)/, 'the UI passes today as a plain day');
+  assert.match(worker, /const conflicts = pairConflicts\(\w+\.nodes, \w+\.edges, dataset\.evidence\)/, 'conflicts run on a visible slice');
+  assert.match(worker, /evidenceFreshness\([\s\S]{0,80}new Date\(\)\.toISOString\(\)\.slice\(0, 10\)/, 'the UI passes today as a plain day');
   const dashboard = read('apps/web/app/dashboard/Dashboard.tsx');
   assert.ok(dashboard.includes("t('dash.conflictText')"), 'the conflict panel explains development vs contradiction');
   assert.ok(dashboard.includes("t('dash.freshText',"), 'the currency panel explains unknown-is-not-old');
   assert.ok(dashboard.includes("t('dash.freshNone')"), 'a current case is stated positively');
+});
+
+test('wave 22: the dispute view and its window are bounded and reversible', () => {
+  const data = read('apps/web/app/dashboard/graph-data.ts');
+  assert.match(data, /export const FRESH_WINDOWS = \[6, 12, 24, 60\] as const/, 'the window is a closed vocabulary');
+  assert.match(data, /if \(filters\.dispute\) \{/, 'the dispute narrowing is part of the one filter function');
+  assert.match(data, /\.filter\(entry => entry\.kind === 'conflict'\)/, 'only real conflicts narrow the network, developments do not');
+  const worker = read('apps/web/app/dashboard/graph.worker.ts');
+  assert.match(worker, /const analysisSlice = filters\.dispute \? filterDataset\(effectiveDataset\(\), \{ \.\.\.filters, dispute: undefined \}\) : filtered;/,
+    'conflicts are judged before the dispute view narrows, so the panel stays complete');
+  assert.match(worker, /isFreshWindow\(filters\.fresh\) \? filters\.fresh : DEFAULT_FRESH_MONTHS/, 'an unknown window falls back to the default instead of guessing');
+  const dashboard = read('apps/web/app/dashboard/Dashboard.tsx');
+  assert.ok(dashboard.includes("t('dash.conflictShowAll')"), 'the view can always be undone');
+  assert.ok(dashboard.includes("t('dash.conflictNoneInScope')"), 'an empty dispute set is stated honestly');
+  assert.ok(dashboard.includes('FRESH_WINDOWS.map('), 'the window is switchable in the panel');
+  assert.ok(dashboard.includes('aria-pressed={view.freshness?.months === months}'), 'the active window is exposed to assistive tech');
 });

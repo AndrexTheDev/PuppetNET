@@ -513,6 +513,31 @@ Entitäten), Berichtsabschnitte, token-only CSS, 2 neue Datenlagen-Tests (dashbo
 Der i18n-Paritätstest hat dabei einen echten Platzhalter-Fehler (`{entity}`/`{label}`)
 vor dem Commit gefangen.
 
+### Welle 22 — Widerspruchs-Ansicht & Zeitfenster — ✅ umgesetzt (2026-10-21)
+
+- **Widerspruchs-Ansicht** (`Filters.dispute`): ein Klick reduziert das Netzwerk auf
+  genau die Paare, deren Aussagen sich **wirklich** widersprechen — beide Aussagen des
+  Paares bleiben sichtbar, alles andere verschwindet. Entwicklungen (getrennte
+  Zeiträume) und Korroboration (gleicher Typ) werden **nicht** eingeschnitten, denn sie
+  sind keine Streitfrage. Das Konfliktset wird aus dem Ausschnitt **vor** der
+  Einschränkung berechnet, deshalb ist das Umschalten stabil und das Panel bleibt
+  vollständig; ist nichts strittig, sagt die Ansicht das ehrlich statt leer zu bleiben.
+- **Zeitfenster der Aktualitätsprüfung** (`Filters.fresh`, geschlossene Liste
+  6 / 12 / 24 / 60 Monate, Standard 12): im Panel umschaltbar mit `aria-pressed`,
+  im Permalink nur bei Abweichung vom Standard (`fresh=24`), unbekannte Werte werden
+  verworfen statt geraten. So ist „veraltet" immer eine definierte Aussage.
+- Beides zusammengenommen beantwortet die Frage, die vor jedem Telefonat steht:
+  *Was ist strittig, und wie dünn ist die Aktenlage darunter?*
+
+**Geliefert (Welle 22)**: `FRESH_WINDOWS`/`isFreshWindow`/`DEFAULT_FRESH_MONTHS`,
+`Filters.dispute`, Einschränkung als letzter Schritt in `filterDataset()`, `fresh`+
+`dispute` im Permalink (beide Writer), Worker rechnet Konflikte und Aktualität auf dem
+Ausschnitt vor der Einschränkung, Umschalter im Widerspruchs-Panel und
+Fenster-Buttons im Aktualitäts-Panel, 10 neue DE/EN-Schlüssel, token-only CSS,
+2 neue Datenlagen-Tests (dashboard 51) + 1 neuer Release-Pin (release 28) —
+`ci:pages` grün, 0 zusätzliche Actions-Minuten. Zwei Wellen-Pins aus Welle 21 wurden
+dabei auf stabile Muster umgestellt, weil Welle 22 dieselben Zeilen erweitert hat.
+
 ## 4. Budget-Zusammenfassung
 
 | Welle | Ort | Zusätzliche Actions-Minuten | Status |
@@ -538,6 +563,7 @@ vor dem Commit gefangen.
 | 19 Quellen-Filter | Browser/Worker | **0** | ✅ umgesetzt |
 | 20 Quellen-Register | Browser/Worker | **0** | ✅ umgesetzt |
 | 21 Widersprüche/Aktualität | Browser/Worker | **0** | ✅ umgesetzt |
+| 22 Widerspruchs-Ansicht/Zeitfenster | Browser/Worker | **0** | ✅ umgesetzt |
 
 Kein Schritt erzeugt neue Workflows, neue Cron-Jobs, längere Jobs oder bezahlte
 Dienste. Die einzigen verbrauchsrelevanten Grenzen sind die bestehenden: 3
@@ -1038,6 +1064,29 @@ token-only CSS, 2 new data-layer tests (dashboard 49) + 1 new release pin (relea
 `ci:pages` green, 0 extra Actions minutes. The i18n parity test caught a real
 placeholder mismatch (`{entity}`/`{label}`) before the commit.
 
+### Wave 22 — dispute view & time window — ✅ implemented (2026-10-21)
+
+- **Dispute view** (`Filters.dispute`): one click reduces the network to exactly the
+  pairs whose claims **really** clash — both claims of the pair stay visible, everything
+  else goes. Developments (separate windows) and corroboration (same type) are **not**
+  narrowed, because they are not in dispute. The conflict set is derived from the slice
+  **before** narrowing, so toggling is stable and the panel stays complete; when nothing
+  is contested the view says so honestly instead of just going blank.
+- **Window of the currency check** (`Filters.fresh`, closed list 6 / 12 / 24 / 60 months,
+  default 12): switchable in the panel with `aria-pressed`, spelled out in the permalink
+  only when it differs from the default (`fresh=24`), off-vocabulary values dropped
+  rather than guessed. "Stale" therefore always means one defined thing.
+- Together they answer the question that precedes every phone call: *what is contested,
+  and how thin is the file underneath it?*
+
+**Delivered (Wave 22)**: `FRESH_WINDOWS`/`isFreshWindow`/`DEFAULT_FRESH_MONTHS`,
+`Filters.dispute`, narrowing as the last step in `filterDataset()`, `fresh`+`dispute` in
+the permalink (both writers), worker judges conflicts and currency on the slice before
+narrowing, toggles in the conflict panel and window buttons in the currency panel,
+10 new DE/EN keys, token-only CSS, 2 new data-layer tests (dashboard 51) + 1 new release
+pin (release 28) — `ci:pages` green, 0 extra Actions minutes. Two wave-21 pins moved to
+stable patterns because wave 22 extends the same lines.
+
 ## 4. Budget summary
 
 | Wave | Location | Additional Actions minutes | Status |
@@ -1063,6 +1112,7 @@ placeholder mismatch (`{entity}`/`{label}`) before the commit.
 | 19 evidence-quality filter | browser/worker | **0** | ✅ implemented |
 | 20 source registry | browser/worker | **0** | ✅ implemented |
 | 21 contradictions/currency | browser/worker | **0** | ✅ implemented |
+| 22 dispute view/time window | browser/worker | **0** | ✅ implemented |
 
 No step creates new workflows, new cron jobs, longer jobs or paid services. The only
 consumption-relevant limits remain the existing ones: 3 reservations/UTC day, 5-minute

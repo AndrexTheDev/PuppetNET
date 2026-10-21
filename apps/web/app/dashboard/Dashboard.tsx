@@ -2,7 +2,7 @@
 import dynamic from 'next/dynamic';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import EntityTable, { type TableRow } from './EntityTable';
-import { COLORS, TYPES, LIMITS, NOTE_STORAGE_KEY, caseReport, decodeViewState, edgesToCSV, encodeViewState, monthWindow, nextPlaybackMonth, nodesToCSV, caseBundle, compareDuplicates, mergeNotes, parseCaseNotes, provenanceGaps, readCaseBundle, searchNoteIndex, removeSavedView, upsertSavedView, readSavedViews, SAVED_VIEW_STORAGE_KEY, normalizeNote, rankSearch, readNotes, resolveNodeRef, viewToJSON, type Evidence, type Filters, type GraphEdge, type GraphNode, type PathTimeline, type View, type ViewUrlState } from './graph-data';
+import { COLORS, TYPES, LIMITS, NOTE_STORAGE_KEY, FRESH_WINDOWS, DEFAULT_FRESH_MONTHS, caseReport, decodeViewState, edgesToCSV, encodeViewState, monthWindow, nextPlaybackMonth, nodesToCSV, caseBundle, compareDuplicates, mergeNotes, parseCaseNotes, provenanceGaps, readCaseBundle, searchNoteIndex, removeSavedView, upsertSavedView, readSavedViews, SAVED_VIEW_STORAGE_KEY, normalizeNote, rankSearch, readNotes, resolveNodeRef, viewToJSON, type Evidence, type Filters, type GraphEdge, type GraphNode, type PathTimeline, type View, type ViewUrlState } from './graph-data';
 import type { NetworkHandle, PathHighlight } from './NetworkGraph';
 import type { WorkerRequest, WorkerResponse } from './protocol';
 import { loadStaticGraph, requestResearch, type Standby } from '../../src/lib/dataFetcher';
@@ -21,7 +21,7 @@ export default function Dashboard() {
   // Shareable permalink state: mode, query, focus, community, time window, color mode.
   const initialUrl = useRef<ViewUrlState>(typeof window === 'undefined' ? {} : decodeViewState(window.location.search));
   const [view, setView] = useState<View | null>(null), [busy, setBusy] = useState(true);
-  const [filters, setFilters] = useState<Filters>(() => ({ ...initialFilters, ...(initialUrl.current.community ? { community: initialUrl.current.community } : {}), ...(initialUrl.current.from ? { from: initialUrl.current.from } : {}), ...(initialUrl.current.to ? { to: initialUrl.current.to } : {}), ...(initialUrl.current.sources ? { sources: initialUrl.current.sources } : {}), ...(initialUrl.current.outlet ? { outlet: initialUrl.current.outlet } : {}) }));
+  const [filters, setFilters] = useState<Filters>(() => ({ ...initialFilters, ...(initialUrl.current.community ? { community: initialUrl.current.community } : {}), ...(initialUrl.current.from ? { from: initialUrl.current.from } : {}), ...(initialUrl.current.to ? { to: initialUrl.current.to } : {}), ...(initialUrl.current.sources ? { sources: initialUrl.current.sources } : {}), ...(initialUrl.current.outlet ? { outlet: initialUrl.current.outlet } : {}), ...(initialUrl.current.fresh ? { fresh: initialUrl.current.fresh } : {}), ...(initialUrl.current.dispute ? { dispute: true } : {}) }));
   const filtersRef = useRef(filters); filtersRef.current = filters;
   const busyRef = useRef(busy); busyRef.current = busy;
   const viewLatest = useRef<View | null>(null); viewLatest.current = view;
@@ -231,7 +231,7 @@ export default function Dashboard() {
   // URL without adding history entries (bound values only, no free text blobs).
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    const query = encodeViewState({ mode, q: search || undefined, focus: selected?.id || undefined, community: filters.community, from: filters.from, to: filters.to, color: colorMode, sources: filters.sources, outlet: filters.outlet });
+    const query = encodeViewState({ mode, q: search || undefined, focus: selected?.id || undefined, community: filters.community, from: filters.from, to: filters.to, color: colorMode, sources: filters.sources, outlet: filters.outlet, fresh: filters.fresh, dispute: filters.dispute });
     window.history.replaceState(null, '', query ? `${window.location.pathname}?${query}` : window.location.pathname);
   }, [mode, search, selected, filters.community, filters.from, filters.to, colorMode]);
   const onRatio = useCallback((ratio: number) => { if (busyRef.current) return; const bucket = ratio >= .55 ? 1 : ratio >= .18 ? .35 : .1; setFilters(f => f.ratio === bucket ? f : { ...f, ratio: bucket }); }, []);
@@ -333,7 +333,7 @@ export default function Dashboard() {
   const saveCurrentView = () => {
     const name = viewName.trim();
     if (!name) { setViewsStatus(t('dash.viewsNeedName')); return; }
-    const query = encodeViewState({ mode, q: search || undefined, community: filters.community, from: filters.from, to: filters.to, color: colorMode, focus: selected?.id, sources: filters.sources, outlet: filters.outlet });
+    const query = encodeViewState({ mode, q: search || undefined, community: filters.community, from: filters.from, to: filters.to, color: colorMode, focus: selected?.id, sources: filters.sources, outlet: filters.outlet, fresh: filters.fresh, dispute: filters.dispute });
     setSavedViews(list => upsertSavedView(list, name, query || 'mode=list', new Date().toISOString()));
     setViewName('');
     setViewsStatus(t('dash.viewsSaved', { name }));
@@ -538,18 +538,24 @@ export default function Dashboard() {
             </li>)}</ul>
             <p className="muted">{t('dash.sharedText')}</p>
           </div>}
-          {view.conflicts && view.conflicts.length > 0 && <div className="conflict-panel">
+          {view.conflicts && <div className="conflict-panel">
             <h4 className="hub-heading">{t('dash.conflictTitle')}</h4>
-            <p className="muted small-text">{t('dash.conflictCount', { count: number(view.conflicts.length) })}</p>
-            <ul className="conflict-list">{view.conflicts.map(conflict => <li key={`${conflict.pair[0]}|${conflict.pair[1]}`} className={`conflict-${conflict.kind}`}>
+            {view.conflicts.length === 0
+              ? <p className="muted" role="status">{t('dash.conflictNoneInScope')}</p>
+              : <p className="muted small-text">{t('dash.conflictCount', { count: number(view.conflicts.length) })}</p>}
+            {view.conflicts.length > 0 && (filters.dispute
+              ? <p className="muted small-text" role="status">{t('dash.conflictActive', { edges: number(view.edges.length), nodes: number(view.nodes.length) })} <button type="button" className="text-button" onClick={() => setFilters(f => ({ ...f, dispute: undefined }))}>{t('dash.conflictShowAll')}</button></p>
+              : <button type="button" className="text-button" aria-label={t('dash.conflictOnlyAria')} onClick={() => setFilters(f => ({ ...f, dispute: true }))}>{t('dash.conflictOnly')}</button>)}
+            {view.conflicts.length > 0 && <ul className="conflict-list">{view.conflicts.map(conflict => <li key={`${conflict.pair[0]}|${conflict.pair[1]}`} className={`conflict-${conflict.kind}`}>
               <span className="conflict-pair">{conflict.labels[0]} ↔ {conflict.labels[1]}</span>
               <span className="conflict-kind">{t(`dash.conflictKind${conflict.kind === 'conflict' ? 'Conflict' : conflict.kind === 'sequence' ? 'Sequence' : 'Undated'}`)}</span>
               <ul className="conflict-claims">{conflict.claims.map(claim => <li key={claim.type}>{t('dash.conflictClaim', { type: claim.type, documents: number(claim.documents), sources: number(claim.sources) })}{claim.first ? ` · ${claim.first}${claim.last && claim.last !== claim.first ? ` → ${claim.last}` : ''}` : ''}</li>)}</ul>
-            </li>)}</ul>
+            </li>)}</ul>}
             <p className="muted">{t('dash.conflictText')}</p>
           </div>}
           {view.freshness && <div className="fresh-panel">
             <h4 className="hub-heading">{t('dash.freshTitle')}</h4>
+            <div className="fresh-window" role="group" aria-label={t('dash.freshWindow')}>{FRESH_WINDOWS.map(months => <button key={months} type="button" disabled={busy} className={`window-button${view.freshness?.months === months ? ' is-active' : ''}`} aria-pressed={view.freshness?.months === months} aria-label={t('dash.freshWindowAria', { months })} onClick={() => setFilters(f => ({ ...f, fresh: months === DEFAULT_FRESH_MONTHS ? undefined : months }))}>{t('dash.freshWindowLabel', { months })}</button>)}</div>
             <p className="muted small-text">{t('dash.freshSummary', { stale: number(view.freshness.staleCount), entities: number(view.freshness.entities), months: view.freshness.months, undated: number(view.freshness.undatedCount) })}</p>
             {view.freshness.staleCount === 0
               ? <p className="muted" role="status">{t('dash.freshNone')}</p>

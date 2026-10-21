@@ -26,7 +26,7 @@ export interface GraphNode {
 }
 export interface GraphEdge { id: string; source: string; target: string; type: string; confidence: number; weight: number; evidenceIds: string[]; count?: number; types?: string[] }
 export interface Dataset { nodes: GraphNode[]; edges: GraphEdge[]; evidence: Evidence[]; truncated?: boolean; analytics?: GraphAnalytics; insights?: GraphInsight[] }
-export interface Filters { confidence: number; weight: number; types: EntityType[]; lod: boolean; ratio: number; community?: string; from?: string; to?: string; bundle?: boolean; sources?: SourceFilter; outlet?: string }
+export interface Filters { confidence: number; weight: number; types: EntityType[]; lod: boolean; ratio: number; community?: string; from?: string; to?: string; bundle?: boolean; sources?: SourceFilter; outlet?: string; fresh?: FreshWindow; dispute?: boolean }
 export interface Vulnerability {
   cutVertices: { id: string; label: string; degree: number; impact: { components: number; largest: number } }[];
   cutEdges: number;
@@ -299,6 +299,18 @@ export function filterDataset(data: Dataset, filters: Filters): Dataset {
     nodes = nodes.filter(node => touched.has(node.id));
     const allowed = new Set(nodes.map(node => node.id));
     edges = edges.filter(edge => allowed.has(edge.source) && allowed.has(edge.target));
+  }
+  // Wave 22: dispute view — only the pairs whose claims genuinely clash. The
+  // conflict set is derived from the edges that survived every other filter, so
+  // switching the view on and off can never feed back into itself.
+  if (filters.dispute) {
+    const disputed = new Set(pairConflicts(nodes, edges, data.evidence, Number.POSITIVE_INFINITY)
+      .filter(entry => entry.kind === 'conflict')
+      .map(entry => `${entry.pair[0]}|${entry.pair[1]}`));
+    edges = edges.filter(edge => disputed.has(edge.source <= edge.target ? `${edge.source}|${edge.target}` : `${edge.target}|${edge.source}`));
+    const touched = new Set<string>();
+    for (const edge of edges) { touched.add(edge.source); touched.add(edge.target); }
+    nodes = nodes.filter(node => touched.has(node.id));
   }
   return { nodes, edges, evidence: data.evidence, ...(data.analytics ? { analytics: data.analytics } : {}),
     ...(data.insights ? { insights: data.insights } : {}) };
@@ -1288,6 +1300,15 @@ export function evidenceFreshness(nodes: GraphNode[], evidence: Evidence[], refe
   return { reference: day, months: Math.max(1, Math.trunc(months)), stale: stale.slice(0, Math.max(1, limit)), staleCount: stale.length, undatedCount, entities };
 }
 
+/** Wave 22: the only windows the currency check may use. A closed vocabulary
+ * keeps permalinks comparable and makes "stale" mean one defined thing. */
+export const FRESH_WINDOWS = [6, 12, 24, 60] as const;
+export type FreshWindow = (typeof FRESH_WINDOWS)[number];
+export const DEFAULT_FRESH_MONTHS: FreshWindow = 12;
+export function isFreshWindow(value: unknown): value is FreshWindow {
+  return FRESH_WINDOWS.includes(value as FreshWindow);
+}
+
 export const CONFIDENCE_THRESHOLD = 0.5;
 
 /**
@@ -1478,7 +1499,7 @@ export function viewToJSON(view: { nodes: GraphNode[]; edges: GraphEdge[]; analy
 }
 
 /** Shareable permalinks: bounded, validated URL state (no secrets, no free text). */
-export interface ViewUrlState { mode?: 'network' | 'map' | 'list'; q?: string; focus?: string; community?: string; from?: string; to?: string; color?: 'type' | 'community'; sources?: SourceFilter; outlet?: string }
+export interface ViewUrlState { mode?: 'network' | 'map' | 'list'; q?: string; focus?: string; community?: string; from?: string; to?: string; color?: 'type' | 'community'; sources?: SourceFilter; outlet?: string; fresh?: FreshWindow; dispute?: boolean }
 export function encodeViewState(state: ViewUrlState): string {
   const params = new URLSearchParams();
   if (state.mode) params.set('mode', state.mode);
@@ -1491,6 +1512,8 @@ export function encodeViewState(state: ViewUrlState): string {
   if (state.sources && SOURCE_FILTERS.includes(state.sources)) params.set('sources', state.sources);
   const outlet = state.outlet?.trim().slice(0, 80);
   if (outlet) params.set('outlet', outlet);
+  if (state.dispute) params.set('dispute', '1');
+  if (state.fresh && isFreshWindow(state.fresh) && state.fresh !== DEFAULT_FRESH_MONTHS) params.set('fresh', String(state.fresh));
   return params.toString();
 }
 export function decodeViewState(search: string): ViewUrlState {
@@ -1509,6 +1532,9 @@ export function decodeViewState(search: string): ViewUrlState {
   if (sources && SOURCE_FILTERS.includes(sources)) state.sources = sources;
   const outlet = bounded('outlet', 80);
   if (outlet) state.outlet = outlet;
+  if (params.get('dispute') === '1') state.dispute = true;
+  const fresh = Number(params.get('fresh'));
+  if (isFreshWindow(fresh)) state.fresh = fresh;
   return state;
 }
 

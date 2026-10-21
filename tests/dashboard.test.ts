@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
-import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, monthWindow, bundleEdges, structuralVulnerability, pathTimeline, normalizeNote, readNotes, caseReport, nextPlaybackMonth, evidenceWindow, compareDuplicates, multiFailureImpact, normalizeSavedName, readSavedViews, upsertSavedView, removeSavedView, evidenceToCSV, parseCaseNotes, mergeNotes, searchNoteIndex, caseBundle, readCaseBundle, provenanceGaps, edgeSources, sharedSourceGroups, normalizeEvidence, edgeSourceStatus, sourceRegistry, pairConflicts, evidenceFreshness, monthsBefore, SAVED_VIEW_LIMIT, NOTE_LIMIT, EGO_DEPTH_LIMIT, VULNERABILITY_NODE_LIMIT, normalizeInsights, ANALYSIS_LIMITS, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
+import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, monthWindow, bundleEdges, structuralVulnerability, pathTimeline, normalizeNote, readNotes, caseReport, nextPlaybackMonth, evidenceWindow, compareDuplicates, multiFailureImpact, normalizeSavedName, readSavedViews, upsertSavedView, removeSavedView, evidenceToCSV, parseCaseNotes, mergeNotes, searchNoteIndex, caseBundle, readCaseBundle, provenanceGaps, edgeSources, sharedSourceGroups, normalizeEvidence, edgeSourceStatus, sourceRegistry, pairConflicts, evidenceFreshness, monthsBefore, FRESH_WINDOWS, DEFAULT_FRESH_MONTHS, isFreshWindow, filterDataset, TYPES, SAVED_VIEW_LIMIT, NOTE_LIMIT, EGO_DEPTH_LIMIT, VULNERABILITY_NODE_LIMIT, normalizeInsights, ANALYSIS_LIMITS, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
 import { apiBase, readResponse } from '../apps/web/app/dashboard/api';
 const filters: Filters = { confidence: 0, weight: 0, types: [...TYPES], lod: true, ratio: 1 };
 test('normalizes Worker and Graphology nodes without inventing coordinates', () => {
@@ -974,4 +974,60 @@ test('wave 21 evidence currency separates old from unknown', () => {
   assert.equal(evidenceFreshness([], [], '2026-10-21')?.entities, 0);
   const grouped = [{ ...data.nodes[0], id: 'group:x', group: true, evidenceIds: ['d1'] }, ...data.nodes];
   assert.equal(evidenceFreshness(grouped, data.evidence, '2026-10-21')?.entities, 4, 'LoD display groups are not entities');
+});
+
+test('wave 22 dispute view narrows to pairs that genuinely clash', () => {
+  const data = normalizeDataset({
+    nodes: [{ key: 'a', name: 'Alpha' }, { key: 'b', name: 'Beta' }, { key: 'c', name: 'Gamma' }, { key: 'd', name: 'Delta' }],
+    evidence: [
+      { id: 'e1', title: 'R', source: 'HR', date: '2024-01-10' },
+      { id: 'e2', title: 'A', source: 'Presse', date: '2024-06-01' },
+      { id: 'e3', title: 'B', source: 'Blog', date: '2024-04-01' },
+      { id: 'e4', title: 'C', source: 'Blog', date: '2024-07-01' },
+    ],
+    edges: [
+      { source: 'a', target: 'b', type: 'OWNS', evidenceIds: ['e1', 'e2'] },
+      { source: 'b', target: 'a', type: 'SOLD', evidenceIds: ['e3'] },
+      { source: 'c', target: 'd', type: 'OWNS', evidenceIds: ['e1'] },
+      { source: 'd', target: 'c', type: 'OWNS', evidenceIds: ['e4'] },
+    ],
+  });
+  const base: Filters = { confidence: 0, weight: 0, types: [...TYPES], lod: false, ratio: 1 };
+  const full = filterDataset(data, base);
+  assert.deepEqual([full.nodes.length, full.edges.length], [4, 4], 'the unfiltered slice keeps everything');
+  const disputed = filterDataset(data, { ...base, dispute: true });
+  assert.deepEqual(disputed.edges.map(edge => `${edge.source}>${edge.target}:${edge.type}`), ['a>b:OWNS', 'b>a:SOLD'],
+    'both claims of the contested pair stay visible, nothing else does');
+  assert.deepEqual(disputed.nodes.map(node => node.id).sort(), ['a', 'b'], 'only the entities in the dispute survive');
+  assert.deepEqual(filterDataset(data, { ...base, dispute: true }), disputed, 'stable when applied twice');
+  const corroboratedPair = normalizeDataset({
+    nodes: [{ key: 'x', name: 'X' }, { key: 'y', name: 'Y' }],
+    evidence: [{ id: 'd1', title: 'R', date: '2024-01-01' }, { id: 'd2', title: 'A', date: '2024-02-01' }],
+    edges: [{ source: 'x', target: 'y', type: 'OWNS', evidenceIds: ['d1'] }, { source: 'y', target: 'x', type: 'OWNS', evidenceIds: ['d2'] }],
+  });
+  assert.deepEqual([filterDataset(corroboratedPair, { ...base, dispute: true }).nodes.length, filterDataset(corroboratedPair, { ...base, dispute: true }).edges.length], [0, 0],
+    'corroboration is not a dispute, so the view is honestly empty');
+  const narrowed = filterDataset(data, { ...base, dispute: true, confidence: 1.1 });
+  assert.deepEqual([narrowed.nodes.length, narrowed.edges.length], [0, 0], 'composes with the other filters');
+});
+
+test('wave 22 the currency window is a closed vocabulary and survives the permalink', () => {
+  assert.deepEqual([...FRESH_WINDOWS], [6, 12, 24, 60]);
+  assert.equal(DEFAULT_FRESH_MONTHS, 12);
+  assert.ok(isFreshWindow(60) && isFreshWindow(12) && !isFreshWindow(13) && !isFreshWindow('24') && !isFreshWindow(undefined));
+  assert.equal(encodeViewState({ fresh: 12 }), '', 'the default window is not spelled out');
+  assert.equal(encodeViewState({ fresh: 24, dispute: true }), 'dispute=1&fresh=24');
+  assert.deepEqual(decodeViewState('?dispute=1&fresh=24'), { dispute: true, fresh: 24 });
+  assert.deepEqual(decodeViewState('?fresh=13'), {}, 'an off-vocabulary window is dropped, never coerced');
+  assert.deepEqual(decodeViewState('?dispute=0&fresh=abc'), {});
+  assert.deepEqual(decodeViewState('?dispute=1'), { dispute: true });
+  const data = normalizeDataset({
+    nodes: [{ key: 'old', name: 'Old', evidenceIds: ['d1'] }, { key: 'recent', name: 'Recent', evidenceIds: ['d2'] }],
+    evidence: [{ id: 'd1', title: 'A', date: '2024-06-01' }, { id: 'd2', title: 'B', date: '2026-01-01' }],
+    edges: [],
+  });
+  assert.equal(evidenceFreshness(data.nodes, data.evidence, '2026-10-21', 6)?.staleCount, 2, 'a six-month window is stricter');
+  assert.equal(evidenceFreshness(data.nodes, data.evidence, '2026-10-21', 24)?.staleCount, 1, 'a two-year window forgives the older entity');
+  assert.deepEqual(evidenceFreshness(data.nodes, data.evidence, '2026-10-21', 24)?.stale.map(entry => entry.id), ['old']);
+  assert.equal(evidenceFreshness(data.nodes, data.evidence, '2026-10-21', 60)?.staleCount, 0);
 });
