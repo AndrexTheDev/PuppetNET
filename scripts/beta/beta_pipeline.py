@@ -145,9 +145,9 @@ def model_answer(model: str, body: dict) -> dict:
     return {"entities": [], "relations": []}
 
 
-def main() -> None:
+def run_pipeline():
+    """Run the rehearsal once; return (pipe, gemini_calls, captured_writer_batches, tmp_dir)."""
     from conftest import TEST_ENV
-    from src.export_static_slices import export_slices
     from test_e2e_dry_run import scripted_client, text_result
 
     from puppetnet import pipeline as pipeline_module
@@ -194,12 +194,10 @@ def main() -> None:
         spacy.load = spacy_load
         Neo4jClient.execute_batches = real_exec
 
-    stats = pipe.stats
-    check("S7 pipeline ran without errors", stats.errors == [], str(stats.errors)[:300])
-    check("S7 RSS articles fetched (short teaser may be dropped upstream)", stats.documents_fetched >= 3, f"fetched={stats.documents_fetched}")
-    check("S7 one Gemini request per long article; short article (<200 chars) skipped", len(calls) == 3,
-          f"requests={len(calls)}")
+    return pipe, calls, captured, tmp
 
+
+def relation_rows(captured):
     rel_rows = []
     for batch in captured:
         q = "\n".join(line.split("//", 1)[0] for line in str(batch["query"]).splitlines())
@@ -207,6 +205,20 @@ def main() -> None:
             rel_type = re.search(r"\[r:([A-Z_]+)", q)
             for row in batch["rows"]:
                 rel_rows.append(dict(row, _type=rel_type.group(1) if rel_type else batch["label"]))
+    return rel_rows
+
+
+def main() -> None:
+    from src.export_static_slices import export_slices
+
+    pipe, calls, captured, tmp = run_pipeline()
+    stats = pipe.stats
+    check("S7 pipeline ran without errors", stats.errors == [], str(stats.errors)[:300])
+    check("S7 RSS articles fetched (short teaser may be dropped upstream)", stats.documents_fetched >= 3, f"fetched={stats.documents_fetched}")
+    check("S7 one Gemini request per long article; short article (<200 chars) skipped", len(calls) == 3,
+          f"requests={len(calls)}")
+
+    rel_rows = relation_rows(captured)
     triples = sorted((r.get("subject_key", ""), r["_type"], r.get("object_key", ""), r.get("method")) for r in rel_rows)
     for t in triples:
         print("   edge:", t)

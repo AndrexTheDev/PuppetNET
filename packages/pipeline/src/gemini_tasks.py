@@ -223,6 +223,9 @@ class DocumentExtractor:
             entity = Entity(name=name.strip()[:120], entity_type=kind, confidence=0.6,
                             source_ids={source_id}, doc_ids={doc_id})
             entity.properties["extractor"] = "gemini_doc"
+            # Seen only by the cloud model: never auto-published (export veto)
+            # until a local extractor sees it too or an operator releases it.
+            entity.properties["cloud_only"] = True
             by_name[key] = entity
             new_entities[entity.canonical_key] = entity
             return entity

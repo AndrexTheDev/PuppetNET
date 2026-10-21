@@ -146,6 +146,14 @@ erzeugt hatte. Neu gilt:
   Kante dagegen nie herab.
 * Auch die bisherigen Satzpaar-Klassifikationen aus der Cloud tragen jetzt
   `method = llm` (vorher getarnt als `pattern`).
+* **Entitäten, die nur das Cloud-Modell gesehen hat** (`e.cloud_only = true`),
+  werden genauso behandelt: keine automatische Profilseite, auch nicht aus einem
+  verifizierten Feed, nur nach `public_released = true`. Sieht ein lokaler Extraktor
+  die Entität einmal, entfällt das Kennzeichen dauerhaft (Und-Semantik im Merge und
+  im Upsert). Hintergrund (Beta 21.10.): Eine nur in einer Festnahmemeldung genannte
+  Person hätte sonst eine indexierbare Profilseite ohne jede Beziehung bekommen.
+  Gibt der Betreiber eine KI-Kante frei, muss er eine cloud-only-Entität an ihrem
+  Ende ebenfalls freigeben, sonst entfällt die Kante.
 
 Review-Abfrage in Neo4j (Aura-Konsole):
 

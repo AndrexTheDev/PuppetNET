@@ -550,3 +550,48 @@ def test_run_level_merge_lets_local_evidence_replace_llm_in_any_order():
         assert merged[0].method is ExtractionMethod.DEPENDENCY and merged[0].evidence == "local quote"
     two_cloud = IngestPipeline._merge_relations([copy.deepcopy(cloud), copy.deepcopy(cloud)])
     assert two_cloud[0].method is ExtractionMethod.LLM
+
+
+# ------------------------------------------------------- cloud-only entities
+def test_cloud_only_entity_flag_is_an_and_across_merges_and_upserts():
+    from puppetnet.graph import schema
+    from puppetnet.models import Entity, EntityType
+
+    def cloud():
+        e = Entity("Jonas Weber", EntityType.PERSON)
+        e.properties.update(extractor="gemini_doc", cloud_only=True)
+        return e
+
+    for first, second in ((cloud(), Entity("Jonas Weber", EntityType.PERSON)),
+                          (Entity("Jonas Weber", EntityType.PERSON), cloud())):
+        first.merge(second)
+        assert "cloud_only" not in first.properties
+        assert schema.properties_for_entity_row(first)["cloud_only"] is False
+    both = cloud()
+    both.merge(cloud())
+    row = schema.properties_for_entity_row(both)
+    assert row["cloud_only"] is True and "cloud_only" not in row["properties"]
+    cypher = schema.ENTITY_UPSERT_TEMPLATE
+    assert "e.cloud_only = CASE WHEN row.cloud_only THEN true ELSE null END" in cypher
+    assert "coalesce(e.cloud_only, false) AND row.cloud_only" in cypher
+
+
+def test_export_vetoes_cloud_only_entities_even_from_verified_feeds(monkeypatch):
+    from src.export_static_slices import approved
+    monkeypatch.delenv("GEMINI_AUTO_RELEASE", raising=False)
+    feed = "https://feeds.example.test/a.xml"
+    row = {"canonical_key": "PERSON:x", "confidence": 0.9, "feed_urls": [feed], "cloud_only": True}
+    assert approved(row, {feed}) is False
+    assert approved(dict(row, public_released=True), {feed}) is True
+    assert approved(dict(row, cloud_only=None), {feed}) is True
+
+
+def test_validator_marks_new_entities_cloud_only(tmp_path):
+    data = {"entities": [{"name": "Mallory Corp", "type": "ORGANIZATION"}],
+            "relations": [rel("Mallory Corp", "OWNS", "Siemens AG", "Mallory Corp besitzt die Siemens AG")]}
+    ext, _ = extractor(tmp_path, data)
+    text = TEXT + " Mallory Corp besitzt die Siemens AG seit Jahren, heißt es im Bericht. "
+    entities, relations = ext.extract(text=text, title="", known=known(), doc_id="d", source_id="s", source_weight=1)
+    assert [e.properties.get("cloud_only") for e in entities] == [True]
+    assert relations[0].subject.properties.get("cloud_only") is True
+    assert relations[0].obj.properties.get("cloud_only") is None  # known locally

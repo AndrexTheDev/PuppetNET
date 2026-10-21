@@ -147,6 +147,11 @@ def approved(row: dict, feeds: set[str] | None = None) -> bool:
         # Only an explicit operator release does. Local corroboration rewrites the
         # stored method (schema upsert), which lifts this veto.
         return row.get("public_released") is True
+    if row.get("cloud_only") is True and not llm_auto_release_allowed():
+        # Entity only the cloud model reported (no local NER sighting): a person
+        # named once in a news text must not get a public profile page by
+        # verified-feed provenance alone. Operator release only.
+        return row.get("public_released") is True
     automatic = auto_released(row, feeds)
     if row.get("requires_review") and not automatic and row.get("public_released") is not True:
         return False
@@ -206,7 +211,7 @@ def read_neo4j(limit: int = MAX_NODES) -> dict:
             LIMIT $limit
             RETURN e{.canonical_key,.name,.entity_type,.description,.public,.public_released,
                      .private,.noindex,.release_blocked,.requires_review,.calculated,.negated,.hedged,
-                     .updated_at,.last_seen,.lat,.lon,.confidence,.doc_ids} AS node
+                     .updated_at,.last_seen,.lat,.lon,.confidence,.doc_ids,.cloud_only} AS node
         """, limit=max(1, min(limit, MAX_NODES)))]
         keys = [node["canonical_key"] for node in nodes]
         edges = [dict(row["edge"]) for row in tx.run("""

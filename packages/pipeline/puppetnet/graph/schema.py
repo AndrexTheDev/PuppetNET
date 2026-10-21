@@ -248,6 +248,7 @@ ON CREATE SET
     e.doc_ids = row.doc_ids,
     e.first_seen = row.first_seen,
     e.last_seen = row.last_seen,
+    e.cloud_only = CASE WHEN row.cloud_only THEN true ELSE null END,
     e += row.properties
 ON MATCH SET
     e.name = CASE WHEN size(coalesce(row.name, '')) > size(coalesce(e.name, '')) THEN row.name ELSE e.name END,
@@ -268,6 +269,9 @@ ON MATCH SET
     e.doc_ids = reduce(acc = coalesce(e.doc_ids, []), d IN row.doc_ids |
                        CASE WHEN d IN acc THEN acc ELSE acc + d END)[-64..],
     e.last_seen = row.last_seen,
+    // AND semantics: once any local extractor saw the entity it stays local
+    // (null removes the property); the export vetoes cloud_only nodes.
+    e.cloud_only = CASE WHEN coalesce(e.cloud_only, false) AND row.cloud_only THEN true ELSE null END,
     e += row.properties
 WITH e{label_clauses}
 RETURN count(e) AS entities
@@ -592,7 +596,7 @@ def properties_for_entity_row(entity: Any, *, run_id: str = "") -> dict[str, Any
     props = entity.to_node_properties()
     reserved = {
         "canonical_key", "name", "entity_type", "aliases", "mention_count",
-        "confidence", "source_ids", "doc_ids", "first_seen", "last_seen",
+        "confidence", "source_ids", "doc_ids", "first_seen", "last_seen", "cloud_only",
     }
     extra = {k: v for k, v in props.items() if k not in reserved and v not in (None, "", [], {})}
     # Neo4j rejects nested maps as property values — flatten to dotted keys.
@@ -624,6 +628,7 @@ def properties_for_entity_row(entity: Any, *, run_id: str = "") -> dict[str, Any
         # Derived domain values (tail_number, normalised gps, address_key,
         # shell_risk …) win over the raw source property they came from.
         "properties": {**flat, **domain_extras},
+        "cloud_only": bool((getattr(entity, "properties", None) or {}).get("cloud_only")),
         "run_id": run_id,
     }
 
