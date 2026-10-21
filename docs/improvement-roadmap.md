@@ -460,6 +460,32 @@ Filter-Panel (DE/EN, Statuszeile, Leer-Hinweis), token-only CSS, 1 neuer Datenla
 (dashboard 45) + 1 neuer Release-Pin (release 25) — `ci:pages` grün, 0 zusätzliche
 Actions-Minuten.
 
+### Welle 20 — Quellen-Register (wer sagt das?) — ✅ umgesetzt (2026-10-20)
+
+- **Quellen-Register**: Ein Panel listet die **Absender** des Ausschnitts — pro Quelle die
+  Zahl der Dokumente, gestützten Entitäten und Beziehungen sowie ihr dokumentiertes
+  Zeitfenster. Das beantwortet die Frage, die per-Knoten-Beleglisten nie beantworten
+  können: *wer trägt diesen Fall eigentlich*, und wie breit ist die Quellenbasis.
+  Dokumente **ohne Quellenangabe** werden als eigene Zeile geführt, nicht verschwiegen;
+  ein referenziertes, aber nicht auflösbares Dokument zählt dort ebenfalls (ehrliche
+  Unschärfe statt stiller Lücke).
+- **Quellenfilter („nur dieser Absender")**: Klick auf eine Quelle zeigt ausschließlich
+  deren Berichterstattung — Kanten mit Belegen dieser Quelle plus die Entitäten, die
+  darin vorkommen. Bewusst **anders** als der Belegqualitäts-Filter aus Welle 19: hier
+  werden Entitäten mit eingeschränkt (die Frage ist die Abdeckung *einer* Quelle), das
+  wird im UI benannt und ist mit einem Klick aufgehoben. Groß-/Kleinschreibung und
+  Leerraum werden normalisiert, unbekannte Quellen ergeben ehrlich ein leeres Netz,
+  und das Register bleibt während des Filters **vollständig** sichtbar (Umschalten ohne
+  Umweg über „zurücksetzen").
+- Der Filter liegt im Permalink (`outlet=…`) und ist längenbeschränkt; überlange Werte
+  werden beim Lesen verworfen.
+
+**Geliefert (Welle 20)**: `sourceRegistry()` (reine, getestete Funktion, reihenfolge-
+unabhängig durch Sortierung der Dokument-IDs), `Filters.outlet`, `View.sourceRegistry`,
+Register-Panel + Quellenfilter (DE/EN, Statuszeile, Aufheben), token-only CSS, 2 neue
+Datenlagen-Tests (dashboard 47) + 1 neuer Release-Pin (release 26) — `ci:pages` grün,
+0 zusätzliche Actions-Minuten.
+
 ## 4. Budget-Zusammenfassung
 
 | Welle | Ort | Zusätzliche Actions-Minuten | Status |
@@ -483,6 +509,7 @@ Actions-Minuten.
 | 17 Provenienz-Lücken/Fallakte-Import | Browser/Web Worker | **0** | ✅ umgesetzt |
 | 18 Belegqualität/gemeinsame Belege | Browser/Web Worker | **0** | ✅ umgesetzt |
 | 19 Quellen-Filter | Browser/Worker | **0** | ✅ umgesetzt |
+| 20 Quellen-Register | Browser/Worker | **0** | ✅ umgesetzt |
 
 Kein Schritt erzeugt neue Workflows, neue Cron-Jobs, längere Jobs oder bezahlte
 Dienste. Die einzigen verbrauchsrelevanten Grenzen sind die bestehenden: 3
@@ -937,6 +964,28 @@ edge filtering in `filterDataset()`, URL round trip, filter block in the filter 
 (DE/EN, status line, empty hint), token-only CSS, 1 new data-layer test (dashboard 45) +
 1 new release pin (release 25) — `ci:pages` green, 0 extra Actions minutes.
 
+### Wave 20 — source registry (who is saying this?) — ✅ implemented (2026-10-20)
+
+- **Source registry**: a panel lists the **senders** behind the slice — per outlet the
+  number of documents, supported entities and relationships plus its documented window.
+  That answers what per-node evidence lists never can: *who actually carries this case*,
+  and how broad the source base is. Documents **without a source name** get their own
+  row instead of being hidden; a referenced-but-unresolved document counts there too
+  (honest blur instead of a silent gap).
+- **Outlet filter ("only this sender")**: clicking an outlet shows only its reporting —
+  edges documented by that outlet plus the entities appearing in them. Deliberately
+  **different** from the Wave-19 claim filter: entities are narrowed here because the
+  question is one outlet's coverage; the UI says so and one click undoes it. Case and
+  whitespace are normalised, unknown outlets honestly yield an empty network, and the
+  registry stays **complete** while the filter is active (switch without resetting).
+- The filter lives in the permalink (`outlet=…`) and is length-bounded; oversized values
+  are dropped on read.
+
+**Delivered (Wave 20)**: `sourceRegistry()` (pure, tested, order-independent by sorting
+document ids), `Filters.outlet`, `View.sourceRegistry`, registry panel + outlet filter
+(DE/EN, status line, undo), token-only CSS, 2 new data-layer tests (dashboard 47) +
+1 new release pin (release 26) — `ci:pages` green, 0 extra Actions minutes.
+
 ## 4. Budget summary
 
 | Wave | Location | Additional Actions minutes | Status |
@@ -960,6 +1009,7 @@ edge filtering in `filterDataset()`, URL round trip, filter block in the filter 
 | 17 provenance gaps/bundle import | browser/web worker | **0** | ✅ implemented |
 | 18 evidence quality/shared documents | browser/web worker | **0** | ✅ implemented |
 | 19 evidence-quality filter | browser/worker | **0** | ✅ implemented |
+| 20 source registry | browser/worker | **0** | ✅ implemented |
 
 No step creates new workflows, new cron jobs, longer jobs or paid services. The only
 consumption-relevant limits remain the existing ones: 3 reservations/UTC day, 5-minute

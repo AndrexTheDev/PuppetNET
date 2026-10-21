@@ -26,7 +26,7 @@ export interface GraphNode {
 }
 export interface GraphEdge { id: string; source: string; target: string; type: string; confidence: number; weight: number; evidenceIds: string[]; count?: number; types?: string[] }
 export interface Dataset { nodes: GraphNode[]; edges: GraphEdge[]; evidence: Evidence[]; truncated?: boolean; analytics?: GraphAnalytics; insights?: GraphInsight[] }
-export interface Filters { confidence: number; weight: number; types: EntityType[]; lod: boolean; ratio: number; community?: string; from?: string; to?: string; bundle?: boolean; sources?: SourceFilter }
+export interface Filters { confidence: number; weight: number; types: EntityType[]; lod: boolean; ratio: number; community?: string; from?: string; to?: string; bundle?: boolean; sources?: SourceFilter; outlet?: string }
 export interface Vulnerability {
   cutVertices: { id: string; label: string; degree: number; impact: { components: number; largest: number } }[];
   cutEdges: number;
@@ -72,6 +72,8 @@ export interface View {
   gaps?: ProvenanceGaps;
   /** Wave 18: documents that back several visible entities at once. */
   sharedSources?: SharedSourceGroup[];
+  /** Wave 20: which outlets carry the visible slice and how much of it. */
+  sourceRegistry?: SourceRegistryEntry[];
 }
 export const LIMITS = { nodes: 200_000, edges: 500_000, bytes: 64 * 1024 * 1024 };
 const record = (v: unknown): Record<string, unknown> => v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {};
@@ -179,6 +181,75 @@ export function normalizeDataset(input: unknown): Dataset {
   return { nodes, edges, evidence, truncated: raw.truncated === true, ...(analytics ? { analytics } : {}),
     ...(insights.length ? { insights } : {}) };
 }
+/** Wave 20: one outlet in the source registry. `name` is the published source
+ * name; unnamed documents collect under '' and are reported as such instead of
+ * being dropped — an untraceable document is a fact worth seeing. */
+export interface SourceRegistryEntry {
+  name: string;
+  documents: number;
+  entities: number;
+  edges: number;
+  first?: string;
+  last?: string;
+}
+
+/**
+ * Wave 20: which outlets carry the visible slice. Aggregates the documents
+ * behind the visible entities and relationships per source name (case-folded,
+ * trimmed): how many documents, entities and relationships each outlet supports
+ * and the documented window it spans. Deterministic (documents desc, then
+ * name), bounded. This is the "who is saying this" view that per-node evidence
+ * lists cannot give.
+ */
+export function sourceRegistry(data: Dataset, nodes: GraphNode[], edges: GraphEdge[], limit = 12): SourceRegistryEntry[] {
+  const documentById = new Map(data.evidence.map(doc => [doc.id, doc]));
+  const uses = new Map<string, { entities: Set<string>; edges: Set<string> }>();
+  const use = (docId: string) => {
+    let entry = uses.get(docId);
+    if (!entry) { entry = { entities: new Set(), edges: new Set() }; uses.set(docId, entry); }
+    return entry;
+  };
+  const visible = new Set(nodes.filter(node => !node.group).map(node => node.id));
+  for (const node of nodes) {
+    if (node.group) continue;
+    for (const docId of new Set(node.evidenceIds)) if (docId) use(docId).entities.add(node.id);
+  }
+  for (const edge of edges) {
+    if (!visible.has(edge.source) || !visible.has(edge.target)) continue;
+    for (const docId of new Set(edge.evidenceIds)) if (docId) use(docId).edges.add(edge.id);
+  }
+  // Documents are visited in id order, so the displayed spelling of a source is
+  // the first published name in a stable order — never a side effect of data order.
+  const entries = new Map<string, { name: string; docs: Set<string>; entities: Set<string>; edges: Set<string>; first?: string; last?: string }>();
+  for (const docId of [...uses.keys()].sort()) {
+    const doc = documentById.get(docId), used = uses.get(docId)!;
+    const published = (doc?.source ?? '').trim();
+    const key = published.toLowerCase();
+    let entry = entries.get(key);
+    if (!entry) { entry = { name: published, docs: new Set(), entities: new Set(), edges: new Set() }; entries.set(key, entry); }
+    entry.docs.add(docId);
+    for (const id of used.entities) entry.entities.add(id);
+    for (const id of used.edges) entry.edges.add(id);
+    const day = isoDate(doc?.date);
+    if (day) {
+      if (!entry.first || day < entry.first) entry.first = day;
+      if (!entry.last || day > entry.last) entry.last = day;
+    }
+  }
+  return [...entries.values()]
+    .map(entry => ({
+      name: entry.name,
+      documents: entry.docs.size,
+      entities: entry.entities.size,
+      edges: entry.edges.size,
+      ...(entry.first ? { first: entry.first } : {}),
+      ...(entry.last ? { last: entry.last } : {}),
+    }))
+    .sort((a, b) => b.documents - a.documents || b.entities - a.entities
+      || (a.name.toLowerCase() < b.name.toLowerCase() ? -1 : a.name.toLowerCase() > b.name.toLowerCase() ? 1 : 0))
+    .slice(0, Math.max(1, limit));
+}
+
 /** Wave 19: work on claims that stand up. `corroborated` keeps relationships
  * with at least two distinct named sources, `thin` keeps the rest — the edges
  * that still need a second source. Entities are never dropped by this filter:
@@ -210,6 +281,21 @@ export function filterDataset(data: Dataset, filters: Filters): Dataset {
   let edges = data.edges.filter(e => e.confidence >= filters.confidence && e.weight >= filters.weight && keep.has(e.source) && keep.has(e.target));
   if (filters.sources === 'corroborated') edges = edges.filter(e => edgeSourceStatus(e, data.evidence) === 'independent');
   else if (filters.sources === 'thin') edges = edges.filter(e => edgeSourceStatus(e, data.evidence) !== 'independent');
+  // Wave 20: evidence-scoped view — "what does this outlet report?". Unlike the
+  // claim filter this one is meant to narrow entities too, because the question
+  // is about one source's coverage; it is opt-in, named in the UI and cleared
+  // with one click.
+  const outlet = (filters.outlet ?? '').trim().toLowerCase().slice(0, 80);
+  if (outlet) {
+    const documents = new Set(data.evidence.filter(doc => (doc.source ?? '').trim().toLowerCase() === outlet).map(doc => doc.id));
+    edges = edges.filter(e => e.evidenceIds.some(docId => documents.has(docId)));
+    const touched = new Set<string>();
+    for (const node of nodes) if (node.evidenceIds.some(docId => documents.has(docId))) touched.add(node.id);
+    for (const edge of edges) { touched.add(edge.source); touched.add(edge.target); }
+    nodes = nodes.filter(node => touched.has(node.id));
+    const allowed = new Set(nodes.map(node => node.id));
+    edges = edges.filter(edge => allowed.has(edge.source) && allowed.has(edge.target));
+  }
   return { nodes, edges, evidence: data.evidence, ...(data.analytics ? { analytics: data.analytics } : {}),
     ...(data.insights ? { insights: data.insights } : {}) };
 }
@@ -1249,7 +1335,7 @@ export function viewToJSON(view: { nodes: GraphNode[]; edges: GraphEdge[]; analy
 }
 
 /** Shareable permalinks: bounded, validated URL state (no secrets, no free text). */
-export interface ViewUrlState { mode?: 'network' | 'map' | 'list'; q?: string; focus?: string; community?: string; from?: string; to?: string; color?: 'type' | 'community'; sources?: SourceFilter }
+export interface ViewUrlState { mode?: 'network' | 'map' | 'list'; q?: string; focus?: string; community?: string; from?: string; to?: string; color?: 'type' | 'community'; sources?: SourceFilter; outlet?: string }
 export function encodeViewState(state: ViewUrlState): string {
   const params = new URLSearchParams();
   if (state.mode) params.set('mode', state.mode);
@@ -1260,6 +1346,8 @@ export function encodeViewState(state: ViewUrlState): string {
   if (state.from) params.set('from', state.from);
   if (state.to) params.set('to', state.to);
   if (state.sources && SOURCE_FILTERS.includes(state.sources)) params.set('sources', state.sources);
+  const outlet = state.outlet?.trim().slice(0, 80);
+  if (outlet) params.set('outlet', outlet);
   return params.toString();
 }
 export function decodeViewState(search: string): ViewUrlState {
@@ -1276,6 +1364,8 @@ export function decodeViewState(search: string): ViewUrlState {
   if (to) state.to = to;
   const sources = params.get('sources') as SourceFilter | null;
   if (sources && SOURCE_FILTERS.includes(sources)) state.sources = sources;
+  const outlet = bounded('outlet', 80);
+  if (outlet) state.outlet = outlet;
   return state;
 }
 

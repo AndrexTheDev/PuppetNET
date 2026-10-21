@@ -21,7 +21,7 @@ export default function Dashboard() {
   // Shareable permalink state: mode, query, focus, community, time window, color mode.
   const initialUrl = useRef<ViewUrlState>(typeof window === 'undefined' ? {} : decodeViewState(window.location.search));
   const [view, setView] = useState<View | null>(null), [busy, setBusy] = useState(true);
-  const [filters, setFilters] = useState<Filters>(() => ({ ...initialFilters, ...(initialUrl.current.community ? { community: initialUrl.current.community } : {}), ...(initialUrl.current.from ? { from: initialUrl.current.from } : {}), ...(initialUrl.current.to ? { to: initialUrl.current.to } : {}), ...(initialUrl.current.sources ? { sources: initialUrl.current.sources } : {}) }));
+  const [filters, setFilters] = useState<Filters>(() => ({ ...initialFilters, ...(initialUrl.current.community ? { community: initialUrl.current.community } : {}), ...(initialUrl.current.from ? { from: initialUrl.current.from } : {}), ...(initialUrl.current.to ? { to: initialUrl.current.to } : {}), ...(initialUrl.current.sources ? { sources: initialUrl.current.sources } : {}), ...(initialUrl.current.outlet ? { outlet: initialUrl.current.outlet } : {}) }));
   const filtersRef = useRef(filters); filtersRef.current = filters;
   const busyRef = useRef(busy); busyRef.current = busy;
   const viewLatest = useRef<View | null>(null); viewLatest.current = view;
@@ -231,7 +231,7 @@ export default function Dashboard() {
   // URL without adding history entries (bound values only, no free text blobs).
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    const query = encodeViewState({ mode, q: search || undefined, focus: selected?.id || undefined, community: filters.community, from: filters.from, to: filters.to, color: colorMode, sources: filters.sources });
+    const query = encodeViewState({ mode, q: search || undefined, focus: selected?.id || undefined, community: filters.community, from: filters.from, to: filters.to, color: colorMode, sources: filters.sources, outlet: filters.outlet });
     window.history.replaceState(null, '', query ? `${window.location.pathname}?${query}` : window.location.pathname);
   }, [mode, search, selected, filters.community, filters.from, filters.to, colorMode]);
   const onRatio = useCallback((ratio: number) => { if (busyRef.current) return; const bucket = ratio >= .55 ? 1 : ratio >= .18 ? .35 : .1; setFilters(f => f.ratio === bucket ? f : { ...f, ratio: bucket }); }, []);
@@ -333,7 +333,7 @@ export default function Dashboard() {
   const saveCurrentView = () => {
     const name = viewName.trim();
     if (!name) { setViewsStatus(t('dash.viewsNeedName')); return; }
-    const query = encodeViewState({ mode, q: search || undefined, community: filters.community, from: filters.from, to: filters.to, color: colorMode, focus: selected?.id, sources: filters.sources });
+    const query = encodeViewState({ mode, q: search || undefined, community: filters.community, from: filters.from, to: filters.to, color: colorMode, focus: selected?.id, sources: filters.sources, outlet: filters.outlet });
     setSavedViews(list => upsertSavedView(list, name, query || 'mode=list', new Date().toISOString()));
     setViewName('');
     setViewsStatus(t('dash.viewsSaved', { name }));
@@ -537,6 +537,18 @@ export default function Dashboard() {
               <span className="shared-entities">{group.entities.map(entity => <button key={entity.id} type="button" className="text-button" aria-label={t('dash.sharedAria', { label: entity.label })} onClick={() => { if (mode !== 'network') changeMode('network'); select(entity.id); requestAnimationFrame(() => network.current?.focus(entity.id)); }}>{entity.label}</button>)}</span>
             </li>)}</ul>
             <p className="muted">{t('dash.sharedText')}</p>
+          </div>}
+          {view.sourceRegistry && view.sourceRegistry.length > 0 && <div className="registry-panel">
+            <h4 className="hub-heading">{t('dash.registryTitle')}</h4>
+            {filters.outlet && <p className="muted" role="status">{t('dash.registryActive', { source: filters.outlet })} <button type="button" className="text-button" onClick={() => setFilters(f => ({ ...f, outlet: undefined }))}>{t('dash.registryClear')}</button></p>}
+            <ul className="registry-list">{view.sourceRegistry.map(entry => <li key={entry.name || 'unnamed'} className={filters.outlet && filters.outlet.toLowerCase() === entry.name.toLowerCase() ? 'active' : undefined}>
+              {entry.name
+                ? <button type="button" className="text-button registry-name" aria-label={t('dash.registryApply', { source: entry.name })} onClick={() => { setFilters(f => ({ ...f, outlet: entry.name })); setAnnouncement(t('dash.annOutlet', { source: entry.name })); }}>{entry.name}</button>
+                : <span className="registry-name muted">{t('dash.registryUnnamed')}</span>}
+              <span className="registry-counts">{t('dash.registryDocs', { docs: number(entry.documents), entities: number(entry.entities), edges: number(entry.edges) })}</span>
+              {entry.first && <span className="registry-window">{entry.first}{entry.last && entry.last !== entry.first ? ` → ${entry.last}` : ''}</span>}
+            </li>)}</ul>
+            <p className="muted">{t('dash.registryText')}</p>
           </div>}
           {view.insights && view.insights.length > 0 && <>
             <h4 className="hub-heading">{t('dash.insightsTitle')}</h4>

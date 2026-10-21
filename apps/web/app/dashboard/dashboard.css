@@ -203,3 +203,12 @@
 
 /* Wave 19: evidence-quality filter (token-only) */
 .sources-filter select{width:100%;margin:var(--space-1,0.25rem) 0;background:var(--color-forest-900);color:var(--color-white);border:1px solid var(--line);border-radius:var(--radius-1,0.25rem);padding:0.35rem 0.5rem;font:inherit}
+
+/* Wave 20: source registry (token-only) */
+.registry-panel{margin-top:var(--space-3,1rem);border-top:1px solid var(--line);padding-top:var(--space-2,0.5rem)}
+.registry-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:var(--space-1,0.25rem)}
+.registry-list li{display:grid;grid-template-columns:1fr auto;gap:0 var(--space-2,0.5rem);border-left:2px solid var(--line);padding-left:var(--space-2,0.5rem)}
+.registry-list li.active{border-left-color:var(--color-green)}
+.registry-name{font-weight:600;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.registry-counts{font-size:.8em;opacity:.8;font-variant-numeric:tabular-nums}
+.registry-window{grid-column:1/-1;font-size:.75em;opacity:.65;font-variant-numeric:tabular-nums}

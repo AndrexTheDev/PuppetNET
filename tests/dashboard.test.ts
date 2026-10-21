@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
-import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, monthWindow, bundleEdges, structuralVulnerability, pathTimeline, normalizeNote, readNotes, caseReport, nextPlaybackMonth, evidenceWindow, compareDuplicates, multiFailureImpact, normalizeSavedName, readSavedViews, upsertSavedView, removeSavedView, evidenceToCSV, parseCaseNotes, mergeNotes, searchNoteIndex, caseBundle, readCaseBundle, provenanceGaps, edgeSources, sharedSourceGroups, normalizeEvidence, edgeSourceStatus, SAVED_VIEW_LIMIT, NOTE_LIMIT, EGO_DEPTH_LIMIT, VULNERABILITY_NODE_LIMIT, normalizeInsights, ANALYSIS_LIMITS, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
+import { normalizeDataset, demoDataset, filterDataset, groupDataset, geographicPoints, evidenceFor, evidenceForEdge, safeUrl, cypherExport, levelFor, shortestPath, fuzzyScore, rankSearch, resolveNodeRef, nodesToCSV, edgesToCSV, communityColor, encodeViewState, decodeViewState, namePartition, brokerShares, egoNetwork, mentionTimeline, duplicateCandidates, monthWindow, bundleEdges, structuralVulnerability, pathTimeline, normalizeNote, readNotes, caseReport, nextPlaybackMonth, evidenceWindow, compareDuplicates, multiFailureImpact, normalizeSavedName, readSavedViews, upsertSavedView, removeSavedView, evidenceToCSV, parseCaseNotes, mergeNotes, searchNoteIndex, caseBundle, readCaseBundle, provenanceGaps, edgeSources, sharedSourceGroups, normalizeEvidence, edgeSourceStatus, sourceRegistry, SAVED_VIEW_LIMIT, NOTE_LIMIT, EGO_DEPTH_LIMIT, VULNERABILITY_NODE_LIMIT, normalizeInsights, ANALYSIS_LIMITS, TYPES, type Dataset, type Filters } from '../apps/web/app/dashboard/graph-data';
 import { apiBase, readResponse } from '../apps/web/app/dashboard/api';
 const filters: Filters = { confidence: 0, weight: 0, types: [...TYPES], lod: true, ratio: 1 };
 test('normalizes Worker and Graphology nodes without inventing coordinates', () => {
@@ -830,4 +830,75 @@ test('wave 19 evidence-quality filter narrows claims, never entities', () => {
   assert.equal(decodeViewState('?sources=corroborated').sources, 'corroborated');
   assert.equal(decodeViewState('?sources=junk').sources, undefined, 'junk in the URL is ignored');
   assert.equal(encodeViewState({}), '');
+});
+
+test('wave 20 source registry aggregates outlets deterministically', () => {
+  const build = (evidence: unknown[]) => normalizeDataset({
+    nodes: [
+      { key: 'a', name: 'Alpha', evidenceIds: ['d1'] },
+      { key: 'b', name: 'Beta', evidenceIds: ['d1', 'd2'] },
+      { key: 'c', name: 'Gamma', evidenceIds: ['d3'] },
+      { key: 'd', name: 'Delta' },
+    ],
+    evidence,
+    edges: [
+      { source: 'a', target: 'b', type: 'OWNS', evidenceIds: ['d1'] },
+      { source: 'b', target: 'c', type: 'MET', evidenceIds: ['d2', 'd3'] },
+    ],
+  });
+  const evidence = [
+    { id: 'd1', title: 'R1', source: 'Handelsregister', date: '2020-01-05' },
+    { id: 'd2', title: 'A1', source: ' Presseschau ', date: '2021-03-01' },
+    { id: 'd3', title: 'A2', source: 'Presseschau', date: '2019-11-20' },
+    { id: 'd4', title: 'Blog' },
+  ];
+  const data = build(evidence);
+  const registry = sourceRegistry(data, data.nodes, data.edges);
+  assert.deepEqual(registry.map(entry => entry.name), ['Presseschau', 'Handelsregister'], 'documents first, then the stable name order');
+  assert.deepEqual([registry[0].documents, registry[0].entities, registry[0].edges], [2, 2, 1]);
+  assert.deepEqual([registry[0].first, registry[0].last], ['2019-11-20', '2021-03-01'], 'the outlet window spans its documents');
+  assert.equal(registry[1].edges, 1);
+  assert.ok(!registry.some(entry => entry.name === ''), 'documents nobody backs are not invented as an outlet');
+  const reversed = build([...evidence].reverse());
+  assert.deepEqual(sourceRegistry(reversed, reversed.nodes, reversed.edges), registry, 'evidence order never changes the registry');
+  const unnamed = build([{ id: 'd1', title: 'Blog' }, { id: 'd2', title: 'Blog 2' }]);
+  assert.deepEqual(sourceRegistry(unnamed, unnamed.nodes, unnamed.edges).map(entry => [entry.name, entry.documents]), [['', 3]],
+    'unnamed documents are reported, and a referenced-but-unresolved document counts as unnamed too');
+  assert.equal(sourceRegistry(data, data.nodes, data.edges, 1).length, 1, 'the registry is bounded');
+});
+
+test('wave 20 outlet filter shows one source and nothing else', () => {
+  const data = normalizeDataset({
+    nodes: [
+      { key: 'a', name: 'Alpha', evidenceIds: ['d1'] },
+      { key: 'b', name: 'Beta', evidenceIds: ['d1', 'd2'] },
+      { key: 'c', name: 'Gamma', evidenceIds: ['d3'] },
+      { key: 'd', name: 'Delta' },
+    ],
+    evidence: [
+      { id: 'd1', title: 'R1', source: 'Handelsregister' },
+      { id: 'd2', title: 'A1', source: 'Presse' },
+      { id: 'd3', title: 'A2', source: 'Presse' },
+    ],
+    edges: [
+      { source: 'a', target: 'b', type: 'OWNS', evidenceIds: ['d1'] },
+      { source: 'b', target: 'c', type: 'MET', evidenceIds: ['d2', 'd3'] },
+    ],
+  });
+  const base: Filters = { confidence: 0, weight: 0, types: [...TYPES], lod: false, ratio: 1 };
+  const presse = filterDataset(data, { ...base, outlet: 'presse' });
+  assert.deepEqual(presse.edges.map(edge => edge.id), ['edge:1'], 'only edges this outlet documents');
+  assert.deepEqual(presse.nodes.map(node => node.id), ['b', 'c'], 'entities come from its documents and the kept edges');
+  const register = filterDataset(data, { ...base, outlet: '  HANDELSREGISTER ' });
+  assert.deepEqual(register.edges.map(edge => edge.id), ['edge:0'], 'matching is case- and whitespace-insensitive');
+  assert.deepEqual(register.nodes.map(node => node.id), ['a', 'b']);
+  const nobody = filterDataset(data, { ...base, outlet: 'gibt es nicht' });
+  assert.deepEqual([nobody.nodes.length, nobody.edges.length], [0, 0], 'an unknown outlet is empty, not silently ignored');
+  assert.equal(filterDataset(data, base).nodes.length, 4, 'no outlet means no narrowing');
+  const combined = filterDataset(data, { ...base, outlet: 'presse', sources: 'corroborated' });
+  assert.deepEqual([combined.nodes.length, combined.edges.length], [2, 0],
+    'filters compose honestly: the outlet keeps its two entities, corroboration drops the single-outlet edge');
+  assert.equal(encodeViewState({ outlet: 'Presse' }), 'outlet=Presse');
+  assert.equal(decodeViewState('?outlet=Presse').outlet, 'Presse');
+  assert.equal(decodeViewState(`?outlet=${'x'.repeat(200)}`).outlet, undefined, 'oversized outlet names are ignored');
 });

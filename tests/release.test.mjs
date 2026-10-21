@@ -349,3 +349,16 @@ test('wave 19: the evidence-quality filter is shareable, bounded and honest', ()
   assert.ok(dashboard.includes("t('dash.sourcesEmpty')"), 'an empty narrowing is explained, not hidden');
   assert.match(dashboard, /sources: filters\.sources/, 'permalink state carries the filter');
 });
+
+test('wave 20: the source registry and outlet filter stay deterministic and honest', () => {
+  const data = read('apps/web/app/dashboard/graph-data.ts');
+  assert.match(data, /export function sourceRegistry\(data: Dataset, nodes: GraphNode\[\], edges: GraphEdge\[\], limit = 12\)/, 'the registry is pure and bounded');
+  assert.match(data, /for \(const docId of \[\.\.\.uses\.keys\(\)\]\.sort\(\)\)/, 'documents are visited in id order, so evidence order cannot change the registry');
+  assert.match(data, /const outlet = \(filters\.outlet \?\? ''\)\.trim\(\)\.toLowerCase\(\)\.slice\(0, 80\)/, 'outlet names are normalised and bounded');
+  const worker = read('apps/web/app/dashboard/graph.worker.ts');
+  assert.match(worker, /const registrySlice = filters\.outlet \? filterDataset\(effectiveDataset\(\), \{ \.\.\.filters, outlet: undefined \}\) : filtered/, 'the registry always lists every outlet, even while one is active');
+  const dashboard = read('apps/web/app/dashboard/Dashboard.tsx');
+  assert.ok(dashboard.includes("t('dash.registryTitle')"), 'the registry is dictionary-driven');
+  assert.ok(dashboard.includes("t('dash.registryUnnamed')"), 'documents without a source are named, not dropped');
+  assert.ok(dashboard.includes("t('dash.registryClear')"), 'the outlet filter can always be undone');
+});
