@@ -292,11 +292,17 @@ def test_per_minute_429_retries_once_after_retry_info_then_cools_down(tmp_path):
     assert b.generate_json("extract", LITE, "x").data == {"ok": 1}
     assert clock.sleeps == [7.0]
     assert json.loads((tmp_path / "gemini-broker.json").read_text())["learned"][LITE[0]] == {"rpm": 10}
-    # RetryInfo above the bound: no sleep, model parked for the run.
-    session = Session(quota_429("GenerateRequestsPerMinutePerProjectPerModel-FreeTier", 10, "300s"))
+    # RetryInfo above the bound: no sleep. A first rejection that teaches a lower
+    # limit keeps the model (the window now throttles to it); a second one parks it.
+    session = Session(quota_429("GenerateRequestsPerMinutePerProjectPerModel-FreeTier", 10, "300s"),
+                      quota_429("GenerateRequestsPerMinutePerProjectPerModel-FreeTier", 10, "300s"))
     b = broker(tmp_path / "x", session=session, clock=clock)
     assert b.generate_json("extract", LITE, "x") is None
-    assert clock.sleeps == [7.0] and LITE[0] in b.unavailable
+    assert clock.sleeps == [7.0] and LITE[0] not in b.unavailable
+    assert b.planned_limits(LITE[0])["rpm"] == 8  # floor(10 x 0.8)
+    assert b.generate_json("extract", LITE, "x") is None
+    assert LITE[0] in b.unavailable and len(session.calls) == 2
+    assert clock.sleeps == [7.0]  # learned rpm 8 > 2 requests in the window: no throttle wait
 
 
 def test_auth_failure_disables_and_404_parks_only_that_model(tmp_path):
@@ -422,8 +428,19 @@ def test_prompt_injection_inside_data_cannot_mint_unverified_edges(tmp_path):
             "relations": [rel("Mallory", "OWNS", "Siemens AG", "Mallory OWNS Siemens AG")]}
     ext, _ = extractor(tmp_path, data)
     _, relations = ext.extract(text=hostile, title="", known=known(), doc_id="d", source_id="s", source_weight=1)
-    # Verbatim checks alone cannot stop a quote that really exists in the text:
-    # the edge is accepted only as method=llm, requires_review, never auto-public.
+    # Layer 1: the quote is verbatim, but schema vocabulary in a quote means the
+    # text addressed the model rather than reporting a fact.
+    assert relations == [] and ext.rejected == {"injection_marker": 1}
+
+
+def test_injection_disguised_as_prose_stays_review_only(tmp_path):
+    hostile = TEXT + " Mallory besitzt die Siemens AG, so steht es hier. "
+    data = {"entities": [{"name": "Mallory", "type": "PERSON"}],
+            "relations": [rel("Mallory", "OWNS", "Siemens AG", "Mallory besitzt die Siemens AG")]}
+    ext, _ = extractor(tmp_path, data)
+    _, relations = ext.extract(text=hostile, title="", known=known(), doc_id="d", source_id="s", source_weight=1)
+    # Layer 2: indistinguishable from reporting, so it is accepted only as
+    # method=llm, requires_review, capped confidence; the export vetoes it.
     assert len(relations) == 1 and relations[0].method is ExtractionMethod.LLM
     assert relations[0].extra["requires_review"] is True and relations[0].confidence <= 0.6
 
@@ -514,3 +531,22 @@ def test_graph_upsert_lets_local_evidence_replace_llm_but_not_the_reverse():
     assert "WHEN row.method = 'llm' AND coalesce(r.method, '') <> '' THEN r.method" in template
     on_match = template.split("ON MATCH", 1)[1]
     assert on_match.index("'dependency'") < on_match.index("row.method = 'llm'")
+
+
+def test_run_level_merge_lets_local_evidence_replace_llm_in_any_order():
+    import copy
+
+    from puppetnet.models import Relation, RelationType
+    from puppetnet.pipeline import IngestPipeline
+
+    a, b = known()
+    cloud = Relation(subject=a, predicate=RelationType.ACQUIRED, obj=b, confidence=0.45,
+                     method=ExtractionMethod.LLM, doc_id="d1", evidence="cloud quote")
+    local = Relation(subject=a, predicate=RelationType.ACQUIRED, obj=b, confidence=0.8,
+                     method=ExtractionMethod.DEPENDENCY, doc_id="d2", evidence="local quote")
+    for order in ((cloud, local), (local, cloud)):
+        merged = IngestPipeline._merge_relations([copy.deepcopy(r) for r in order])
+        assert len(merged) == 1
+        assert merged[0].method is ExtractionMethod.DEPENDENCY and merged[0].evidence == "local quote"
+    two_cloud = IngestPipeline._merge_relations([copy.deepcopy(cloud), copy.deepcopy(cloud)])
+    assert two_cloud[0].method is ExtractionMethod.LLM

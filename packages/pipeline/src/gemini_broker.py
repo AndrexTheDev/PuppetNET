@@ -250,6 +250,7 @@ class GeminiBroker:
         self.runs_before = 0
         self.unavailable: dict[str, str] = {}
         self.windows: dict[str, deque[tuple[float, int]]] = {}
+        self.minute_hits: dict[str, int] = {}
         self.stats: dict[str, Any] = {"ok": 0, "failed": 0, "rate_limited": 0, "skipped_budget": 0,
                                       "input_tokens": 0, "output_tokens": 0, "by_model": {}, "by_task": {}}
 
@@ -462,6 +463,7 @@ class GeminiBroker:
                 if not self.enabled or not self._task_left(task) or self.time_left() <= 0:
                     self.stats["skipped_budget"] += 1
                     return None
+                plan = self.planned_limits(model) or plan  # a per-minute 429 may have lowered it
                 if self.run_allowance(model) <= 0 or estimate > plan["tpm"]:
                     break
                 if not self._throttle(model, plan, estimate):
@@ -550,6 +552,7 @@ class GeminiBroker:
         except ValueError:
             violations, retry = [], None
         learned = self.state["learned"].setdefault(model, {})  # type: ignore[index]
+        before = dict(learned)
         daily = False
         for violation in violations:
             quota_id, value = violation["id"], violation["value"]
@@ -566,9 +569,15 @@ class GeminiBroker:
             self._save()
             return "next"
         self._save()
+        hits = self.minute_hits[model] = self.minute_hits.get(model, 0) + 1
         if retry is not None and retry <= self.max_retry_wait and retry < self.time_left():
             self.sleep(retry)
             return "retry"
+        if hits == 1 and learned != before:
+            # First per-minute rejection taught a lower RPM/TPM: the sliding window
+            # now throttles to the learned limit, so later requests keep flowing
+            # instead of parking the model for the whole run.
+            return "next"
         self.unavailable[model] = "per-minute quota; cooling down for this run"
         return "next"
 

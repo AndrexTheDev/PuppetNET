@@ -113,10 +113,18 @@ RSS-Dokument ──► spaCy (lokal, immer) ──► lokale Relationen (method=
 * Die System-Instruktion behandelt DATA als **nicht vertrauenswürdig**: Sie
   befolgt keine Anweisungen aus dem Text und extrahiert nur explizite Aussagen.
 * **Lokale Validierung (verwirft ohne Rückfrage):**
-  * Das Zitat steht nicht wörtlich im Text (Leerzeichen und Groß-/Kleinschreibung normalisiert).
-  * Das Zitat nennt nicht beide Entitäten. Bei Personen reicht der Nachname.
-  * Die Aussage ist verneint oder spekulativ: laut Modell-Flag **oder** laut lokalem
-    Lexikon (z. B. „nicht“, „soll“, „angeblich“, „dementiert“, „allegedly“ …).
+  * Das Zitat steht nicht wörtlich im Text. Normalisiert werden Leerzeichen, Groß-/Kleinschreibung,
+    typografische Anführungszeichen („“ ‚‘ « »), Gedankenstriche, weiche Trennstriche und Ellipsen.
+  * Das Zitat nennt nicht beide Entitäten. Kurzformen sind erlaubt, wenn sie **im Dokument
+    eindeutig** sind: Nachname (auch Genitiv „Müllers“) oder Firmenname ohne Rechtsform
+    („Siemens“ für „Siemens AG“).
+  * Die Aussage ist verneint, dementiert, ein Vorwurf oder spekulativ: laut Modell-Flag
+    **oder** laut lokalem Lexikon. Das Lexikon ist dasselbe wie im lokalen Satzfilter
+    (`token_saver_nlp.NEGATIVE`), z. B. „nicht“, „soll“, „bestreitet“, „vorgeworfen“,
+    „Verdacht“, „zurückgewiesen“, „denied“, „alleged“ …
+  * Das Zitat enthält Schema-Vokabular (`CONTROLS`, case-sensitiv) oder Steuerphrasen
+    („SYSTEM:“, „ignoriere …“). Das sind Anzeichen einer Prompt-Injection.
+  * Das Prädikat ist `ACCUSED_OF`: Vorwürfe gegen Personen nie allein per Cloud-Modell.
   * Die Entität ist unbekannt und steht nicht im Text, das Prädikat ist nicht erlaubt,
     oder Subjekt und Objekt sind identisch.
 * Konfidenz = Quellgewicht × 0,6 × (0,5 + 0,5 × Modellkonfidenz). Sie liegt also
@@ -224,8 +232,10 @@ kann keine Aufgabe die Extraktion verdrängen.
 * **Datennutzung:** Free-Tier-Inhalte darf Google verwenden. Deshalb gehen nur
   bereits öffentliche Artikeltexte an Gemini, niemals private Notizen oder Fallakten.
 * **Halluzination/Prompt-Injection:** Die Zitatprüfung verhindert erfundene Belege.
-  Ein Angreifer kann aber einen echten Satz in einen Artikel schreiben. Daher
-  gilt `requires_review` plus Export-Veto.
+  Ebene 1 verwirft Zitate mit Schema-Vokabular oder Steuerphrasen. Ein Angreifer kann
+  aber einen unauffälligen Satz in einen Artikel schreiben (Ebene 2). Daher gilt
+  `requires_review` plus Export-Veto. Prüfkorpus: `tests/test_gemini_validator_corpus.py`,
+  Beta-Bericht `docs/testing/beta-2026-10-21.md`.
 * **Limits ändern sich ohne Vorwarnung:** Der Broker lernt nur nach unten. Erhöht
   Google die Limits, `GEMINI_MODEL_LIMITS` anpassen und den `learned`-Eintrag im
   Ledger löschen.

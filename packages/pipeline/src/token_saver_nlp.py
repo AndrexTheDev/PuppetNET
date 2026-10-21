@@ -120,7 +120,17 @@ KINSHIP_OR_CORPORATE = {"mutter": ("FAMILY_OF", "PARENT_OF"), "tochter": ("FAMIL
 # "nicht", prepositions or auxiliaries would corrupt negation/dependency direction.
 FILLER_LINE = re.compile(r"(?:jetzt (?:kostenlos )?(?:abonnieren|registrieren)|"
                          r"(?:hier )?klicken sie hier|mehr erfahren|alle rechte vorbehalten)[.! ]*", re.I)
-NEGATIVE = re.compile(r"\b(nicht|kein\w*|angeblich|möglicherweise|mutmaßlich|soll|könnte)\b", re.I)
+#: Negation, denial, allegation/suspicion and speculation (German + English).
+#: Shared by the local sentence filter and the Gemini quote validator
+#: (gemini_tasks.NEGATION_OR_HEDGE). Beta test 2026-10-21 added the denial and
+#: allegation verbs: "X bestreitet, Geschäftsführer der Y zu sein" is no edge.
+NEGATIVE = re.compile(
+    r"\b(nicht|nie|niemals|weder|kein\w*|angeblich\w*|möglicherweise|mutmaßlich\w*|vermutlich|offenbar|"
+    r"wohl|soll|sollen|sollte|sollten|könnte|könnten|dürfte|dürften|dementi\w*|bestreit\w*|bestritt\w*|"
+    r"abgestritten|leugn\w*|geleugnet|zurückgewiesen|zurückweis\w*|vorgeworfen|vorwurf\w*|vorwürfe\w*|"
+    r"beschuldig\w*|verdacht\w*|verdächtig\w*|gerücht\w*|spekul\w*|"
+    r"not|never|neither|no longer|alleg\w*|reportedly|purportedly|supposedly|denie[sd]|deny|denying|denial|"
+    r"disput\w*|accus\w*|suspect\w*|might|could|rumou?r\w*|speculat\w*)\b", re.I)
 #: Dependency labels that attach a nominal to a role noun or the copula:
 #: op = prepositional object ("von Y"), nk = PP-internal noun kernel,
 #: ag/og = attributive/object genitive ("der Y AG"), pd = predicate nominal.
