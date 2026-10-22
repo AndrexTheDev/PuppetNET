@@ -13,7 +13,9 @@ unklare Relationen dürfen optional in die Cloud. Standard: Cloud AUS.
 Gemini: exaktes countTokens vor Generierung, höchstens 120 Eingabe- plus 50
 Ausgabetokens (Eingabelimit 2026-10 wegen Tokenizer-Drift von 100 angehoben —
 derselbe Prompt zählt auf aktuellen Modellen ~109; Gesamtbudget 150 unverändert),
-drei Reservierungen/Lauf, sechs/UTC-Tag. Meldet der Anbieter keine
+drei Reservierungen/Lauf, sechs/UTC-Tag (Satzpaar-Modus). Der neue Dokumentmodus
+(`GEMINI_MODE=document`) nutzt stattdessen den Free-Tier-Broker mit einem Request
+pro Dokument, siehe [Gemini-Strategie](gemini-strategy.md). Meldet der Anbieter keine
 Nutzung oder scheitert ein Generierungsaufruf, wird die Nutzung als unbekannt
 markiert, nicht als kostenlos behauptet. Logs enthalten Summen und keine Quelltexte
 oder Zugangsschlüssel. Default-Modell seit 2026-10 ist `gemini-flash-lite-latest`
@@ -75,9 +77,12 @@ Codefreigabe erfolgt per PR aus dem Entwicklungsbranch; anschließend sind keine
 Daten-PRs nötig. Pages muss main beobachten. Details und Datenschutz-Vetos:
 [Daily ingestion](daily-ingestion.md).
 
-~100 Actions-Minuten/Monat sind ein Planungsziel. 31 tägliche Läufe à 5 Minuten
-wären bereits 155 Minuten, manuelle Läufe/CI kommen hinzu. Kein hartes Monatslimit
-und keine garantierten 0 €. Provider-Kontingente/Billing beobachten; keine bezahlten
+Update 21.10.2026: Das Repository ist öffentlich; Standard-GitHub-Runner sind
+dafür kostenlos und minutenmäßig unbegrenzt. Das frühere Planungsziel von ~100
+Actions-Minuten/Monat gilt nur noch für den Fall eines privaten Repos. Das
+opt-in-Public-Profil und der Gemini-Budget-Broker sind in der
+[Gemini-Strategie](gemini-strategy.md) beschrieben; die knappen Ressourcen sind
+jetzt Gemini-Requests/Tag, Pages-Builds und Neo4j-Kapazität. Keine garantierten 0 €. Provider-Kontingente/Billing beobachten; keine bezahlten
 Tarife automatisch aktivieren. CDN kann den letzten Snapshot unabhängig von einer
 laufenden Pipeline ausliefern, aber es gibt keine 24/7-SLA-Zusage.
 

@@ -3,7 +3,7 @@
 > 🌐 **Sprachen · Languages:** Deutsch ↓ · [English](#english)
 
 ## 1. Vorbereiten
-- [ ] Auf `arena/5fb0fe0b-puppetnet` bleiben; `git status` und den **gesamten**
+- [ ] Auf dem jeweiligen Session-Branch bleiben; `git status` und den **gesamten**
   Diff prüfen (enthält auch die vorherigen Pipeline-/Zero-KV-/UI-Arbeiten).
 - [ ] `npm ci`, Node.js 22, dann `npm run ci:pages`, `npm run ci:worker`,
   `node --test tests/release.test.mjs`, `git diff --check`.
@@ -24,10 +24,14 @@ git branch --show-current
 git diff --check
 git add <geprüfte-Dateien>
 git commit -m "Prepare static Pages release and consolidate design tokens"
-git push origin arena/5fb0fe0b-puppetnet
+git push origin "$(git branch --show-current)"
 ```
 - [ ] Cloudflare Pages: Repository-Root, Build `npm run ci:pages`, Output
   `apps/web/out`, Node 22; keine Pages Functions/SSR und kein KV erforderlich.
+- [ ] Der GitHub-Check **„Cloudflare Pages“** am Commit ist grün. Er ist das einzige
+  Ergebnis des JS-Gates (GitHub-CI prüft nur Python). Rot bedeutet: es wird nichts
+  deployt. Lokal nachstellen mit der Node-Version des Build-Images (siehe
+  [operations.md](operations.md#cloudflare-pages--workers-build-location)).
 - [ ] Branch-Preview prüfen. Preview kann absichtlich die Produktionsdomain als
   Canonical verwenden; `SITE_ORIGIN` ist die kanonische Domain, nicht automatisch
   die zufällige Preview-Domain.
@@ -94,6 +98,10 @@ git push origin <session-branch>
 ```
 - [ ] Cloudflare Pages: repository root, build `npm run ci:pages`, output
   `apps/web/out`, Node 22; no Pages Functions/SSR and no KV required.
+- [ ] The GitHub check **"Cloudflare Pages"** on the commit is green. It is the only
+  result of the JS gate (GitHub CI checks Python only); red means nothing is
+  deployed. Reproduce locally with the build image's Node version (see
+  [operations.md](operations.md#cloudflare-pages--workers-build-location)).
 - [ ] Check the branch preview. A preview may deliberately use the production
   domain as canonical; `SITE_ORIGIN` is the canonical domain, not automatically
   the random preview domain.

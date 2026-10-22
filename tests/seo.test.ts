@@ -181,7 +181,12 @@ test('metadata carries canonical, Open Graph and Twitter tags', () => {
 });
 
 test('siteOrigin ignores invalid deployment values instead of emitting them', () => {
+  // SITE_ORIGIN wins over NEXT_PUBLIC_SITE_ORIGIN, and Cloudflare sets it in the
+  // production build environment. Isolate both, or the gate fails exactly where
+  // it matters (every Pages build since the variable was configured did).
   const previous = process.env.NEXT_PUBLIC_SITE_ORIGIN;
+  const previousSite = process.env.SITE_ORIGIN;
+  delete process.env.SITE_ORIGIN;
   try {
     process.env.NEXT_PUBLIC_SITE_ORIGIN = 'https://example.org/';
     assert.equal(siteOrigin(), 'https://example.org');
@@ -192,6 +197,8 @@ test('siteOrigin ignores invalid deployment values instead of emitting them', ()
   } finally {
     if (previous === undefined) delete process.env.NEXT_PUBLIC_SITE_ORIGIN;
     else process.env.NEXT_PUBLIC_SITE_ORIGIN = previous;
+    if (previousSite === undefined) delete process.env.SITE_ORIGIN;
+    else process.env.SITE_ORIGIN = previousSite;
   }
 });
 

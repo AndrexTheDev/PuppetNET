@@ -35,6 +35,14 @@
 - `public: false` ist dagegen häufig nur der NLP-Draftdefault. Ein hinreichender
   Score bzw. verifizierte Herkunft darf diesen Default überwinden. Auch der
   automatische `requires_review`-Marker wird nur unter dieser Policy überwunden.
+- **Nur mit Betreiberfreigabe** (`public_released: true`, Abfragen in
+  [Gemini-Strategie §3.3](gemini-strategy.md)) werden veröffentlicht:
+  - KI-Kanten (`method: llm`) ohne lokale Bestätigung;
+  - Entitäten, die nur das Cloud-Modell gesehen hat (`cloud_only`);
+  - **Personen ohne veröffentlichte Beziehung** (Betreiberentscheidung vom 22.10.2026).
+    Eine Person, die etwa nur in einer Festnahmemeldung vorkommt, bekommt allein wegen
+    Confidence oder verifizierter Quelle keine indexierbare Profilseite. Organisationen,
+    Orte und Fahrzeuge folgen weiter der normalen Policy.
 - Manuell bereits öffentliche Daten bleiben kompatibel. Keine Veröffentlichung
   von Freitext-Evidenz, Privatnotizen, Risk-Scores oder vollständigen DB-Properties.
 - Release-Flags werden im Export erzeugt; der Exporter verändert Neo4j nicht.
@@ -57,6 +65,21 @@ Reservierung wird VOR Modellinstallation und Datenbankarbeit auf main gesichert.
 
 Hartes Joblimit 5 Minuten; Ingestion intern 90 Sekunden, Prozesslimit 105 Sekunden,
 Export 45 Sekunden. Kalte Installation/Aura-Wakeup kann den Job trotzdem abbrechen.
+
+**Public-Profil (opt-in, seit 21.10.2026):** Mit der Repository-Variable
+`PIPELINE_PROFILE=public` prüft ein vorgeschalteter Job per `gh api`, ob das
+Repository wirklich öffentlich ist (Standard-Runner-Minuten dann kostenlos).
+Nur dann gelten 8 Cron- + 3 manuelle Slots pro UTC-Tag (zusätzlicher Cron
+`30 0,6,9,12,18,21 * * *`), 30 Dokumente, Joblimit 20 Minuten, Ingestion
+600/660 Sekunden, Export 120 Sekunden. Ist die Sichtbarkeit privat oder
+unbekannt, bleibt alles konservativ und der Zusatz-Cron wird übersprungen.
+Harte Obergrenze im Ledger: 12 + 4. Details: [Gemini-Strategie](gemini-strategy.md).
+
+**Gemini-Dokumentmodus (opt-in):** `ENABLE_GEMINI_BROKER=true` +
+`GEMINI_MODE=document` ersetzt den Satzpaar-Fallback durch einen budgetierten
+Request pro Dokument (Ledger `.pipeline-state/gemini-broker.json`, Pacific-Tag,
+80 % Sicherheitsabstand). KI-Kanten (`method=llm`) werden nur mit explizitem
+`public_released=true` exportiert.
 Gemini standardmäßig aus, höchstens 120 Eingabe- + 50 Ausgabetokens pro Generierung,
 3 Reservierungen/Lauf, 6/Tag. Default-Modell seit 2026-10: `gemini-flash-lite-latest`
 (QA-live-verifiziert; `gemini-1.5-flash` ist eingestellt). Jeder Modellname ist
@@ -161,6 +184,14 @@ Wer Next direkt aufruft, führt danach `node scripts/finalize-static-export.mjs`
 - `public: false`, by contrast, is often just the NLP draft default. A
   sufficient score or verified provenance may override that default. The
   automatic `requires_review` marker is also overridden only under this policy.
+- **Operator release only** (`public_released: true`, queries in
+  [Gemini strategy §3.3](gemini-strategy.md)):
+  - cloud-model edges (`method: llm`) without local corroboration;
+  - entities only the cloud model saw (`cloud_only`);
+  - **persons without any published relationship** (operator decision,
+    2026-10-22). A person named only in, say, an arrest report gets no
+    indexable profile page from confidence or a verified feed alone.
+    Organizations, places and crafts keep the normal policy.
 - Data already published manually stays compatible. No publication of
   free-text evidence, private notes, risk scores or full DB properties.
 - Release flags are produced in the export; the exporter does not modify Neo4j.

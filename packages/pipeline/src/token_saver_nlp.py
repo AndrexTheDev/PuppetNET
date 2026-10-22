@@ -120,7 +120,44 @@ KINSHIP_OR_CORPORATE = {"mutter": ("FAMILY_OF", "PARENT_OF"), "tochter": ("FAMIL
 # "nicht", prepositions or auxiliaries would corrupt negation/dependency direction.
 FILLER_LINE = re.compile(r"(?:jetzt (?:kostenlos )?(?:abonnieren|registrieren)|"
                          r"(?:hier )?klicken sie hier|mehr erfahren|alle rechte vorbehalten)[.! ]*", re.I)
-NEGATIVE = re.compile(r"\b(nicht|kein\w*|angeblich|möglicherweise|mutmaßlich|soll|könnte)\b", re.I)
+#: de_core_news_sm often labels companies MISC ("Acme GmbH." in the 2026-10-21
+#: live probe). A MISC span ending in a legal form or an unambiguous
+#: organisation head is promoted to ORG; any other MISC span stays out.
+ORG_TAIL = re.compile(
+    r"(?:\b(?:GmbH|AG|SE|KGaA|KG|OHG|UG|mbH|Ltd|Limited|Inc|Corp|Corporation|LLC|PLC|plc|S\.A|SA|S\.p\.A|SpA|"
+    r"N\.V|NV|B\.V|BV|A/S|Oyj|SARL|e\.\s?V)\.?|(?:Holding|Stiftung|Bank|Konzern|Gruppe|Group))$")
+#: Trailing dots that belong to the name and must survive clean-up.
+_KEEP_DOT = re.compile(r"(?:\b(?:Ltd|Inc|Corp|Co|Jr|Sr|St|S\.A|S\.p\.A|N\.V|B\.V|e\.\s?V)|\b[A-Z])\.$")
+
+
+def entity_kind(label: str, text: str) -> EntityType | None:
+    """Map a spaCy NER label to an entity type (None = ignore)."""
+    kind = {"PER": EntityType.PERSON, "PERSON": EntityType.PERSON,
+            "ORG": EntityType.ORGANIZATION, "LOC": EntityType.LOCATION, "GPE": EntityType.LOCATION}.get(label)
+    if kind is None and label == "MISC" and ORG_TAIL.search(clean_entity_name(text)):
+        return EntityType.ORGANIZATION
+    return kind
+
+
+def clean_entity_name(text: str) -> str:
+    """Drop sentence punctuation glued to a span ("Acme GmbH." -> "Acme GmbH"), keep "Ltd."."""
+    name = re.sub(r"\s+", " ", text).strip().rstrip(",;:!?")
+    while name.endswith(".") and not _KEEP_DOT.search(name):
+        name = name[:-1].rstrip()
+    return name
+
+
+#: Negation, denial, allegation/suspicion and speculation (German + English).
+#: Shared by the local sentence filter and the Gemini quote validator
+#: (gemini_tasks.NEGATION_OR_HEDGE). Beta test 2026-10-21 added the denial and
+#: allegation verbs: "X bestreitet, Geschäftsführer der Y zu sein" is no edge.
+NEGATIVE = re.compile(
+    r"\b(nicht|nie|niemals|weder|kein\w*|angeblich\w*|möglicherweise|mutmaßlich\w*|vermutlich|offenbar|"
+    r"wohl|soll|sollen|sollte|sollten|könnte|könnten|dürfte|dürften|dementi\w*|bestreit\w*|bestritt\w*|"
+    r"abgestritten|leugn\w*|geleugnet|zurückgewiesen|zurückweis\w*|vorgeworfen|vorwurf\w*|vorwürfe\w*|"
+    r"beschuldig\w*|verdacht\w*|verdächtig\w*|gerücht\w*|spekul\w*|"
+    r"(?-i:not)|never|neither|no longer|alleg\w*|reportedly|purportedly|supposedly|denie[sd]|deny|denying|denial|"
+    r"disput\w*|accus\w*|suspect\w*|might|could|rumou?r\w*|speculat\w*)\b", re.I)
 #: Dependency labels that attach a nominal to a role noun or the copula:
 #: op = prepositional object ("von Y"), nk = PP-internal noun kernel,
 #: ag/og = attributive/object genitive ("der Y AG"), pd = predicate nominal.
@@ -268,14 +305,25 @@ class TokenSaverEngine:
     load_errors: list[str] = []
     available = True
 
-    def __init__(self, settings: Any = None, *, nlp: Any = None, fallback: Any = None):
+    def __init__(self, settings: Any = None, *, nlp: Any = None, fallback: Any = None,
+                 document_extractor: Any = None):
         if nlp is None:
             import spacy
             nlp = spacy.load("de_core_news_sm", disable=["textcat"])
         if not nlp.has_pipe("parser") or not nlp.has_pipe("ner"):
             raise ValueError("de_core_news_sm with parser and NER is required; no silent blank-model fallback")
         self.nlp = nlp
-        self.fallback = fallback or GeminiFallback(Path(os.getenv("GEMINI_BUDGET_FILE", ".state/gemini-budget.json")))
+        self.cloud_mode = os.getenv("GEMINI_MODE", "pair").strip().lower()
+        if self.cloud_mode not in {"pair", "document"}:
+            raise ValueError("GEMINI_MODE must be 'pair' or 'document'")
+        self.document_extractor = document_extractor
+        if self.document_extractor is None and self.cloud_mode == "document" and fallback is None:
+            self.document_extractor = _document_extractor_from_env()
+        if self.document_extractor is not None:
+            # One request per document replaces per-sentence pair calls: never both.
+            self.fallback = fallback or _NoCloud()
+        else:
+            self.fallback = fallback or GeminiFallback(Path(os.getenv("GEMINI_BUDGET_FILE", ".state/gemini-budget.json")))
 
     def parse_document(self, document: Document) -> ParseResult:
         text = clean_html(document.text)
@@ -283,11 +331,11 @@ class TokenSaverEngine:
         result = ParseResult(doc_id=document.doc_id, characters=len(text), backend=self.backend)
         entity_by_span = {}
         for span in doc.ents:
-            kind = {"PER": EntityType.PERSON, "PERSON": EntityType.PERSON,
-                    "ORG": EntityType.ORGANIZATION, "LOC": EntityType.LOCATION}.get(span.label_)
-            if kind is None:
+            kind = entity_kind(span.label_, span.text)
+            name = clean_entity_name(span.text)
+            if kind is None or len(name) < 2:
                 continue
-            entity = Entity(name=span.text, entity_type=kind, confidence=.75,
+            entity = Entity(name=name, entity_type=kind, confidence=.75,
                             source_ids={document.source_id}, doc_ids={document.doc_id})
             entity_by_span[(span.start, span.end)] = entity
         unique = {entity.canonical_key: entity for entity in entity_by_span.values()}
@@ -301,7 +349,7 @@ class TokenSaverEngine:
                  verb_lemma: str, cloud: bool = False, role: str = "") -> None:
             relation = Relation(subject=a, obj=b, predicate=RelationType(predicate),
                                 confidence=document.source_weight * (.5 if cloud else .85),
-                                method=ExtractionMethod.PATTERN if cloud else ExtractionMethod.DEPENDENCY,
+                                method=ExtractionMethod.LLM if cloud else ExtractionMethod.DEPENDENCY,
                                 source_id=document.source_id, doc_id=document.doc_id,
                                 source_weight=document.source_weight, evidence=sentence_text[:1000],
                                 sentence_index=index, verb=verb_lemma,
@@ -372,7 +420,33 @@ class TokenSaverEngine:
                             a, b = b, a
                         emit(a, b, predicate, index=index, sentence_text=sentence.text,
                              verb_lemma=verb.lemma_, cloud=cloud)
+        if self.document_extractor is not None and getattr(self.document_extractor, "enabled", False):
+            self._merge_document_cloud(document, text, result)
         return result
+
+    def _merge_document_cloud(self, document: Document, text: str, result: ParseResult) -> None:
+        """Add verified Gemini document-level relations; local evidence always wins.
+
+        A cloud relation that duplicates a local one only marks the local edge as
+        corroborated (no second write, local confidence unchanged). New cloud
+        relations keep method=llm, requires_review and capped confidence.
+        """
+        new_entities, relations = self.document_extractor.extract(
+            text=text, title=document.title or "", known=list(result.entities), doc_id=document.doc_id,
+            source_id=document.source_id, source_weight=document.source_weight)
+        known = {entity.canonical_key for entity in result.entities}
+        for entity in new_entities:
+            if entity.canonical_key not in known:
+                result.entities.append(entity)
+                known.add(entity.canonical_key)
+        local = {relation.signature(): relation for relation in result.relations}
+        for relation in relations:
+            existing = local.get(relation.signature())
+            if existing is not None:
+                existing.extra["corroborated_by"] = "gemini_doc"
+                continue
+            local[relation.signature()] = relation
+            result.relations.append(relation)
 
     @staticmethod
     def _copula_role(verb: Any, subject_entity: Entity, entity_at: Any) -> tuple[Entity, Entity, str, str] | None:
@@ -419,10 +493,41 @@ class TokenSaverEngine:
         return subject_entity, target, predicate, role
 
     def describe(self) -> dict[str, Any]:
-        return {"backend": self.backend, "has_parser": True, "has_ner": True,
-                "cloud_enabled": bool(getattr(self.fallback, "enabled", False)), "max_cloud_tokens": 150}
+        info = {"backend": self.backend, "has_parser": True, "has_ner": True,
+                "cloud_enabled": bool(getattr(self.fallback, "enabled", False)), "max_cloud_tokens": 150,
+                "cloud_mode": self.cloud_mode}
+        if self.document_extractor is not None:
+            info["cloud_enabled"] = bool(getattr(self.document_extractor, "enabled", False))
+            info["document_extractor"] = self.document_extractor.describe()
+        return info
 
     def close(self) -> None:
         logger.info("NLP run summary: cloud_reservations=%d reported_tokens=%d unknown_usage_calls=%d",
                     getattr(self.fallback, "calls_this_run", 0), getattr(self.fallback, "reported_tokens", 0),
                     getattr(self.fallback, "unknown_usage_calls", 0))
+        extractor = self.document_extractor
+        if extractor is not None:
+            broker = getattr(extractor, "broker", None)
+            logger.info("Gemini document extraction: %s", json.dumps(extractor.describe(), sort_keys=True))
+            if broker is not None:
+                logger.info("Gemini broker: %s", json.dumps(broker.summary(), sort_keys=True))
+                broker.write_step_summary()
+
+
+class _NoCloud:
+    """Disabled per-pair fallback used while document mode is active."""
+    enabled = False
+    calls_this_run = 0
+    reported_tokens = 0
+    unknown_usage_calls = 0
+
+    def classify(self, *_args: Any) -> None:
+        return None
+
+
+def _document_extractor_from_env() -> Any:
+    """Build the document-mode extractor from environment variables (lazy import)."""
+    from .gemini_broker import GeminiBroker
+    from .gemini_tasks import DocumentExtractor
+    ledger = Path(os.getenv("GEMINI_BROKER_LEDGER", ".state/gemini-broker.json"))
+    return DocumentExtractor(GeminiBroker(ledger))

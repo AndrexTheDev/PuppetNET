@@ -10,6 +10,7 @@
     "ci:worker": "cd ../.. && npm run ci:worker"
   },
   "devDependencies": {
+    "tsx": "^4.23.15",
     "typescript": "^5.9.3",
     "wrangler": "4.151.1"
   }

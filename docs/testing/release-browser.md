@@ -45,6 +45,7 @@ Optional Playwright und Chromium außerhalb der Runtime-Abhängigkeiten bereitst
 ```sh
 SITE_URL=http://127.0.0.1:8080 node tests/release_browser.mjs
 SITE_URL=http://127.0.0.1:8080 node tests/site_browser.mjs
+SITE_URL=http://127.0.0.1:8080 node tests/entity_browser.mjs
 ```
 
 Für vorhandenes Chromium können `CHROMIUM_EXECUTABLE` und `CHROMIUM_ARGS` gesetzt werden. Screenshots und JSON-Ergebnisse liegen ignoriert unter `.screenshots/release/`.
@@ -110,6 +111,7 @@ serve the export on port 8080 and run:
 ```sh
 SITE_URL=http://127.0.0.1:8080 node tests/release_browser.mjs
 SITE_URL=http://127.0.0.1:8080 node tests/site_browser.mjs
+SITE_URL=http://127.0.0.1:8080 node tests/entity_browser.mjs
 ```
 
 For an existing Chromium, `CHROMIUM_EXECUTABLE` and `CHROMIUM_ARGS` can be set.

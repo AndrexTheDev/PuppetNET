@@ -670,7 +670,12 @@ class IngestPipeline:
                 merged[key] = relation
                 continue
             existing.confidence = noisy_or(existing.confidence, relation.confidence)
-            if relation.method is ExtractionMethod.DEPENDENCY and existing.method is ExtractionMethod.COOCCURRENCE:
+            parsed_beats_guess = (relation.method is ExtractionMethod.DEPENDENCY
+                                  and existing.method is ExtractionMethod.COOCCURRENCE)
+            # Locally grounded evidence supersedes an uncorroborated cloud-model edge,
+            # in any order (mirrors the Neo4j upsert: 'llm' never wins over local).
+            local_beats_llm = existing.method is ExtractionMethod.LLM and relation.method is not ExtractionMethod.LLM
+            if parsed_beats_guess or local_beats_llm:
                 # A parsed triple supersedes a co-occurrence guess.
                 existing.method = relation.method
                 existing.verb = relation.verb or existing.verb

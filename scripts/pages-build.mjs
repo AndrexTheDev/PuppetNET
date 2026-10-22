@@ -6,6 +6,10 @@ import { dirname, resolve } from 'node:path';
 // itself to the repository it lives in instead of trusting the caller's cwd.
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 process.chdir(repoRoot);
+// Cloudflare's build log is the only place a failing gate is visible; name the
+// runtime first (the v3 image default is Node 22.16.0 unless NODE_VERSION or
+// .node-version overrides it, and module loading differs between 22.x minors).
+console.log(`PuppetNET Pages gate: Node ${process.version}, cwd ${repoRoot}`);
 // Prepare assets before tests; direct next build repeats this idempotently.
 for (const args of [
   ['scripts/generate-seo.js'],

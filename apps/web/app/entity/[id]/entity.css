@@ -54,7 +54,9 @@
 }
 .entity-demo strong { color: var(--color-gold); }
 
-.entity-header { max-width: 76ch; }
+/* Block, not the global site-header flex row: a long name must wrap at word
+   boundaries across the full width, never letter by letter in a squeezed column. */
+.entity-header { display: block; max-width: 76ch; }
 .entity-kind {
   display: inline-block;
   margin: 0 0 10px;

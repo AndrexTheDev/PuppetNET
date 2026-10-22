@@ -82,6 +82,8 @@ export interface PublicEntity {
   name: string;
   type: EntityKind;
   description: string;
+  /** Optional curated English text (`description_en`); see englishDescription(). */
+  descriptionEn?: string;
   aliases: string[];
   identifiers: EntityIdentifier[];
   jurisdiction: string;
@@ -341,6 +343,40 @@ function defaultDescription(
   return parts.join(' ');
 }
 
+const ENTITY_TYPE_LABELS_EN: Record<EntityKind, string> = {
+  Person: 'a person',
+  Organization: 'an organization',
+  Location: 'a place',
+  Craft: 'a vehicle or aircraft',
+  Document: 'a document',
+  Other: 'an entity of another type',
+};
+
+function defaultDescriptionEn(
+  entity: Pick<PublicEntity, 'name' | 'type' | 'jurisdiction' | 'confidence' | 'evidence'>,
+): string {
+  const parts = [`${entity.name} is recorded in the PuppetNET graph as ${ENTITY_TYPE_LABELS_EN[entity.type]}.`];
+  if (entity.jurisdiction) parts.push(`Jurisdiction: ${entity.jurisdiction}.`);
+  if (entity.evidence.length) {
+    parts.push(`${entity.evidence.length} source reference${entity.evidence.length === 1 ? '' : 's'} in the loaded dataset.`);
+  }
+  parts.push(`Confidence ${Math.round(entity.confidence * 100)} %.`);
+  parts.push('Calculated relationships are not statements of fact.');
+  return parts.join(' ');
+}
+
+/**
+ * Text for English surfaces (/en/). A curated `description_en` wins; otherwise
+ * the factual summary is generated in English. The German `description` is
+ * never shown there: real publications rarely carry one, so the German
+ * generated default would otherwise leak onto the English page.
+ */
+export function englishDescription(
+  entity: Pick<PublicEntity, 'name' | 'type' | 'jurisdiction' | 'confidence' | 'evidence' | 'descriptionEn'>,
+): string {
+  return entity.descriptionEn || defaultDescriptionEn(entity);
+}
+
 interface EdgeRecord {
   source: string;
   target: string;
@@ -430,6 +466,8 @@ export function normalizeEntityDataset(
     };
     entity.description =
       text(merged.description ?? merged.summary, 320) || defaultDescription(entity);
+    const descriptionEn = text(merged.description_en ?? merged.descriptionEn, 320);
+    if (descriptionEn) entity.descriptionEn = descriptionEn;
     byId.set(id, entity);
   }
 

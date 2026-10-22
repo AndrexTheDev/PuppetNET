@@ -15,15 +15,33 @@ import assert from 'node:assert/strict';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 
+import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+
 import { DICTIONARIES, NUMBER_LOCALE, STRING_KEYS, translate } from '../apps/web/lib/i18n-strings';
-import { FixedLanguageProvider } from '../apps/web/app/dashboard/i18n';
-import StandbyPanelExport, { LoadingStage } from '../apps/web/app/dashboard/BootState';
-import EntityTableExport from '../apps/web/app/dashboard/EntityTable';
 import { describeGraphNode, graphInstructions } from '../apps/web/lib/graph-keyboard';
+import { PUBLIC_ENTITY_TYPES } from '../apps/web/lib/entity-seo';
+
+// The provider and the components must share ONE instance of the context
+// module. The components are compiled as CommonJS and `require('./i18n')`.
+// Node 22 before 22.18 (e.g. 22.16.0, the Cloudflare Pages v3 default image)
+// evaluates a CommonJS file imported from ESM separately from the copy a
+// CommonJS sibling requires: two React contexts, so the English provider was
+// invisible and every Pages build since wave 6 failed while local runs on a
+// newer Node passed. Loading everything through `require` keeps one instance
+// on every supported Node version.
+const requireCjs = createRequire(import.meta.url);
+const { FixedLanguageProvider } = requireCjs('../apps/web/app/dashboard/i18n') as typeof import('../apps/web/app/dashboard/i18n');
+const BootStateModule = requireCjs('../apps/web/app/dashboard/BootState') as typeof import('../apps/web/app/dashboard/BootState');
+const EntityTableModule = requireCjs('../apps/web/app/dashboard/EntityTable') as typeof import('../apps/web/app/dashboard/EntityTable');
+const { LoadingStage } = BootStateModule;
+const SkipLinkModule = requireCjs('../apps/web/app/components/SkipLink') as typeof import('../apps/web/app/components/SkipLink');
+const SkipLink = (SkipLinkModule.default as unknown as { default?: typeof SkipLinkModule.default }).default ?? SkipLinkModule.default;
+const { englishDescription } = requireCjs('../apps/web/lib/entity-seo') as typeof import('../apps/web/lib/entity-seo');
 
 // tsx CJS interop: default exports can arrive wrapped (same shim as a11y.test.tsx).
-const StandbyPanel = (StandbyPanelExport as unknown as { default?: typeof StandbyPanelExport }).default ?? StandbyPanelExport;
-const EntityTable = (EntityTableExport as unknown as { default?: typeof EntityTableExport }).default ?? EntityTableExport;
+const StandbyPanel = (BootStateModule.default as unknown as { default?: typeof BootStateModule.default }).default ?? BootStateModule.default;
+const EntityTable = (EntityTableModule.default as unknown as { default?: typeof EntityTableModule.default }).default ?? EntityTableModule.default;
 
 const PARAM_RE = /\{(\w+)\}/g;
 
@@ -40,6 +58,26 @@ test('every German key exists in English with identical placeholders', () => {
     assert.deepEqual(params(en), params(de), `placeholder mismatch for "${key}"`);
   }
   assert.equal(Object.keys(DICTIONARIES.en).length, Object.keys(DICTIONARIES.de).length);
+});
+
+test('every entity type the data can carry has a label in both languages', () => {
+  // The fallback returns the raw key, so a missing type label ships as visible
+  // text ("type.Craft" on /en/ and in the dashboard table, found on the first
+  // live Pages preview). Collect the types from every producer of entity data.
+  const types = new Set<string>(PUBLIC_ENTITY_TYPES);
+  const exporter = readFileSync('packages/pipeline/src/export_static_slices.py', 'utf8');
+  const mapping = exporter.match(/types = \{([^}]+)\}/);
+  assert.ok(mapping, 'the export type mapping is still a literal dict');
+  for (const [, value] of mapping[1].matchAll(/:\s*"(\w+)"/g)) types.add(value);
+  const sample = JSON.parse(readFileSync('apps/web/public/data/entities.sample.json', 'utf8')) as { entities: { type: string }[] };
+  for (const entity of sample.entities) types.add(entity.type);
+  assert.ok(types.has('Craft') && types.size >= 4, [...types].join(','));
+  for (const type of types) {
+    for (const lang of ['de', 'en'] as const) {
+      assert.ok(Object.prototype.hasOwnProperty.call(DICTIONARIES[lang], `type.${type}`), `${lang}: type.${type} is missing`);
+      assert.notEqual(translate(lang, `type.${type}`), `type.${type}`);
+    }
+  }
 });
 
 test('translate substitutes params and falls back honestly', () => {
@@ -135,4 +173,19 @@ test('the graph keyboard announces in both languages', () => {
   assert.match(graphInstructions(), /Tabellenansicht/);
   assert.match(graphInstructions('en'), /Arrow keys/);
   assert.match(graphInstructions('en'), /table view/);
+});
+
+test('the skip link follows the UI language and stays German by default', () => {
+  assert.equal(renderToStaticMarkup(createElement(SkipLink)), '<a class="skip-link" href="#main-content">Zum Inhalt springen</a>');
+  assert.equal(renderEn(createElement(SkipLink)), '<a class="skip-link" href="#main-content">Skip to content</a>');
+});
+
+test('English surfaces use description_en or an English summary, never the German text', () => {
+  const base = { name: 'Erika Muster', type: 'Person' as const, jurisdiction: 'Deutschland', confidence: 0.82,
+    evidence: [{ id: 'doc:1', title: 'Register', source: 'Demo', date: '2026-10-01' }] } as Parameters<typeof englishDescription>[0];
+  assert.equal(englishDescription({ ...base, descriptionEn: 'Curated text.' }), 'Curated text.');
+  const generated = englishDescription(base);
+  assert.equal(generated, 'Erika Muster is recorded in the PuppetNET graph as a person. Jurisdiction: Deutschland. '
+    + '1 source reference in the loaded dataset. Confidence 82 %. Calculated relationships are not statements of fact.');
+  assert.match(englishDescription({ ...base, type: 'Craft', evidence: [] }), /as a vehicle or aircraft\. Jurisdiction/);
 });

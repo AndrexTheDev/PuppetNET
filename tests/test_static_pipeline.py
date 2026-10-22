@@ -290,11 +290,41 @@ def test_daily_quota_accepts_legacy_two_total_ledger_and_rejects_manual_overflow
     path.write_text(json.dumps({"day": "2026-10-19", "total": 2, "scheduled": 1, "manual": 1}))
     assert not reserve_run(path, "workflow_dispatch", "2026-10-19")
     assert reserve_run(path, "schedule", "2026-10-19")
-    # A legacy ledger with 2 manual entries exceeds the new manual bound and
-    # fails closed instead of silently rebalancing.
-    path.write_text(json.dumps({"day": "2026-10-19", "total": 2, "scheduled": 0, "manual": 2}))
+    # A ledger with 2 manual entries exceeds the conservative manual bound: the
+    # rest of the UTC day closes (fail closed) instead of silently rebalancing,
+    # and the file is not rewritten. (Valid after a mid-day profile switch.)
+    legacy = json.dumps({"day": "2026-10-19", "total": 2, "scheduled": 0, "manual": 2})
+    path.write_text(legacy)
+    assert not reserve_run(path, "schedule", "2026-10-19")
+    assert not reserve_run(path, "workflow_dispatch", "2026-10-19")
+    assert path.read_text() == legacy
+    # Beyond the hard ceilings it is corruption and raises.
+    path.write_text(json.dumps({"day": "2026-10-19", "total": 5, "scheduled": 0, "manual": 5}))
     with pytest.raises(ValueError, match="Invalid"):
         reserve_run(path, "schedule", "2026-10-19")
+
+
+def test_daily_quota_public_profile_slots_and_hard_ceilings(tmp_path, monkeypatch):
+    path = tmp_path / "budget.json"
+    monkeypatch.setenv("DAILY_SCHEDULED_SLOTS", "8")
+    monkeypatch.setenv("DAILY_MANUAL_SLOTS", "3")
+    assert all(reserve_run(path, "schedule", "2026-10-19") for _ in range(8))
+    assert not reserve_run(path, "schedule", "2026-10-19")
+    assert all(reserve_run(path, "workflow_dispatch", "2026-10-19") for _ in range(3))
+    assert not reserve_run(path, "repository_dispatch", "2026-10-19")
+    assert json.loads(path.read_text()) == {"day": "2026-10-19", "total": 11, "scheduled": 8, "manual": 3}
+    # Switching back to the conservative profile mid-day closes the day.
+    monkeypatch.delenv("DAILY_SCHEDULED_SLOTS")
+    monkeypatch.delenv("DAILY_MANUAL_SLOTS")
+    assert not reserve_run(path, "schedule", "2026-10-19")
+    for bad in ("13", "0", "-1", "x"):
+        monkeypatch.setenv("DAILY_SCHEDULED_SLOTS", bad)
+        with pytest.raises(ValueError):
+            reserve_run(path, "schedule", "2026-10-20")
+    monkeypatch.setenv("DAILY_SCHEDULED_SLOTS", "2")
+    monkeypatch.setenv("DAILY_MANUAL_SLOTS", "5")
+    with pytest.raises(ValueError):
+        reserve_run(path, "schedule", "2026-10-20")
 
 
 def test_cleanup_removes_boilerplate_and_deduplicates():
@@ -549,19 +579,45 @@ def test_german_reversed_and_direct_verbs_keep_canonical_direction():
     assert triples(["Siemens", "übernimmt", "Acme"], ["Siemens", "übernehmen", "Acme"], orgs) == [("Siemens", "ACQUIRED", "Acme")]
 
 
-def test_workflow_is_five_minutes_opt_in_serialized_and_no_payload_shell():
+def test_workflow_is_profile_bounded_opt_in_serialized_and_no_payload_shell():
     root = Path(__file__).resolve().parents[1]
     text = (root / ".github/workflows/daily_ingestion.yml").read_text()
     data = yaml.safe_load(text)
     # YAML 1.1 treats 'on' as bool; GitHub uses YAML 1.2.
     triggers = data.get("on", data.get(True))
-    # Two bounded cron runs per UTC day, twelve hours apart (since 2026-10-20).
-    assert [entry["cron"] for entry in triggers["schedule"]] == ["0 3 * * *", "0 15 * * *"]
+    # Two conservative cron runs twelve hours apart plus a public-profile-only
+    # slot list (off the top of the hour) that needs a verified public repo.
+    public_cron = "30 0,6,9,12,18,21 * * *"
+    assert [entry["cron"] for entry in triggers["schedule"]] == ["0 3 * * *", "0 15 * * *", public_cron]
     job = data["jobs"]["publish"]
-    assert job["timeout-minutes"] == 5
-    assert job["env"]["MAX_RUNTIME_SECONDS"] == "90"
-    assert "timeout 105s python" in text
-    assert "timeout 45s python" in text
+    profile = data["jobs"]["profile"]
+    public = "needs.profile.outputs.public == 'true'"
+    assert job["needs"] == "profile"
+    assert "!cancelled()" in job["if"] and f"github.event.schedule != '{public_cron}' || {public}" in job["if"]
+    assert "vars.PIPELINE_PROFILE == 'public'" in profile["if"] and "refs/heads/main" in profile["if"]
+    detect = profile["steps"][0]["run"]
+    assert "gh api" in detect and '[ "$private" = "false" ]' in detect and "public=false" in detect
+    assert "github.event.repository.private" not in job["if"] + profile["if"]
+    # Conservative values are the fallback of every profile expression.
+    for key, (public_value, default) in {
+            "timeout-minutes": (20, 5)}.items():
+        assert job[key] == f"${{{{ {public} && {public_value} || {default} }}}}"
+    for key, (public_value, default) in {
+            "DAILY_SCHEDULED_SLOTS": ("8", "2"), "DAILY_MANUAL_SLOTS": ("3", "1"),
+            "MAX_DOCUMENTS_TOTAL": ("30", "10"), "MAX_RUNTIME_SECONDS": ("600", "90"),
+            "INGEST_TIMEOUT_SECONDS": ("660", "105"), "EXPORT_TIMEOUT_SECONDS": ("120", "45"),
+            "GEMINI_RUNS_PER_DAY": ("8", "2")}.items():
+        assert job["env"][key] == f"${{{{ {public} && '{public_value}' || '{default}' }}}}", key
+    assert 'timeout "${INGEST_TIMEOUT_SECONDS}s" python' in text
+    assert '--limit "$MAX_DOCUMENTS_TOTAL"' in text
+    assert 'timeout "${EXPORT_TIMEOUT_SECONDS}s" python' in text
+    # Gemini broker is opt-in and its ledger is persisted even after failures.
+    assert job["env"]["ENABLE_GEMINI_BROKER"] == "${{ vars.ENABLE_GEMINI_BROKER || 'false' }}"
+    assert job["env"]["GEMINI_MODE"] == "${{ vars.GEMINI_MODE || 'pair' }}"
+    assert job["env"]["GEMINI_AUTO_RELEASE"] == "${{ vars.GEMINI_AUTO_RELEASE || 'false' }}"
+    assert job["env"]["GEMINI_BROKER_LEDGER"] == ".pipeline-state/gemini-broker.json"
+    persist = next(step for step in job["steps"] if step.get("name", "").startswith("Persist cloud"))
+    assert persist["if"].startswith("always()") and ".pipeline-state/gemini-broker.json" in persist["run"]
     assert "ENABLE_DAILY_STATIC" in job["if"]
     assert data["concurrency"]["cancel-in-progress"] is False
     assert all("client_payload" not in step.get("run", "") for step in job["steps"])
@@ -755,3 +811,90 @@ def test_neo4j_release_uses_stored_document_provenance(monkeypatch):
     assert len(output["nodes"]) == 2 and len(output["edges"]) == 1
     assert output["nodes"][0]["public_released"] is True
     assert output["evidence"][0]["id"] == "d"
+
+
+def test_misc_company_spans_are_promoted_and_sentence_dots_dropped():
+    """Live probe 2026-10-21: de_core_news_sm returned 'Acme GmbH.' as MISC."""
+    import spacy
+    from spacy.tokens import Doc, Span
+
+    from puppetnet.models import Document, EntityType
+    words = ["Olaf", "Scholz", "besucht", "Acme", "GmbH.", "und", "die", "Bundesliga", "."]
+    doc = Doc(spacy.blank("de").vocab, words=words, sent_starts=[True] + [False] * (len(words) - 1))
+    doc.ents = [Span(doc, 0, 2, label="PER"), Span(doc, 3, 5, label="MISC"), Span(doc, 7, 8, label="MISC")]
+
+    class LocalNLP:
+        def has_pipe(self, name):
+            return True
+
+        def __call__(self, text):
+            return doc
+
+    result = TokenSaverEngine(nlp=LocalNLP()).parse_document(
+        Document(doc_id="d1", source_id="s", url="", text=" ".join(words)))
+    found = {(e.name, e.entity_type) for e in result.entities}
+    assert found == {("Olaf Scholz", EntityType.PERSON), ("Acme GmbH", EntityType.ORGANIZATION)}
+
+
+def test_entity_name_cleanup_keeps_abbreviation_dots():
+    from src.token_saver_nlp import clean_entity_name, entity_kind
+
+    from puppetnet.models import EntityType
+    assert clean_entity_name("Atlantis Shipping Ltd.") == "Atlantis Shipping Ltd."
+    assert clean_entity_name("Kunstverein e.V.") == "Kunstverein e.V."
+    assert clean_entity_name("Berlin,") == "Berlin"
+    assert entity_kind("MISC", "Wagner-Gruppe") is EntityType.ORGANIZATION
+    assert entity_kind("MISC", "iPhone") is None
+
+
+def _isolated_person_graph(**person):
+    node = {"id": "person:solo", "name": "Erika Solo", "type": "Person", "confidence": .9,
+            "feed_url": "https://news.example/rss"}
+    node.update(person)
+    return {"nodes": [
+        node,
+        {"id": "org:solo", "name": "Allein GmbH", "type": "Organization", "confidence": .9},
+        {"id": "loc:solo", "name": "Kiel", "type": "Location", "confidence": .9},
+    ], "edges": []}
+
+
+def test_isolated_persons_need_an_operator_release(monkeypatch):
+    # Operator decision 2026-10-22: high confidence or a verified feed may publish
+    # a connected person, but a person with no published relationship gets a
+    # public profile page only after an explicit public_released=true.
+    monkeypatch.setenv("VERIFIED_RSS_FEEDS", "https://news.example/rss")
+    kept = {node["id"] for node in build_public_graph(_isolated_person_graph())["nodes"]}
+    assert kept == {"org:solo", "loc:solo"}, "organizations and places keep the normal policy"
+    released = build_public_graph(_isolated_person_graph(public_released=True))["nodes"]
+    assert "person:solo" in {node["id"] for node in released}
+    withdrawn = build_public_graph(_isolated_person_graph(public_released=False))["nodes"]
+    assert "person:solo" not in {node["id"] for node in withdrawn}
+
+
+def test_a_person_counts_as_connected_only_through_a_published_edge(monkeypatch):
+    monkeypatch.setenv("VERIFIED_RSS_FEEDS", "https://news.example/rss")
+    raw = _isolated_person_graph()
+    raw["edges"] = [{"source": "person:solo", "target": "org:solo", "type": "OFFICER_OF", "confidence": .9}]
+    assert "person:solo" in {node["id"] for node in build_public_graph(raw)["nodes"]}
+    # The only relationship is unreleased (cloud model, no operator release):
+    # it is not published, so the person is isolated in the public graph.
+    raw["edges"][0]["method"] = "llm"
+    monkeypatch.delenv("GEMINI_AUTO_RELEASE", raising=False)
+    graph = build_public_graph(raw)
+    assert graph["edges"] == []
+    assert "person:solo" not in {node["id"] for node in graph["nodes"]}
+    # The other endpoint being withheld also leaves the person isolated.
+    raw["edges"][0].pop("method")
+    raw["nodes"][1]["private"] = True
+    assert "person:solo" not in {node["id"] for node in build_public_graph(raw)["nodes"]}
+
+
+def test_export_never_leaves_a_dangling_edge_after_dropping_isolated_persons(monkeypatch, tmp_path):
+    monkeypatch.setenv("VERIFIED_RSS_FEEDS", "https://news.example/rss")
+    raw = _isolated_person_graph()
+    raw["nodes"].append({"id": "person:linked", "name": "Max Linked", "type": "Person", "confidence": .9})
+    raw["edges"] = [{"source": "person:linked", "target": "loc:solo", "type": "LOCATED_IN", "confidence": .9}]
+    data = export_slices(raw, tmp_path)
+    ids = {node["id"] for node in data["nodes"]}
+    assert ids == {"person:linked", "org:solo", "loc:solo"}
+    assert all(edge["source"] in ids and edge["target"] in ids for edge in data["edges"])

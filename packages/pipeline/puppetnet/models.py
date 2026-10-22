@@ -207,6 +207,11 @@ class ExtractionMethod(str, Enum):
     STRUCTURED = "structured"        # direct field mapping from an API/dataset
     PATTERN = "pattern"              # EntityRuler / apposition / possessive rules
     GAZETTEER = "gazetteer"          # craft identifier regex + gazetteer match
+    #: Cloud language model (Gemini) without local corroboration. Never a release
+    #: signal on its own: the static exporter vetoes ``method == "llm"`` edges
+    #: unless GEMINI_AUTO_RELEASE=true, and the Neo4j upsert never lets "llm"
+    #: overwrite a locally grounded method on an existing edge.
+    LLM = "llm"
 
     @property
     def factor(self) -> float:
@@ -776,9 +781,15 @@ class Entity:
         self.source_ids.update(other.source_ids)
         self.doc_ids.update(other.doc_ids)
         self.confidence = max(self.confidence, other.confidence)
+        # cloud_only is an AND: one local sighting clears it, in any merge order.
+        cloud_only = bool(self.properties.get("cloud_only")) and bool(other.properties.get("cloud_only"))
         for key, value in other.properties.items():
-            if key not in self.properties or not self.properties[key]:
+            if key != "cloud_only" and (key not in self.properties or not self.properties[key]):
                 self.properties[key] = value
+        if cloud_only:
+            self.properties["cloud_only"] = True
+        else:
+            self.properties.pop("cloud_only", None)
         if len(other.name) > len(self.name):
             # Prefer the longest surface form as the display name.
             self.aliases.add(self.name)

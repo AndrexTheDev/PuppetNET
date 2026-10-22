@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """QA live-connection probe for the PuppetNET daily ingestion pipeline.
 
-TEMPORARY verification script for the pre-cron dry run (see
-``.github/workflows/daily_ingestion.yml``, job ``verify-connections``).
+Operator connection check, started manually via ``workflow_dispatch`` with
+``task: connection-check`` (``.github/workflows/daily_ingestion.yml``, job
+``verify-connections``, read-only; the report is a job summary + artifact).
 It is a standalone CLI diagnostic — not a pytest unit test — and it never
 prints secret values. Each stage can run alone so the workflow shows one
 green/red step per subsystem::

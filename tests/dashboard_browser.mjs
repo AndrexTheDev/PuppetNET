@@ -1,6 +1,8 @@
 /** Optional real-browser acceptance. Serve apps/web/out first. Never calls live tiles/APIs.
  * npm install --no-save playwright && npx playwright install chromium
  * DASHBOARD_URL=http://127.0.0.1:8080/dashboard/ node tests/dashboard_browser.mjs
+ * Since the honest standby mode (no published data = no auto demo) the test loads the
+ * clearly labelled fictitious demo explicitly; the table is the default view.
  */
 import assert from 'node:assert/strict';
 const { chromium } = await import(process.env.PLAYWRIGHT_MODULE || 'playwright');
@@ -21,8 +23,10 @@ async function idle() {
 try {
   await page.goto(url);
   await idle();
+  await page.getByRole('button', { name: 'Demo', exact: true }).click(); await idle();
   await page.getByRole('button', { name: '◈ Netzwerk', exact: true }).click();
   await page.getByRole('button', { name: 'Layout', exact: true }).click();
+  await page.waitForFunction(() => document.querySelector('[data-testid=sigma-host]')?.getAttribute('data-rendered-nodes'), null, { timeout: 30_000 });
   assert.equal(await host.getAttribute('data-rendered-nodes'), '900');
   assert.equal(await host.locator('canvas').count(), 1);
   await page.waitForFunction(() => Number(document.querySelector('[data-testid=sigma-host]')?.getAttribute('data-layout-updates')) > 0);
@@ -55,9 +59,11 @@ try {
   await page.locator('tbody button').first().click();
   await page.getByRole('button', { name: 'Gruppe untersuchen' }).click();
   await idle();
-  await page.getByRole('button', { name: '← Gesamten Ausschnitt anzeigen' }).waitFor();
+  await page.getByRole('button', { name: '← Gesamten Ausschnitt anzeigen' }).first().waitFor();
+  await page.getByRole('button', { name: '◈ Netzwerk', exact: true }).click(); await idle();
+  await page.waitForFunction(() => document.querySelector('[data-testid=sigma-host]')?.getAttribute('data-rendered-nodes'), null, { timeout: 30_000 });
   assert.ok(Number(await host.getAttribute('data-rendered-nodes')) < 5000);
-  await page.getByRole('button', { name: '← Gesamten Ausschnitt anzeigen' }).click();
+  await page.getByRole('button', { name: '← Gesamten Ausschnitt anzeigen' }).first().click();
   await idle();
   await page.getByRole('button', { name: '◈ Netzwerk', exact: true }).click();
   page.once('dialog', dialog => dialog.accept());
@@ -84,7 +90,7 @@ try {
   console.log('PASS: Leaflet canvas markers, opt-in tiles (stubbed), visible attribution');
 
   const fixture = { nodes: [{ id: 'person:hostile', name: '<img src=x onerror=alert(1)>', type: 'Person', confidence: .9 }, { id: 'doc', type: 'Document', title: '<script>alert(1)</script>', url: 'javascript:alert(1)', confidence: 1 }], edges: [{ source: 'person:hostile', target: 'doc', type: 'EVIDENCED_BY', confidence: .9, weight: .9 }] };
-  await page.locator('input[type=file]').setInputFiles({ name: 'evidence.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(fixture)) }); await idle();
+  await page.locator('input[type=file]').first().setInputFiles({ name: 'evidence.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(fixture)) }); await idle();
   await page.getByRole('button', { name: '☷ Tabelle', exact: true }).click();
   await page.locator('tbody button').first().click();
   await page.getByText('<script>alert(1)</script>', { exact: true }).waitFor();
@@ -94,7 +100,7 @@ try {
   await page.getByRole('button', { name: 'Abfrage ↓', exact: true }).click();
   const download = await downloadPromise;
   assert.equal(download.suggestedFilename(), 'puppetnet-query.cypher');
-  await page.locator('input[type=file]').setInputFiles({ name: 'invalid.json', mimeType: 'application/json', buffer: Buffer.from('{}') });
+  await page.locator('input[type=file]').first().setInputFiles({ name: 'invalid.json', mimeType: 'application/json', buffer: Buffer.from('{}') });
   await page.locator('.dashboard-alert[role=alert]').waitFor();
   assert.match(await page.locator('.source-strip strong').innerText(), /evidence.json/);
   assert.equal(await page.evaluate(() => localStorage.length), 0);
@@ -112,6 +118,9 @@ try {
     HTMLCanvasElement.prototype.getContext = function(type, ...args) { return type === 'webgl2' ? null : original.call(this, type, ...args); };
   });
   await fallback.goto(url);
+  await fallback.locator('.dashboard-shell[aria-busy=false]').waitFor();
+  await fallback.getByRole('button', { name: 'Demo', exact: true }).click();
+  await fallback.getByRole('button', { name: '◈ Netzwerk', exact: true }).click();
   await fallback.locator('.stage-error').filter({ hasText: 'WebGL 2 ist nicht verfügbar' }).waitFor();
   await fallback.getByRole('button', { name: '☷ Tabelle', exact: true }).click();
   await fallback.locator('tbody button').first().waitFor();

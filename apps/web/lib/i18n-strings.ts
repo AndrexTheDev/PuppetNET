@@ -52,6 +52,8 @@ const DE = {
   'type.Organization': 'Organisation',
   'type.Location': 'Ort',
   'type.Vehicle': 'Fahrzeug oder Luftfahrzeug',
+  // `Craft` is what the pipeline export and the entity pages emit (PUBLIC_ENTITY_TYPES).
+  'type.Craft': 'Fahrzeug oder Luftfahrzeug',
   'type.Document': 'Dokument',
   'type.Other': 'Sonstiges',
 
@@ -564,6 +566,7 @@ const DE = {
   'intro.aria': 'PuppetNET Intro',
   'intro.caption': 'PUPPETNET · FOLLOW THE CONNECTION',
   'intro.skip': 'Intro überspringen',
+  'a11y.skipToContent': 'Zum Inhalt springen',
   'ad.desktopAreas': 'Desktop-Werbeflächen',
   'ad.header': 'Anzeige · Header',
   'ad.placement': 'Anzeige',
@@ -605,6 +608,7 @@ const EN: typeof DE = {
   'type.Organization': 'Organization',
   'type.Location': 'Location',
   'type.Vehicle': 'Vehicle or aircraft',
+  'type.Craft': 'Vehicle or aircraft',
   'type.Document': 'Document',
   'type.Other': 'Other',
 
@@ -1110,6 +1114,7 @@ const EN: typeof DE = {
   'intro.aria': 'PuppetNET intro',
   'intro.caption': 'PUPPETNET · FOLLOW THE CONNECTION',
   'intro.skip': 'Skip intro',
+  'a11y.skipToContent': 'Skip to content',
   'ad.desktopAreas': 'Desktop ad areas',
   'ad.header': 'Advertisement · header',
   'ad.placement': 'Advertisement',

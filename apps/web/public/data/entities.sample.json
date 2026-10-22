@@ -7,6 +7,7 @@
       "name": "Nordlicht Holdings GmbH",
       "type": "Organization",
       "description": "Fiktive Demodaten: Nordlicht Holdings GmbH ist als Organisation mit Sitz in Hamburg erfasst und hält eine Beteiligung an der Hansa Maritime AG. Alle Namen und Beziehungen sind frei erfunden.",
+      "description_en": "Fictional demo data: Nordlicht Holdings GmbH is recorded as an organization based in Hamburg holding a stake in Hansa Maritime AG. All names and relationships are invented.",
       "aliases": [
         "Nordlicht Holding",
         "Nordlicht GmbH"
@@ -45,6 +46,7 @@
       "name": "Hansa Maritime AG",
       "type": "Organization",
       "description": "Fiktive Demodaten: Die Hansa Maritime AG ist als Reederei mit Sitz in Hamburg erfasst. Die Anteilseignerstruktur ist Teil der Demo, nicht der Realität.",
+      "description_en": "Fictional demo data: Hansa Maritime AG is recorded as a shipping company based in Hamburg. The shareholder structure is part of the demo, not reality.",
       "aliases": [
         "Hansa Maritime"
       ],
@@ -75,6 +77,7 @@
       "name": "Anna Berg",
       "type": "Person",
       "description": "Fiktive Demodaten: Anna Berg ist als Person erfasst und in der Demo als Geschäftsführerin der Nordlicht Holdings GmbH geführt. Die Person existiert nicht.",
+      "description_en": "Fictional demo data: Anna Berg is recorded as a person and listed in the demo as managing director of Nordlicht Holdings GmbH. This person does not exist.",
       "aliases": [
         "A. Berg"
       ],
@@ -108,6 +111,7 @@
       "name": "Jonas Keller",
       "type": "Person",
       "description": "Fiktive Demodaten: Jonas Keller ist als Person erfasst und in der Demo mit Anna Berg assoziiert. Die Person existiert nicht.",
+      "description_en": "Fictional demo data: Jonas Keller is recorded as a person and associated with Anna Berg in the demo. This person does not exist.",
       "aliases": [],
       "jurisdiction": "Deutschland",
       "confidence": 0.74,
@@ -133,6 +137,7 @@
       "name": "Hamburg",
       "type": "Location",
       "description": "Fiktive Demodaten: Hamburg ist als Ort erfasst und dient in der Demo als Sitz mehrerer Organisationen.",
+      "description_en": "Fictional demo data: Hamburg is recorded as a place and serves in the demo as the seat of several organizations.",
       "aliases": [
         "Freie und Hansestadt Hamburg"
       ],
@@ -150,6 +155,7 @@
       "name": "Limassol",
       "type": "Location",
       "description": "Fiktive Demodaten: Limassol ist als Ort erfasst und in der Demo der Registrierungsort eines Luftfahrzeugs.",
+      "description_en": "Fictional demo data: Limassol is recorded as a place and is the registration location of an aircraft in the demo.",
       "aliases": [],
       "jurisdiction": "Zypern",
       "confidence": 0.9,
@@ -165,6 +171,7 @@
       "name": "D-AXAA",
       "type": "Craft",
       "description": "Fiktive Demodaten: D-AXAA ist als Luftfahrzeug erfasst. Kennzeichen und ICAO-Adresse sind erfunden.",
+      "description_en": "Fictional demo data: D-AXAA is recorded as an aircraft. Registration mark and ICAO address are invented.",
       "aliases": [],
       "identifiers": {
         "tail_number": "D-AXAA",
@@ -193,6 +200,7 @@
       "name": "Midway Consulting Ltd",
       "type": "Organization",
       "description": "Fiktive Demodaten: Midway Consulting Ltd ist als Gesellschaft mit Sitz in Limassol erfasst. Die Gesellschaft existiert nicht.",
+      "description_en": "Fictional demo data: Midway Consulting Ltd is recorded as a company based in Limassol. The company does not exist.",
       "aliases": [
         "Midway Consulting"
       ],

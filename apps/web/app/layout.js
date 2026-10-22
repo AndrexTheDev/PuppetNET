@@ -3,6 +3,7 @@ import './styles.css';
 import AdContainers from './components/AdContainers';
 import Intro from './components/Intro';
 import OfflineService from './components/OfflineService';
+import SkipLink from './components/SkipLink';
 import { LanguageProvider } from './dashboard/i18n';
 
 const origin = process.env.SITE_ORIGIN || process.env.NEXT_PUBLIC_SITE_ORIGIN || 'https://puppetnet-web.pages.dev';
@@ -49,9 +50,9 @@ export default function Layout({ children }) {
   return (
     <html lang="de">
       <body>
-        <a className="skip-link" href="#main-content">Zum Inhalt springen</a>
         <OfflineService />
         <LanguageProvider>
+          <SkipLink />
           <AdContainers>{children}</AdContainers>
           <Intro />
         </LanguageProvider>

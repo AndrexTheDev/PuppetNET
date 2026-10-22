@@ -77,6 +77,16 @@ assert.equal(homeStructured.name, 'PuppetNET');
 assert.equal(new URL(homeStructured.url).protocol, 'https:');
 assert.equal(homeStructured['@id'], `${new URL(homeStructured.url).origin}/#website`);
 
+/* English landing: no German chrome or German entity text in the visible HTML.
+   (Found on the first live preview: a German skip link and German demo text.) */
+const visibleText = html => html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/g, ' ').replace(/<[^>]+>/g, ' ');
+const enText = visibleText(readFileSync(path.join(OUT, 'en', 'index.html'), 'utf8'));
+assert.match(enText, /Skip to content/, '/en/ needs an English skip link.');
+for (const german of ['Zum Inhalt springen', 'Fiktive Demodaten', 'ist im PuppetNET-Graphen', 'type.']) {
+  assert.ok(!enText.includes(german), `/en/ shows German or raw text: ${german}`);
+}
+assert.match(visibleText(homeHtml), /Zum Inhalt springen/, 'The German landing keeps its German skip link.');
+
 /* ------------------------------------------------------------------------- */
 /* Entity profiles: static, crawlable and self-contained                     */
 /* ------------------------------------------------------------------------- */

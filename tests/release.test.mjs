@@ -656,3 +656,38 @@ test('wave 35: a source name opens a dossier instead of a dead end', () => {
   for (const key of ['dossierAria', 'dossierTitle', 'dossierClose', 'dossierSummary', 'dossierSpan', 'dossierFilter', 'dossierDisputeFilter', 'dossierFirsts', 'dossierFollowups', 'dossierSolo', 'dossierDisputes', 'dossierSelf', 'dossierShared', 'dossierLag', 'dossierUndated', 'dossierNone', 'dossierText'])
     assert.equal((strings.match(new RegExp(`'dash\\.${key}'`, 'g')) ?? []).length, 2, `dash.${key} exists in both languages`);
 });
+test('the Pages gate suites pass with the Cloudflare build environment, not only a bare shell', () => {
+  // Every Cloudflare Pages build from 2026-10-20 to 2026-10-21 failed although
+  // all local runs were green: the production environment sets SITE_ORIGIN, and
+  // one SEO test only isolated NEXT_PUBLIC_SITE_ORIGIN. Run the gate's suites
+  // with the documented Cloudflare variables (cloudflare-builds.json) so an
+  // environment-dependent test can never block deployments silently again.
+  const config = JSON.parse(read('cloudflare-builds.json')).pages;
+  const env = { ...process.env, ...config.environment, ...config.productionEnvironment, CI: '1' };
+  // A nested `node --test` that inherits NODE_TEST_CONTEXT reports to the parent
+  // runner and exits 0 even on failures; the child must be a standalone run.
+  delete env.NODE_TEST_CONTEXT;
+  assert.ok(env.SITE_ORIGIN, 'the documented production environment sets SITE_ORIGIN');
+  const result = spawnSync(process.execPath, [
+    '--import', 'tsx', '--test',
+    'tests/dashboard.test.ts', 'tests/data_fetcher.test.ts', 'tests/seo.test.ts',
+    'tests/a11y.test.tsx', 'tests/i18n.test.tsx',
+  ], { encoding: 'utf8', env });
+  assert.equal(result.status, 0, `${result.stdout.split('\n').filter(l => /^not ok|^\s+(error|expected|actual):/.test(l)).join('\n')}\n${result.stderr}`);
+});
+test('each Cloudflare root directory installs every loader its build gate imports', () => {
+  // Cloudflare runs `npm ci` inside the configured root directory, which only
+  // installs that workspace's dependencies. The worker gate imported tsx while
+  // only apps/web declared it, so the documented Workers build (root apps/worker)
+  // failed with ERR_MODULE_NOT_FOUND before running a single test.
+  const config = JSON.parse(read('cloudflare-builds.json'));
+  for (const [component, gate] of [['pages', 'scripts/pages-build.mjs'], ['worker', 'scripts/worker-build.mjs']]) {
+    const manifest = JSON.parse(read(`${config[component].rootDirectory}/package.json`));
+    const declared = { ...manifest.dependencies, ...manifest.devDependencies };
+    const loaders = [...read(gate).matchAll(/'--import',\s*'([^']+)'/g)].map(match => match[1]);
+    assert.ok(loaders.length > 0, `${gate} still starts tsx suites`);
+    for (const loader of loaders) {
+      assert.ok(declared[loader], `${config[component].rootDirectory}/package.json must declare ${loader} (used by ${gate})`);
+    }
+  }
+});

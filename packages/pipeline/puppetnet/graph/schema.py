@@ -248,6 +248,7 @@ ON CREATE SET
     e.doc_ids = row.doc_ids,
     e.first_seen = row.first_seen,
     e.last_seen = row.last_seen,
+    e.cloud_only = CASE WHEN row.cloud_only THEN true ELSE null END,
     e += row.properties
 ON MATCH SET
     e.name = CASE WHEN size(coalesce(row.name, '')) > size(coalesce(e.name, '')) THEN row.name ELSE e.name END,
@@ -268,6 +269,9 @@ ON MATCH SET
     e.doc_ids = reduce(acc = coalesce(e.doc_ids, []), d IN row.doc_ids |
                        CASE WHEN d IN acc THEN acc ELSE acc + d END)[-64..],
     e.last_seen = row.last_seen,
+    // AND semantics: once any local extractor saw the entity it stays local
+    // (null removes the property); the export vetoes cloud_only nodes.
+    e.cloud_only = CASE WHEN coalesce(e.cloud_only, false) AND row.cloud_only THEN true ELSE null END,
     e += row.properties
 WITH e{label_clauses}
 RETURN count(e) AS entities
@@ -321,8 +325,13 @@ ON MATCH SET
                      ELSE (coalesce(r.doc_ids, []) + [row.doc_id])[-{doc_id_cap}..] END,
     r.source_weight = CASE WHEN row.source_weight > coalesce(r.source_weight, 0)
                            THEN row.source_weight ELSE r.source_weight END,
+    // 'llm' (cloud model, uncorroborated) never downgrades a locally grounded
+    // method; a later local extraction of the same edge upgrades 'llm' instead.
     r.method = CASE WHEN row.method = 'dependency' OR coalesce(r.method, '') = 'dependency'
-                    THEN 'dependency' ELSE row.method END,
+                    THEN 'dependency'
+                    WHEN row.method = 'llm' AND coalesce(r.method, '') <> ''
+                    THEN r.method
+                    ELSE row.method END,
     r.evidence = (coalesce(r.evidence, []) + [row.evidence])[-5..],
     r.evidence_scores = (coalesce(r.evidence_scores, []) + [row.evidence_score])[-5..],
     r.verb = CASE WHEN coalesce(row.verb, '') <> '' THEN row.verb ELSE r.verb END,
@@ -587,7 +596,7 @@ def properties_for_entity_row(entity: Any, *, run_id: str = "") -> dict[str, Any
     props = entity.to_node_properties()
     reserved = {
         "canonical_key", "name", "entity_type", "aliases", "mention_count",
-        "confidence", "source_ids", "doc_ids", "first_seen", "last_seen",
+        "confidence", "source_ids", "doc_ids", "first_seen", "last_seen", "cloud_only",
     }
     extra = {k: v for k, v in props.items() if k not in reserved and v not in (None, "", [], {})}
     # Neo4j rejects nested maps as property values — flatten to dotted keys.
@@ -619,6 +628,7 @@ def properties_for_entity_row(entity: Any, *, run_id: str = "") -> dict[str, Any
         # Derived domain values (tail_number, normalised gps, address_key,
         # shell_risk …) win over the raw source property they came from.
         "properties": {**flat, **domain_extras},
+        "cloud_only": bool((getattr(entity, "properties", None) or {}).get("cloud_only")),
         "run_id": run_id,
     }
 
