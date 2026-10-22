@@ -47,6 +47,14 @@ Entitäts-Slices über das Manifest, entfernt alle Kanten zur Entität aus
 (03:00/15:00 UTC) ⇒ Löschung regelmäßig **≤ 24 h** öffentlich wirksam, zuzüglich
 kurzer CDN-Nachvalidierung. Sensible Prädikate (z. B. Strafvorwürfe) tragen immer
 `requires_review` und erscheinen nie automatisch im öffentlichen Graphen.
+Nur nach ausdrücklicher Betreiberfreigabe (`public_released: true`) erscheinen:
+- **Personen ohne veröffentlichte Beziehung**;
+- Entitäten, die nur das Cloud-Modell erkannt hat (`cloud_only`);
+- unbestätigte KI-Kanten (`method: llm`). Bei einer freigegebenen KI-Kante
+  müssen auch Cloud-only-Endpunkte freigegeben sein.
+
+Der Grundsatz dahinter: Eine einzelne Namensnennung ohne Zusammenhang ist für eine
+Netzwerkanalyse wertlos, als öffentliche Profilseite aber ein Eingriff.
 
 **EN.** `public_released: false` → `approved()` veto → the next export prunes the
 entity slices via the manifest, removes every edge to the entity from
@@ -54,6 +62,14 @@ entity slices via the manifest, removes every edge to the entity from
 (03:00/15:00 UTC) ⇒ erasure normally public **within ≤ 24 h**, plus short CDN
 revalidation. Sensitive predicates (e.g. accusations) always carry `requires_review`
 and never reach the public graph automatically.
+Only an explicit operator release (`public_released: true`) publishes:
+- **persons without any published relationship**;
+- entities only the cloud model recognized (`cloud_only`);
+- uncorroborated cloud-model edges (`method: llm`). A released cloud edge also
+  needs its cloud-only endpoints released.
+
+The principle: a lone mention without context is worthless for network analysis
+but intrusive as a public profile page.
 
 ## 4 · Kanten-Provenienz / Edge provenance
 

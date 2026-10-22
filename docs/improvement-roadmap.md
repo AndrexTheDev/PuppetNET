@@ -933,6 +933,9 @@ Profil-Job + Zusatz-Cron, konfigurierbare Run-Slots (harte Obergrenze 12 + 4),
   `SITE_ORIGIN`. Das ist behoben, und das Gate gibt jetzt die Node-Version aus.
 - **Web**: Profiltitel brachen buchstabenweise um (globale `header`-Flexregel); der
   Typ `Craft` hatte kein Label.
+- **Datenschutz** (Betreiberentscheidung 22.10.): Personen ohne veröffentlichte Beziehung
+  erscheinen nur nach Freigabe.
+- **/en/** vollständig englisch: Sprunglink, `description_en` oder englische Zusammenfassung.
 - **Go-live**: [Betreiberschritte in Reihenfolge](go-live.md).
 
 **Geliefert (Welle 37)**: 53 neue Python-Tests (1.394 gesamt), Validator-Korpus,
@@ -1856,6 +1859,8 @@ defects; all are fixed with regression tests
 - broker throttling on the first per-minute 429 and an order-independent merge;
 - a fixed profile title layout and a missing `Craft` label;
 - **no Cloudflare Pages build had succeeded since wave 6** (Node 22.16 dual module load in a test, unisolated `SITE_ORIGIN`). Fixed, and the gate now logs its Node version.
+
+Operator decisions (2026-10-22): isolated persons need an operator release; `/en/` is fully English.
 
 Operator steps: [go-live](go-live.md#english).
 

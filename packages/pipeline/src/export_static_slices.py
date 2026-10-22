@@ -261,6 +261,7 @@ def build_public_graph(raw: dict, limit: int = MAX_NODES) -> dict:
              "company": "Organization", "location": "Location", "loc": "Location", "craft": "Craft"}
     feeds = verified_feeds()
     by_id = {}
+    operator_released = set()
     for row in raw["nodes"]:
         if not isinstance(row, dict) or not approved(row, feeds):
             continue
@@ -284,6 +285,8 @@ def build_public_graph(raw: dict, limit: int = MAX_NODES) -> dict:
             except (KeyError, TypeError, ValueError):
                 pass
         by_id[key] = node
+        if row.get("public_released") is True:
+            operator_released.add(key)
     evidence = []
     for item in raw.get("evidence", [])[:5000]:
         if not isinstance(item, dict) or not approved(item, feeds):
@@ -325,8 +328,17 @@ def build_public_graph(raw: dict, limit: int = MAX_NODES) -> dict:
         edges[signature] = {"id": hashlib.sha256(signature.encode()).hexdigest()[:24],
                             "source": source, "target": target, "type": predicate, "predicate": predicate,
                             "public": True, "public_released": True, "confidence": score(row.get("confidence")), "weight": score(row.get("weight"))}
+    published_edges = [edges[key] for key in sorted(edges)[:MAX_EDGES]]
+    # Operator decision 2026-10-22: a person without any published relationship
+    # (e.g. named once in an arrest report) gets no public, indexable profile on
+    # automatic grounds (confidence or verified-feed provenance). Only an explicit
+    # operator release (public_released=true) publishes an isolated person.
+    # Organizations, places and crafts keep the normal policy.
+    connected = {edge["source"] for edge in published_edges} | {edge["target"] for edge in published_edges}
+    nodes = [node for node in nodes
+             if node["type"] != "Person" or node["id"] in connected or node["id"] in operator_released]
     return {"schemaVersion": 1, "demo": raw.get("demo") is True, "nodes": nodes,
-            "edges": [edges[key] for key in sorted(edges)[:MAX_EDGES]],
+            "edges": published_edges,
             "evidence": sorted(evidence, key=lambda item: item["id"]), "truncated": raw.get("truncated") is True or len(by_id) > len(nodes) or len(edges) > MAX_EDGES}
 
 

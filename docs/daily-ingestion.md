@@ -35,6 +35,14 @@
 - `public: false` ist dagegen häufig nur der NLP-Draftdefault. Ein hinreichender
   Score bzw. verifizierte Herkunft darf diesen Default überwinden. Auch der
   automatische `requires_review`-Marker wird nur unter dieser Policy überwunden.
+- **Nur mit Betreiberfreigabe** (`public_released: true`, Abfragen in
+  [Gemini-Strategie §3.3](gemini-strategy.md)) werden veröffentlicht:
+  - KI-Kanten (`method: llm`) ohne lokale Bestätigung;
+  - Entitäten, die nur das Cloud-Modell gesehen hat (`cloud_only`);
+  - **Personen ohne veröffentlichte Beziehung** (Betreiberentscheidung vom 22.10.2026).
+    Eine Person, die etwa nur in einer Festnahmemeldung vorkommt, bekommt allein wegen
+    Confidence oder verifizierter Quelle keine indexierbare Profilseite. Organisationen,
+    Orte und Fahrzeuge folgen weiter der normalen Policy.
 - Manuell bereits öffentliche Daten bleiben kompatibel. Keine Veröffentlichung
   von Freitext-Evidenz, Privatnotizen, Risk-Scores oder vollständigen DB-Properties.
 - Release-Flags werden im Export erzeugt; der Exporter verändert Neo4j nicht.
@@ -176,6 +184,14 @@ Wer Next direkt aufruft, führt danach `node scripts/finalize-static-export.mjs`
 - `public: false`, by contrast, is often just the NLP draft default. A
   sufficient score or verified provenance may override that default. The
   automatic `requires_review` marker is also overridden only under this policy.
+- **Operator release only** (`public_released: true`, queries in
+  [Gemini strategy §3.3](gemini-strategy.md)):
+  - cloud-model edges (`method: llm`) without local corroboration;
+  - entities only the cloud model saw (`cloud_only`);
+  - **persons without any published relationship** (operator decision,
+    2026-10-22). A person named only in, say, an arrest report gets no
+    indexable profile page from confidence or a verified feed alone.
+    Organizations, places and crafts keep the normal policy.
 - Data already published manually stays compatible. No publication of
   free-text evidence, private notes, risk scores or full DB properties.
 - Release flags are produced in the export; the exporter does not modify Neo4j.

@@ -845,3 +845,56 @@ def test_entity_name_cleanup_keeps_abbreviation_dots():
     assert clean_entity_name("Berlin,") == "Berlin"
     assert entity_kind("MISC", "Wagner-Gruppe") is EntityType.ORGANIZATION
     assert entity_kind("MISC", "iPhone") is None
+
+
+def _isolated_person_graph(**person):
+    node = {"id": "person:solo", "name": "Erika Solo", "type": "Person", "confidence": .9,
+            "feed_url": "https://news.example/rss"}
+    node.update(person)
+    return {"nodes": [
+        node,
+        {"id": "org:solo", "name": "Allein GmbH", "type": "Organization", "confidence": .9},
+        {"id": "loc:solo", "name": "Kiel", "type": "Location", "confidence": .9},
+    ], "edges": []}
+
+
+def test_isolated_persons_need_an_operator_release(monkeypatch):
+    # Operator decision 2026-10-22: high confidence or a verified feed may publish
+    # a connected person, but a person with no published relationship gets a
+    # public profile page only after an explicit public_released=true.
+    monkeypatch.setenv("VERIFIED_RSS_FEEDS", "https://news.example/rss")
+    kept = {node["id"] for node in build_public_graph(_isolated_person_graph())["nodes"]}
+    assert kept == {"org:solo", "loc:solo"}, "organizations and places keep the normal policy"
+    released = build_public_graph(_isolated_person_graph(public_released=True))["nodes"]
+    assert "person:solo" in {node["id"] for node in released}
+    withdrawn = build_public_graph(_isolated_person_graph(public_released=False))["nodes"]
+    assert "person:solo" not in {node["id"] for node in withdrawn}
+
+
+def test_a_person_counts_as_connected_only_through_a_published_edge(monkeypatch):
+    monkeypatch.setenv("VERIFIED_RSS_FEEDS", "https://news.example/rss")
+    raw = _isolated_person_graph()
+    raw["edges"] = [{"source": "person:solo", "target": "org:solo", "type": "OFFICER_OF", "confidence": .9}]
+    assert "person:solo" in {node["id"] for node in build_public_graph(raw)["nodes"]}
+    # The only relationship is unreleased (cloud model, no operator release):
+    # it is not published, so the person is isolated in the public graph.
+    raw["edges"][0]["method"] = "llm"
+    monkeypatch.delenv("GEMINI_AUTO_RELEASE", raising=False)
+    graph = build_public_graph(raw)
+    assert graph["edges"] == []
+    assert "person:solo" not in {node["id"] for node in graph["nodes"]}
+    # The other endpoint being withheld also leaves the person isolated.
+    raw["edges"][0].pop("method")
+    raw["nodes"][1]["private"] = True
+    assert "person:solo" not in {node["id"] for node in build_public_graph(raw)["nodes"]}
+
+
+def test_export_never_leaves_a_dangling_edge_after_dropping_isolated_persons(monkeypatch, tmp_path):
+    monkeypatch.setenv("VERIFIED_RSS_FEEDS", "https://news.example/rss")
+    raw = _isolated_person_graph()
+    raw["nodes"].append({"id": "person:linked", "name": "Max Linked", "type": "Person", "confidence": .9})
+    raw["edges"] = [{"source": "person:linked", "target": "loc:solo", "type": "LOCATED_IN", "confidence": .9}]
+    data = export_slices(raw, tmp_path)
+    ids = {node["id"] for node in data["nodes"]}
+    assert ids == {"person:linked", "org:solo", "loc:solo"}
+    assert all(edge["source"] in ids and edge["target"] in ids for edge in data["edges"])

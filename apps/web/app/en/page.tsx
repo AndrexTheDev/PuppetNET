@@ -1,6 +1,6 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
-import { buildWebsiteJsonLd, entityPath, serializeJsonLd, siteOrigin } from '../../lib/entity-seo';
+import { buildWebsiteJsonLd, englishDescription, entityPath, serializeJsonLd, siteOrigin } from '../../lib/entity-seo';
 import { listPublicEntities, loadEntityDataset } from '../../lib/entity-store';
 import { translate } from '../../lib/i18n-strings';
 
@@ -46,7 +46,7 @@ export default function HomeEn() {
     ].map(([n,title,text])=><article key={n}><span className="feature-number">{n} /</span><h3>{title}</h3><p>{text}</p></article>)}</div></section>
     <section id="discover" className="profile-index"><div className="section-intro"><span className="eyebrow">YOUR ENTRY INTO THE NETWORK</span><h2>Every lead starts with a question.</h2><p>Choose an entry point and discover the relationships behind it.</p></div>
       {dataset.demo && <p className="demo-disclosure" role="note"><strong>Interactive demo:</strong> These profiles and their relationships are fictional sample data, not research results.</p>}
-      <ul className="profile-grid">{entities.map(entity=><li className="profile-card" key={entity.id}><span className="profile-kind">{translate('en', `type.${entity.type}`)}</span><h3>{entity.name}</h3><p>{entity.description}</p><Link href={entityPath(entity.slug)}>Discover the lead<span className="visually-hidden">: {entity.name}</span> ↗</Link></li>)}</ul>
+      <ul className="profile-grid">{entities.map(entity=><li className="profile-card" key={entity.id}><span className="profile-kind">{translate('en', `type.${entity.type}`)}</span><h3>{entity.name}</h3><p>{englishDescription(entity)}</p><Link href={entityPath(entity.slug)}>Discover the lead<span className="visually-hidden">: {entity.name}</span> ↗</Link></li>)}</ul>
     </section>
     <section className="closing-cta"><span className="eyebrow">WHAT CONNECTS THEM?</span><h2>The next connection<br />is waiting for your eyes.</h2><p>Open the demo. Change the perspective. Ask the next question.</p><Link className="cta-primary" href="/dashboard/">Discover it yourself ↗</Link></section>
     <footer className="landing-footer"><Link className="landing-brand" href="/en/"><img className="brand-art" src="/media/logo.webp" width="56" height="56" alt="" /><strong>PUPPETNET</strong></Link><p>See connections. Question claims.</p><div><Link href="/dashboard/">Workspace</Link><Link href="/legal/">Legal &amp; erasure</Link><a href="/sitemap.xml">Sitemap</a><a href="/" lang="de" hrefLang="de">Deutsch</a></div></footer>

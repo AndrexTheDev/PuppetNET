@@ -18,7 +18,7 @@ Details stehen in den verlinkten Dokumenten.
 | 5 | **Publikation einschalten**: `ENABLE_DAILY_STATIC=true`, dann einmal *Run workflow* mit `task: ingest`. | GitHub | Commit „data: publish auto-released static graph“ auf `main`, Pages-Build grün, `/dashboard/` zeigt Daten statt Standby, `/entity/<slug>/` erreichbar |
 | 6 | **Erste 48 h beobachten** | [Monitoring-Checkliste](operations/monitoring-checklist.md) | Zwei Cron-Läufe (03:00/15:00 UTC) ohne Fehler, Ledger-Commits vorhanden |
 | 7 | *Optional:* **Public-Profil + Gemini**: `PIPELINE_PROFILE=public`, `ENABLE_GEMINI_BROKER=true`, `GEMINI_MODE=document` und `GEMINI_MODEL_LIMITS` mit den Werten aus aistudio.google.com/rate-limit. Secret `GEMINI_API_KEY` aus einem Projekt **ohne** Abrechnung. `GEMINI_AUTO_RELEASE` **nicht** setzen. | GitHub | Job-Summary „Gemini free-tier broker“ ohne 429-Dauerfehler ([Gemini-Strategie §5](gemini-strategy.md)) |
-| 8 | **Review-Routine** (nur bei Schritt 7): KI-Kanten (`method=llm`) und Entitäten, die nur das Modell gesehen hat (`cloud_only`), erscheinen erst nach `public_released = true`. Abfragen: [Gemini-Strategie §3.3](gemini-strategy.md). | Aura-Konsole | Offene Liste regelmäßig abgearbeitet; Ablehnung = `false` |
+| 8 | **Review-Routine**: Personen ohne veröffentlichte Beziehung erscheinen erst nach `public_released = true`. Mit Schritt 7 gilt das auch für KI-Kanten (`method=llm`) und Entitäten, die nur das Modell gesehen hat (`cloud_only`). Abfragen: [Gemini-Strategie §3.3](gemini-strategy.md). | Aura-Konsole | Offene Liste regelmäßig abgearbeitet; Ablehnung = `false` |
 
 **Rechtliches (keine Rechtsberatung):**
 - Die Gemini-Nutzungsbedingungen verlangen für API-Clients, die Nutzern im EWR, in der Schweiz oder im UK bereitgestellt werden, den kostenpflichtigen Dienst. PuppetNET ruft Gemini nur im eigenen Workflow auf, nicht aus dem Browser. Die Einordnung bleibt Betreibersache.
@@ -44,6 +44,6 @@ Only operator steps remain. Move on only when a step is green.
 5. **Enable publication**: set `ENABLE_DAILY_STATIC=true`, then *Run workflow* with `task: ingest`. Done when there is a data commit on `main`, the Pages build is green, the dashboard shows data instead of standby, and entity pages are reachable.
 6. **Watch the first 48 h** ([monitoring checklist](operations/monitoring-checklist.md)).
 7. *Optional:* **public profile + Gemini**: `PIPELINE_PROFILE=public`, `ENABLE_GEMINI_BROKER=true`, `GEMINI_MODE=document`, and `GEMINI_MODEL_LIMITS` from AI Studio. Use a `GEMINI_API_KEY` from a project **without** billing. Never set `GEMINI_AUTO_RELEASE`.
-8. **Review routine**: `llm` edges and `cloud_only` entities are published only after `public_released = true` (queries in [Gemini strategy §3.3](gemini-strategy.md)).
+8. **Review routine**: persons without any published relationship are published only after `public_released = true`. With step 7 the same applies to `llm` edges and `cloud_only` entities (queries in [Gemini strategy §3.3](gemini-strategy.md)).
 
 Not legal advice: see the Gemini terms (paid services for API clients made available in the EEA/CH/UK) and the [source policy](source-policy.md). In public repositories, scheduled workflows are disabled after 60 days without repository activity; re-enable the workflow in Actions if runs stop.

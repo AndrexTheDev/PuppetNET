@@ -35,6 +35,9 @@ const { FixedLanguageProvider } = requireCjs('../apps/web/app/dashboard/i18n') a
 const BootStateModule = requireCjs('../apps/web/app/dashboard/BootState') as typeof import('../apps/web/app/dashboard/BootState');
 const EntityTableModule = requireCjs('../apps/web/app/dashboard/EntityTable') as typeof import('../apps/web/app/dashboard/EntityTable');
 const { LoadingStage } = BootStateModule;
+const SkipLinkModule = requireCjs('../apps/web/app/components/SkipLink') as typeof import('../apps/web/app/components/SkipLink');
+const SkipLink = (SkipLinkModule.default as unknown as { default?: typeof SkipLinkModule.default }).default ?? SkipLinkModule.default;
+const { englishDescription } = requireCjs('../apps/web/lib/entity-seo') as typeof import('../apps/web/lib/entity-seo');
 
 // tsx CJS interop: default exports can arrive wrapped (same shim as a11y.test.tsx).
 const StandbyPanel = (BootStateModule.default as unknown as { default?: typeof BootStateModule.default }).default ?? BootStateModule.default;
@@ -170,4 +173,19 @@ test('the graph keyboard announces in both languages', () => {
   assert.match(graphInstructions(), /Tabellenansicht/);
   assert.match(graphInstructions('en'), /Arrow keys/);
   assert.match(graphInstructions('en'), /table view/);
+});
+
+test('the skip link follows the UI language and stays German by default', () => {
+  assert.equal(renderToStaticMarkup(createElement(SkipLink)), '<a class="skip-link" href="#main-content">Zum Inhalt springen</a>');
+  assert.equal(renderEn(createElement(SkipLink)), '<a class="skip-link" href="#main-content">Skip to content</a>');
+});
+
+test('English surfaces use description_en or an English summary, never the German text', () => {
+  const base = { name: 'Erika Muster', type: 'Person' as const, jurisdiction: 'Deutschland', confidence: 0.82,
+    evidence: [{ id: 'doc:1', title: 'Register', source: 'Demo', date: '2026-10-01' }] } as Parameters<typeof englishDescription>[0];
+  assert.equal(englishDescription({ ...base, descriptionEn: 'Curated text.' }), 'Curated text.');
+  const generated = englishDescription(base);
+  assert.equal(generated, 'Erika Muster is recorded in the PuppetNET graph as a person. Jurisdiction: Deutschland. '
+    + '1 source reference in the loaded dataset. Confidence 82 %. Calculated relationships are not statements of fact.');
+  assert.match(englishDescription({ ...base, type: 'Craft', evidence: [] }), /as a vehicle or aircraft\. Jurisdiction/);
 });

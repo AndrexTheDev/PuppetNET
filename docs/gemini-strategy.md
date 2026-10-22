@@ -172,6 +172,13 @@ WHERE type(r) = $typ SET r.public_released = true;   // ablehnen: = false
 MATCH (e:Entity {cloud_only: true}) WHERE e.public_released IS NULL
 RETURN e.canonical_key, e.name, e.entity_type, e.doc_ids[-1] AS beleg LIMIT 50;
 MATCH (e:Entity {canonical_key: $key}) SET e.public_released = true;   // ablehnen: = false
+
+// Personen ohne Beziehung zu einer anderen Entität: ohne Freigabe keine Profilseite.
+// Der Export zählt nur veröffentlichte Kanten. Eine Person, deren einzige Kante
+// noch eine offene KI-Kante ist, gehört deshalb ebenfalls in diese Liste.
+MATCH (e:Entity) WHERE toLower(e.entity_type) IN ['person', 'per']
+  AND e.public_released IS NULL AND NOT (e)--(:Entity)
+RETURN e.canonical_key, e.name, e.doc_ids[-1] AS beleg LIMIT 50;
 ```
 
 Ohne Typfilter würde die Freigabe **alle** offenen KI-Kanten zwischen zwei Entitäten
