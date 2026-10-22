@@ -77,3 +77,21 @@ def test_every_production_push_rebases_once_and_never_forces():
              'git push origin "HEAD:$PUBLISH_BRANCH"; }')
     assert all(line == retry for line in pushes), pushes
     assert '--force' not in text and 'push -f' not in text
+
+
+def test_only_the_data_commit_may_spend_a_cloudflare_pages_build():
+    # Pages Free allows 500 builds/month. Cloudflare documents the skip flag only
+    # as a commit-message PREFIX; build watch paths are a dashboard setting that
+    # can change. Ledger commits therefore lead with [skip ci], and the single
+    # data commit (the reason a build exists) carries no flag.
+    import re
+
+    text = (ROOT / '.github/workflows/daily_ingestion.yml').read_text()
+    messages = re.findall(r'git commit -m "([^"]+)"', text)
+    assert len(messages) == 3, messages
+    data = [m for m in messages if m.startswith('data: ')]
+    assert data == ['data: publish auto-released static graph']
+    for message in messages:
+        if message not in data:
+            assert message.lower().startswith('[skip ci] '), message
+    assert 'skip' not in data[0].lower()

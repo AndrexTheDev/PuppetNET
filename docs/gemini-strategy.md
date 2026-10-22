@@ -195,7 +195,10 @@ auf einmal veröffentlichen (z. B. eine korrekte `ACQUIRED` und eine fragwürdig
 * Selbst im Maximalfall verbraucht das Public-Profil **≈ 41 % des geplanten**
   und ≈ 33 % des gemeldeten Flash-Lite-Tagesbudgets **eines** Modells. Der Rest
   plus das komplette zweite Modell bleiben Reserve für die nächsten Phasen.
-* Ledger-Commits tragen `[skip ci]` und lösen keinen Pages-Build aus.
+* Ledger-Commits **beginnen** mit `[skip ci]` und lösen keinen Pages-Build aus.
+  Cloudflare dokumentiert das Flag nur als Präfix. Die konfigurierten Build-Watch-Paths
+  greifen zusätzlich (nachgewiesen: Commits außerhalb von `apps/web` erzeugen keinen Check),
+  sind aber nur eine Dashboard-Einstellung. Nur der Daten-Commit verbraucht einen Build.
 * Neo4j: rund 240 Dokumente/Tag erzeugen grob 1 000–1 500 neue Knoten. Aura Free
   wäre damit in etwa 4 Monaten voll. Der Writer stoppt neue Entitäten ab 180 000
   Knoten; der Füllstand muss beobachtet werden (nächste Phase: Pruning/TTL).

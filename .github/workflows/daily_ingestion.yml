@@ -147,7 +147,7 @@ jobs:
           python packages/pipeline/src/export_static_slices.py --reserve-run "$EVENT_NAME"
           if ! git diff --quiet -- .pipeline-state/daily-budget.json || test -n "$(git ls-files --others --exclude-standard .pipeline-state/daily-budget.json)"; then
             git add -- .pipeline-state/daily-budget.json
-            git commit -m "chore: reserve daily ingestion budget [skip ci]"
+            git commit -m "[skip ci] chore: reserve daily ingestion budget"
             # main may have moved during the run: rebase once, never force.
             git push origin "HEAD:$PUBLISH_BRANCH" || { git pull --rebase origin "$PUBLISH_BRANCH" && git push origin "HEAD:$PUBLISH_BRANCH"; }
           fi
@@ -189,7 +189,7 @@ jobs:
             if test -f "$ledger"; then git add -- "$ledger"; fi
           done
           if ! git diff --cached --quiet; then
-            git commit -m "chore: persist bounded NLP reservations [skip ci]"
+            git commit -m "[skip ci] chore: persist bounded NLP reservations"
             # main may have moved during the run: rebase once, never force.
             git push origin "HEAD:$PUBLISH_BRANCH" || { git pull --rebase origin "$PUBLISH_BRANCH" && git push origin "HEAD:$PUBLISH_BRANCH"; }
           fi

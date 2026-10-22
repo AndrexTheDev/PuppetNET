@@ -675,3 +675,19 @@ test('the Pages gate suites pass with the Cloudflare build environment, not only
   ], { encoding: 'utf8', env });
   assert.equal(result.status, 0, `${result.stdout.split('\n').filter(l => /^not ok|^\s+(error|expected|actual):/.test(l)).join('\n')}\n${result.stderr}`);
 });
+test('each Cloudflare root directory installs every loader its build gate imports', () => {
+  // Cloudflare runs `npm ci` inside the configured root directory, which only
+  // installs that workspace's dependencies. The worker gate imported tsx while
+  // only apps/web declared it, so the documented Workers build (root apps/worker)
+  // failed with ERR_MODULE_NOT_FOUND before running a single test.
+  const config = JSON.parse(read('cloudflare-builds.json'));
+  for (const [component, gate] of [['pages', 'scripts/pages-build.mjs'], ['worker', 'scripts/worker-build.mjs']]) {
+    const manifest = JSON.parse(read(`${config[component].rootDirectory}/package.json`));
+    const declared = { ...manifest.dependencies, ...manifest.devDependencies };
+    const loaders = [...read(gate).matchAll(/'--import',\s*'([^']+)'/g)].map(match => match[1]);
+    assert.ok(loaders.length > 0, `${gate} still starts tsx suites`);
+    for (const loader of loaders) {
+      assert.ok(declared[loader], `${config[component].rootDirectory}/package.json must declare ${loader} (used by ${gate})`);
+    }
+  }
+});
